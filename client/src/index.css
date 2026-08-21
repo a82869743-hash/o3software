@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════════════════════
+   O3 CAR SPA — CLEAN LIGHT BLUE & PURE WHITE DESIGN SYSTEM
+   ══════════════════════════════════════════════════════════ */
+
+:root {
+  --brand-blue: #2563EB;
+  --brand-blue-dark: #1D4ED8;
+  --brand-blue-light: #EFF6FF;
+  --brand-blue-hover: #1E40AF;
+  --bg-app: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --text-main: #0F172A;
+  --text-muted: #64748B;
+  --border-light: #E2E8F0;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #F8FAFC;
+  color: #0F172A;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Custom Clean Scrollbar ─────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F8FAFC;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2563EB;
+}
+
+::selection {
+  background-color: #DBEAFE;
+  color: #1E40AF;
+}
+
+/* ── Card & Component Utilities ─────────────────────────── */
+
+.card-clean {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  transition: all 0.25s ease;
+}
+
+.card-clean:hover {
+  border-color: #BFDBFE;
+  box-shadow: 0 10px 25px rgba(37, 99, 235, 0.08), 0 4px 10px rgba(0, 0, 0, 0.03);
+}
+
+.btn-blue-primary {
+  background-color: #2563EB;
+  color: #FFFFFF;
+  font-weight: 700;
+  border-radius: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.btn-blue-primary:hover {
+  background-color: #1D4ED8;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+}
+
+.icon-box-blue {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 1rem;
+  background-color: #EFF6FF;
+  color: #2563EB;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.badge-blue {
+  background-color: #EFF6FF;
+  color: #2563EB;
+  border: 1px solid #BFDBFE;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* Hide scrollbar utility */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+*:focus-visible {
+  outline: 2px solid #2563EB;
+  outline-offset: 2px;
+  border-radius: 6px;
+}

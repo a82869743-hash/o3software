@@ -1,0 +1,5 @@
+INSERT IGNORE INTO v2_whatsapp_templates (id, template_name, event_trigger, message_body, variables, is_active) VALUES 
+(11, 'Booking Received', 'BOOKING_RECEIVED', 'Dear {{customer_name}}, your booking request has been received. We will confirm shortly. Booking ID: {{booking_id}}.', '["customer_name", "booking_id"]', 1),
+(12, 'Booking Rejected', 'BOOKING_REJECTED', 'Dear {{customer_name}}, unfortunately your booking request #{{booking_id}} could not be confirmed. Reason: {{rejection_reason}}.', '["customer_name", "booking_id", "rejection_reason"]', 1),
+(13, 'Delivery Started', 'DELIVERY_STARTED', 'Dear {{customer_name}}, your vehicle {{vehicle_number}} is on the way for delivery! Driver: {{driver_name}} ({{driver_mobile}}). Track here: {{tracking_url}}.', '["customer_name", "vehicle_number", "driver_name", "driver_mobile", "tracking_url"]', 1),
+(14, 'Delivery Completed', 'DELIVERY_COMPLETED', 'Dear {{customer_name}}, your vehicle {{vehicle_number}} has been successfully delivered. Thank you! - O3 Car Spa', '["customer_name", "vehicle_number"]', 1);

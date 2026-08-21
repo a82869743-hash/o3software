@@ -1,0 +1,4 @@
+-- ═══════════════════════════════════════════════════
+-- Phase 2 v2: 059 — Service Update & Vehicle Year (Placeholder)
+-- Indexes and car_year columns are already present in the database schema.
+-- ═══════════════════════════════════════════════════

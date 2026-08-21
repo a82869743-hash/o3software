@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS buy_sell (
+  id               INT UNSIGNED   AUTO_INCREMENT PRIMARY KEY,
+  type             ENUM('buy','sell_b2b','sell_b2c') NOT NULL,
+  party_name       VARCHAR(150)   NOT NULL,
+  party_mobile     VARCHAR(15)    NULL,
+  product_id       INT UNSIGNED   NULL,
+  product_name     VARCHAR(150)   NOT NULL,
+  quantity         DECIMAL(10,2)  NOT NULL,
+  unit_price       DECIMAL(10,2)  NOT NULL,
+  total_amount     DECIMAL(10,2)  NOT NULL,
+  note             TEXT           NULL,
+  status           ENUM('pending','complete') NOT NULL DEFAULT 'pending',
+  transaction_date DATE           NOT NULL,
+  created_by       INT UNSIGNED   NOT NULL,
+  created_at       TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_type (type),
+  INDEX idx_status (status),
+  FOREIGN KEY (product_id) REFERENCES inventory(id) ON DELETE SET NULL,
+  FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

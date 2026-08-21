@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS package_services (
+  id         INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+  package_id INT UNSIGNED  NOT NULL,
+  service_id INT UNSIGNED  NOT NULL,
+  FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE,
+  FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

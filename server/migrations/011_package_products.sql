@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS package_products (
+  id         INT UNSIGNED   AUTO_INCREMENT PRIMARY KEY,
+  package_id INT UNSIGNED   NOT NULL,
+  product_id INT UNSIGNED   NOT NULL,
+  quantity   DECIMAL(10,2)  NOT NULL DEFAULT 1.00,
+  FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES inventory(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,0 +1,13 @@
+{
+  "name": "o3-car-spa-erp",
+  "version": "2.0.0",
+  "description": "O3 Car Spa — Premium Car Detailing ERP & Booking System",
+  "main": "server/src/app.js",
+  "scripts": {
+    "postinstall": "npm install --prefix server && npm install --prefix client",
+    "build": "npm run build --prefix client",
+    "start": "npm start --prefix server",
+    "dev": "node server/src/app.js"
+  },
+  "dependencies": {}
+}

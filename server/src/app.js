@@ -1,0 +1,276 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const http = require('http');
+const { Server } = require('socket.io');
+const pool = require('./config/db');
+
+const app = express();
+const server = http.createServer(app);
+
+// ─── Allowed Origins ────────────────────────────────
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+].filter(Boolean);
+
+const isAllowedOrigin = (origin, callback) => {
+  if (!origin || allowedOrigins.includes(origin) || (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin))) {
+    return callback(null, true);
+  }
+  callback(null, true); // Allow all in dev for smooth experience
+};
+
+// Socket.io setup
+const io = new Server(server, {
+  cors: {
+    origin: isAllowedOrigin,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+});
+
+app.set('io', io);
+
+// ─── Middleware ──────────────────────────────────────
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(cors({
+  origin: isAllowedOrigin,
+  credentials: true,
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ─── Serve uploaded product images ──────────────────
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+
+// ─── Global Audit Logger ────────────────────────────
+const auditLogger = require('./middleware/auditLog');
+app.use(auditLogger);
+
+// ─── Static: Uploads (profile pictures etc.) ────────
+const uploadsPath = path.join(__dirname, '..', 'uploads');
+const fs = require('fs');
+if (!fs.existsSync(uploadsPath)) fs.mkdirSync(uploadsPath, { recursive: true });
+app.use('/uploads', express.static(uploadsPath));
+
+// ─── Request logging (production-safe) ──────────────
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, _res, next) => {
+    if (req.url !== '/api/v1/health') {
+      const ts = new Date().toISOString().slice(11, 19);
+      process.stdout.write(`[${ts}] ${req.method} ${req.url}\n`);
+    }
+    next();
+  });
+}
+
+// ─── Health check ───────────────────────────────────
+app.get('/api/v1/health', async (req, res) => {
+  let dbStatus = 'disconnected';
+  try {
+    const conn = await pool.getConnection();
+    conn.release();
+    dbStatus = 'connected';
+  } catch { /* ignore */ }
+
+  res.json({
+    success: true,
+    message: 'O3 Car Spa API is running',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    database: dbStatus,
+  });
+});
+
+// ─── Routes ─────────────────────────────────────────
+const authRoutes = require('./routes/auth');
+app.use('/api/auth', authRoutes);
+app.use('/api/job-carts',  require('./routes/jobCarts'));
+app.use('/api/inventory',  require('./routes/inventory'));
+app.use('/api/slots',      require('./routes/slots'));
+app.use('/api/bookings',   require('./routes/bookings'));
+app.use('/api/services',   require('./routes/services'));
+app.use('/api/packages',   require('./routes/packages'));
+app.use('/api/loyalty',    require('./routes/loyalty'));
+app.use('/api/staff',      require('./routes/staff'));
+app.use('/api/accounts',   require('./routes/accounts'));
+app.use('/api/buy-sell',   require('./routes/buySell'));
+app.use('/api/messages',   require('./routes/messages'));
+app.use('/api/inquiries',  require('./routes/inquiries'));
+app.use('/api/import',     require('./routes/import'));
+app.use('/api/deliveries', require('./routes/deliveries'));
+app.use('/api/settings',   require('./routes/settings'));
+app.use('/api/dashboard',  require('./routes/dashboard'));
+app.use('/api/vehicles',   require('./routes/vehicles'));
+app.use('/api/customers',  require('./routes/customers'));
+app.use('/api/quotations', require('./routes/quotations'));
+
+// ─── New Feature Routes ─────────────────────────────────────
+app.use('/api/user-packages', require('./routes/userPackages'));
+app.use('/api/reports',       require('./routes/reports'));
+app.use('/api/billing',       require('./routes/billing'));
+app.use('/api/vendors',       require('./routes/vendors'));
+app.use('/api/salary',        require('./routes/salary'));
+app.use('/api/invoices',      require('./routes/invoices'));
+app.use('/api/archive',       require('./routes/archive'));
+
+// ─── Phase 2 Routes ────────────────────────────────────────
+app.use('/api/search',        require('./routes/search'));
+app.use('/api/quick-wash',    require('./routes/quickWash'));
+
+// ─── Phase 2 Extended Routes ───────────────────────────────
+app.use('/api/payments',      require('./routes/payments'));
+app.use('/api/feedback',      require('./routes/feedback'));
+app.use('/api/balance-sheet', require('./routes/balanceSheet'));
+app.use('/api/audit',         require('./routes/audit'));
+app.use('/api/staff',         require('./routes/staff'));
+app.use('/api/staff-hr',      require('./routes/staffHR'));
+app.use('/api/whatsapp',      require('./routes/whatsapp'));
+app.use('/api/admin/roles',   require('./routes/roles'));
+app.use('/api/shared-files',  require('./routes/sharedFiles'));
+app.get('/api/shared/:token', require('./controllers/fileSharingController').getSharedFile);
+app.use('/api/purchase-bills', require('./routes/purchaseBills'));
+app.use('/api/gst-reports',    require('./routes/gstReports'));
+app.use('/api/customer-rewards', require('./routes/customerRewards'));
+app.use('/api/referrals',     require('./routes/referrals'));
+app.use('/api/pickup-requests', require('./routes/pickup'));
+app.use('/api/products',      require('./routes/products'));
+app.use('/api/wallets',       require('./routes/wallets'));
+app.use('/api/franchises',    require('./routes/franchises'));
+app.use('/api/stock-requests', require('./routes/stockRequests'));
+
+
+// ─── Socket.io Auth + GPS ───────────────────────────
+const jwt = require('jsonwebtoken');
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) {
+    socket.user = { id: -1, role: 'guest' };
+    return next();
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.user = decoded;
+    next();
+  } catch {
+    socket.user = { id: -1, role: 'guest' };
+    next();
+  }
+});
+
+io.on('connection', (socket) => {
+  socket.on('join_delivery', async ({ deliveryId }) => {
+    try {
+      const [rows] = await pool.query(
+        'SELECT * FROM deliveries WHERE id = ?',
+        [deliveryId]
+      );
+      if (!rows.length) return socket.emit('error', { message: 'Delivery not found' });
+      const delivery = rows[0];
+      if (socket.user.role !== 'admin' && socket.user.id !== delivery.staff_id && socket.user.id !== delivery.customer_id) {
+        return socket.emit('error', { message: 'Not authorized' });
+      }
+      socket.join(`delivery_${deliveryId}`);
+      socket.emit('joined', { deliveryId });
+    } catch {
+      socket.emit('error', { message: 'Failed to join delivery room' });
+    }
+  });
+
+  socket.on('location_update', async ({ deliveryId, lat, lng }) => {
+    try {
+      const parsedLat = parseFloat(lat);
+      const parsedLng = parseFloat(lng);
+      if (isNaN(parsedLat) || isNaN(parsedLng)) return;
+
+      const [rows] = await pool.query(
+        'SELECT staff_id FROM deliveries WHERE id = ?',
+        [deliveryId]
+      );
+      if (!rows.length) return;
+      if (socket.user.role !== 'admin' && socket.user.id !== rows[0].staff_id) return;
+
+      // Persist to database
+      await pool.query(
+        'UPDATE deliveries SET last_lat = ?, last_lng = ?, location_updated_at = NOW() WHERE id = ?',
+        [parsedLat, parsedLng, deliveryId]
+      );
+
+      const locPayload = { deliveryId: parseInt(deliveryId), delivery_id: parseInt(deliveryId), lat: parsedLat, lng: parsedLng, timestamp: Date.now() };
+      io.to(`delivery_${deliveryId}`).emit('location', locPayload);
+      io.to(`delivery_${deliveryId}`).emit('location_update', locPayload);
+    } catch (err) {
+      console.error('[SOCKET] location_update error:', err.message);
+    }
+  });
+
+  socket.on('disconnect', () => {});
+});
+
+// ─── Error handling ─────────────────────────────────
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err.message);
+  res.status(500).json({ success: false, error: 'Internal server error' });
+});
+
+// ─── Serve React frontend in production ─────────────
+if (process.env.NODE_ENV === 'production') {
+  const clientBuildPath = path.join(__dirname, '..', '..', 'client', 'dist');
+  app.use(express.static(clientBuildPath));
+  // React Router SPA fallback — any non-API route serves index.html
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
+  });
+}
+
+// 404 handler (API routes only in production)
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: `Route ${req.method} ${req.url} not found` });
+});
+
+// ─── Graceful shutdown ──────────────────────────────
+const gracefulShutdown = (signal) => {
+  console.log(`\n${signal} received — shutting down gracefully...`);
+  server.close(() => {
+    pool.end().then(() => {
+      console.log('Database pool closed.');
+      process.exit(0);
+    });
+  });
+  // Force exit after 10s
+  setTimeout(() => process.exit(1), 10_000);
+};
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ─── Start server ───────────────────────────────────
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`\n🚗 O3 Car Spa API running on port ${PORT}`);
+  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`   Allowed origins: ${allowedOrigins.join(', ')}\n`);
+
+  if (!process.env.MSG91_AUTH_KEY) {
+    console.warn('[WARNING] MSG91_AUTH_KEY not set — messaging in mock mode');
+  }
+  if (!process.env.JWT_SECRET) {
+    console.error('[FATAL] JWT_SECRET not set — authentication will fail');
+  }
+
+  // Initialize cron jobs
+  const cronService = require('./services/cronService');
+  cronService.initCronJobs();
+});
+
+module.exports = { app, io };
