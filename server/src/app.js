@@ -1,5 +1,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const validateEnv = require('./config/validateEnv');
+validateEnv();
 
 // Process-level error resilience: prevents server crashes on unexpected runtime exceptions
 process.on('uncaughtException', (err) => {

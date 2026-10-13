@@ -16,5 +16,8 @@ sessions/
 server/sessions/
 *.pem
 *.key
+uploads/
+server/uploads/*
+!server/uploads/.gitkeep
 
 

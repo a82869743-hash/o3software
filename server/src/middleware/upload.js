@@ -6,14 +6,12 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Ensure uploads directory exists
-const UPLOAD_DIR = path.join(__dirname, '..', '..', '..', 'client', 'dist', 'uploads');
-const UPLOAD_DIR_DEV = path.join(__dirname, '..', '..', 'uploads');
+// Ensure persistent uploads directory exists outside client bundle
+const UPLOAD_DIR = process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads');
 
 function getUploadDir() {
-  const dir = process.env.NODE_ENV === 'production' ? UPLOAD_DIR : UPLOAD_DIR_DEV;
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  return UPLOAD_DIR;
 }
 
 const storage = multer.diskStorage({

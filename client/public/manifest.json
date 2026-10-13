@@ -1,0 +1,22 @@
+{
+  "short_name": "O3 Car Spaa",
+  "name": "O3 Car Spaa — Detailing Studio ERP",
+  "description": "Multi-Franchise Automotive Detailing Studio ERP, CRM & Leads Hub",
+  "icons": [
+    {
+      "src": "/assets/logo.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/assets/logo.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "display": "standalone",
+  "orientation": "portrait"
+}
