@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { logAudit } = require('./auditController');
 
 function parseDateRobust(dateStr) {
   if (!dateStr) return null;
@@ -29,9 +30,12 @@ exports.list = async (req, res) => {
     const { search, page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const franchiseId = req.headers['x-franchise-id'] ? parseInt(req.headers['x-franchise-id'], 10) : 1;
-    let where = "u.role = 'customer' AND u.is_active = 1 AND (u.franchise_id = ? OR (u.franchise_id IS NULL AND ? = 1))";
-    const params = [franchiseId, franchiseId];
+    // Multi-tenant franchise isolation
+    const fCond = req.getFranchiseCondition
+      ? req.getFranchiseCondition('u.franchise_id')
+      : { clause: ' AND (u.franchise_id = ? OR (u.franchise_id IS NULL AND ? = 1))', params: [req.franchiseId || 1, req.franchiseId || 1] };
+    let where = "u.role = 'customer' AND u.is_active = 1" + fCond.clause;
+    const params = [...fCond.params];
 
     if (search) {
       const s = `%${search.trim()}%`;
@@ -39,9 +43,9 @@ exports.list = async (req, res) => {
       params.push(s, s, s, s, s, s);
     }
 
-
     const [rows] = await pool.query(`
-      SELECT u.id, u.name, u.mobile, u.email, u.created_at, u.is_active
+      SELECT u.id, u.name, u.mobile, u.email, u.franchise_id, u.created_at, u.is_active,
+             u.custom_discount_type, u.custom_discount_value, u.crm_notes
       FROM users u
       WHERE ${where}
       ORDER BY u.created_at DESC
@@ -78,35 +82,295 @@ exports.list = async (req, res) => {
   }
 };
 
-// ─── GET CUSTOMER DETAILS & HISTORY ─────────────
+// ─── GET CUSTOMER DETAILS & FULL CRM PROFILE ────
 exports.getDetail = async (req, res) => {
   try {
     const { id } = req.params;
 
     // 1. Get user details
-    const [userRows] = await pool.query("SELECT id, name, mobile, email, created_at, is_active FROM users WHERE id = ? AND role = 'customer'", [id]);
+    const [userRows] = await pool.query(
+      `SELECT id, name, mobile, email, franchise_id, created_at, is_active,
+              custom_discount_type, custom_discount_value, crm_notes
+       FROM users WHERE id = ? AND role = 'customer'`,
+      [id]
+    );
     if (!userRows.length) {
       return res.status(404).json({ success: false, error: 'Customer not found' });
     }
     const customer = userRows[0];
 
+    // Multi-tenant check
+    if (!req.isSuperAdmin && customer.franchise_id && req.franchiseId && parseInt(customer.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot access customer from another franchise' });
+    }
+
     // 2. Get vehicles
-    const [vehicles] = await pool.query("SELECT * FROM vehicles WHERE customer_id = ?", [id]);
+    const [vehicles] = await pool.query(
+      "SELECT * FROM vehicles WHERE customer_id = ? ORDER BY is_primary DESC, created_at ASC",
+      [id]
+    );
     
     // 3. Get history notes
-    const [notes] = await pool.query("SELECT id, note, created_at FROM customer_notes WHERE customer_id = ? ORDER BY created_at DESC", [id]);
+    const [notes] = await pool.query(
+      "SELECT id, note, created_at FROM customer_notes WHERE customer_id = ? ORDER BY created_at DESC",
+      [id]
+    );
+
+    // 4. Get full service history (Job Cards)
+    const [jobCards] = await pool.query(
+      `SELECT jc.id, jc.visit_date, jc.visit_number, jc.status, jc.subtotal, jc.total_amount,
+              jc.invoice_number, jc.discount_type, jc.discount_value, jc.discount_amount,
+              jc.discount_reason, jc.discount_reference, jc.completed_at, jc.referral_person,
+              v.registration_no, v.brand, v.model
+       FROM job_carts jc
+       JOIN vehicles v ON jc.vehicle_id = v.id
+       WHERE v.customer_id = ?
+       ORDER BY jc.visit_date DESC, jc.id DESC`,
+      [id]
+    );
+
+    // Attach services for each job card
+    if (jobCards.length > 0) {
+      const jcIds = jobCards.map(jc => jc.id);
+      const [allServices] = await pool.query(
+        `SELECT job_cart_id, service_name, service_price, labor_charges, custom_price, custom_notes
+         FROM job_services
+         WHERE job_cart_id IN (?)
+         ORDER BY id ASC`,
+        [jcIds]
+      );
+      jobCards.forEach(jc => {
+        jc.services = allServices.filter(s => s.job_cart_id === jc.id);
+      });
+    }
+
+    // 5. Get assigned packages and remaining service usage
+    const [packages] = await pool.query(
+      `SELECT up.*, p.name AS package_name, p.description AS package_description,
+              v.registration_no, v.brand, v.model
+       FROM user_packages up
+       JOIN packages p ON up.package_id = p.id
+       LEFT JOIN vehicles v ON up.vehicle_id = v.id
+       WHERE up.user_id = ?
+       ORDER BY up.created_at DESC`,
+      [id]
+    );
+
+    if (packages.length > 0) {
+      const upIds = packages.map(p => p.id);
+      const [allUsage] = await pool.query(
+        `SELECT * FROM package_usage WHERE user_package_id IN (?) ORDER BY id ASC`,
+        [upIds]
+      );
+      packages.forEach(p => {
+        p.usage = allUsage.filter(u => u.user_package_id === p.id);
+      });
+    }
+
+    // 6. Get Loyalty Balance
+    const [loyaltyRows] = await pool.query('SELECT * FROM loyalty WHERE customer_id = ?', [id]);
+    const loyalty = loyaltyRows[0] || { credits: 0, free_washes: 0, wax_count: 0, points: 0 };
 
     res.json({
       success: true,
       data: {
         ...customer,
         vehicles,
-        notes
+        notes,
+        service_history: jobCards,
+        packages,
+        loyalty
       }
     });
   } catch (err) {
     console.error('Customer detail error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// ─── UPDATE CUSTOMER (CRM Profile, Discounts, Notes) ────
+exports.updateCustomer = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { id } = req.params;
+    const {
+      name,
+      email,
+      mobile,
+      custom_discount_type,
+      custom_discount_value,
+      crm_notes
+    } = req.body;
+
+    const [existing] = await conn.query('SELECT * FROM users WHERE id = ? AND role = \'customer\'', [id]);
+    if (!existing.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
+    const old = existing[0];
+
+    // Franchise check
+    if (!req.isSuperAdmin && old.franchise_id && req.franchiseId && parseInt(old.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      await conn.rollback();
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot edit customer from another franchise' });
+    }
+
+    let dType = custom_discount_type;
+    if (dType !== undefined && !['percentage', 'fixed', 'none'].includes(dType)) {
+      dType = 'none';
+    }
+
+    let dVal = custom_discount_value !== undefined ? parseFloat(custom_discount_value) : old.custom_discount_value;
+    if (isNaN(dVal) || dVal < 0) dVal = 0;
+    if (dType === 'percentage' && dVal > 100) dVal = 100;
+
+    await conn.query(
+      `UPDATE users SET
+        name = COALESCE(?, name),
+        email = ?,
+        mobile = COALESCE(?, mobile),
+        custom_discount_type = COALESCE(?, custom_discount_type),
+        custom_discount_value = ?,
+        crm_notes = COALESCE(?, crm_notes)
+       WHERE id = ?`,
+      [
+        name ? name.trim() : null,
+        email !== undefined ? (email ? email.trim() : null) : old.email,
+        mobile ? mobile.trim() : null,
+        dType !== undefined ? dType : null,
+        dVal,
+        crm_notes !== undefined ? (crm_notes ? crm_notes.trim() : null) : null,
+        id
+      ]
+    );
+
+    // If CRM notes added or changed, log to customer_notes
+    if (crm_notes && crm_notes.trim() && crm_notes.trim() !== (old.crm_notes || '')) {
+      await conn.query(
+        'INSERT INTO customer_notes (customer_id, note) VALUES (?, ?)',
+        [id, `CRM Note Updated: ${crm_notes.trim()}`]
+      );
+    }
+
+    // Audit discount update
+    if (dType !== old.custom_discount_type || dVal !== parseFloat(old.custom_discount_value)) {
+      await logAudit(
+        req.user?.id,
+        'CUSTOMER_DISCOUNT_UPDATED',
+        'users',
+        id,
+        {
+          old_discount_type: old.custom_discount_type,
+          old_discount_value: old.custom_discount_value,
+          new_discount_type: dType || old.custom_discount_type,
+          new_discount_value: dVal
+        },
+        req.ip
+      );
+    }
+
+    await conn.commit();
+    res.json({ success: true, message: 'Customer CRM profile updated successfully' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('updateCustomer error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  } finally {
+    conn.release();
+  }
+};
+
+// ─── ASSIGN PACKAGE TO CUSTOMER DIRECTLY ────────
+exports.assignPackage = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { id } = req.params;
+    const { package_id, vehicle_id, price_paid, start_date, end_date, custom_services } = req.body;
+
+    if (!package_id) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Package is required' });
+    }
+
+    const [custRows] = await conn.query('SELECT id, franchise_id FROM users WHERE id = ?', [id]);
+    if (!custRows.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
+
+    const [pkgRows] = await conn.query('SELECT * FROM packages WHERE id = ?', [package_id]);
+    if (!pkgRows.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Package not found' });
+    }
+    const pkg = pkgRows[0];
+
+    let startDate = parseDateRobust(start_date) || new Date();
+    let endDate = parseDateRobust(end_date);
+    if (!endDate) {
+      const lowerPkg = pkg.name.toLowerCase();
+      const durationMonths = lowerPkg.includes('bronze') ? 3 : (lowerPkg.includes('silver') ? 5 : 12);
+      endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + durationMonths);
+    }
+
+    // Insert user_package
+    const [upResult] = await conn.query(
+      `INSERT INTO user_packages 
+       (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_id)
+       VALUES (?, ?, ?, ?, 'paid', 'active', ?, ?)`,
+      [id, package_id, startDate, endDate, parseFloat(price_paid) || parseFloat(pkg.price || 0), vehicle_id || null]
+    );
+    const userPackageId = upResult.insertId;
+
+    // Handle package usage services
+    if (custom_services && Array.isArray(custom_services) && custom_services.length > 0) {
+      for (const item of custom_services) {
+        const total = parseInt(item.total_count) || parseInt(item.count) || 1;
+        const used = parseInt(item.used_count) || 0;
+        await conn.query(
+          "INSERT INTO package_usage (user_package_id, service_name, used_count, usage_status) VALUES (?, ?, ?, ?)",
+          [userPackageId, item.service_name, used, used >= total ? 'consumed' : 'available']
+        );
+      }
+    } else {
+      const { getServiceBreakdown } = require('./userPackagesController');
+      try {
+        const pkgServices = await getServiceBreakdown(conn, package_id);
+        for (const item of pkgServices) {
+          await conn.query(
+            "INSERT INTO package_usage (user_package_id, service_name, used_count, usage_status) VALUES (?, ?, 0, 'available')",
+            [userPackageId, item.service_name]
+          );
+        }
+      } catch (e) {
+        console.warn('Fallback inserting standard package service');
+        await conn.query(
+          "INSERT INTO package_usage (user_package_id, service_name, used_count, usage_status) VALUES (?, ?, 0, 'available')",
+          [userPackageId, pkg.name]
+        );
+      }
+    }
+
+    await conn.query(
+      "INSERT INTO customer_notes (customer_id, note) VALUES (?, ?)",
+      [id, `Assigned Package: ${pkg.name} (Valid till ${endDate.toISOString().slice(0, 10)})`]
+    );
+
+    await conn.commit();
+    res.status(201).json({
+      success: true,
+      message: `Package ${pkg.name} assigned successfully`,
+      data: { user_package_id: userPackageId }
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error('assignPackage error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  } finally {
+    conn.release();
   }
 };
 
@@ -142,7 +406,6 @@ exports.createManual = async (req, res) => {
   try {
     await connection.beginTransaction();
     const { name, mobile, email, brand, model, category, registration_no, package_id, price, package_custom_services, package_start_date, package_end_date } = req.body;
-    console.log('MANUAL REGISTRATION BODY:', { package_start_date, package_end_date, body: req.body });
 
     if (!name || !mobile) {
       return res.status(400).json({ success: false, error: 'Name and mobile are required' });
@@ -155,8 +418,8 @@ exports.createManual = async (req, res) => {
       customerId = existing[0].id;
     } else {
       const [userResult] = await connection.query(
-        "INSERT INTO users (name, mobile, email, role, password_hash) VALUES (?, ?, ?, 'customer', 'manual')",
-        [name, mobile, email || null]
+        "INSERT INTO users (name, mobile, email, role, password_hash, franchise_id) VALUES (?, ?, ?, 'customer', 'manual', ?)",
+        [name, mobile, email || null, req.franchiseId || 1]
       );
       customerId = userResult.insertId;
     }
@@ -179,11 +442,9 @@ exports.createManual = async (req, res) => {
 
       if (existingVeh.length > 0) {
         vehicleId = existingVeh[0].id;
-        // Mark as primary
         await connection.query("UPDATE vehicles SET is_primary = 0 WHERE customer_id = ?", [customerId]);
         await connection.query("UPDATE vehicles SET is_primary = 1 WHERE id = ?", [vehicleId]);
       } else {
-        // make existing vehicles non-primary
         await connection.query("UPDATE vehicles SET is_primary = 0 WHERE customer_id = ?", [customerId]);
         
         const [vehResult] = await connection.query(
@@ -209,13 +470,6 @@ exports.createManual = async (req, res) => {
         finalEndDate.setMonth(finalEndDate.getMonth() + durationMonths);
       }
 
-      // Auto approve
-      await connection.query(
-        "INSERT INTO package_requests (customer_id, vehicle_id, package_id, status, price, created_at, approved_at) VALUES (?, ?, ?, 'approved', ?, ?, ?)",
-        [customerId, vehicleId, package_id, price || 0, finalStartDate, finalStartDate]
-      );
-      
-      // Also insert into user_packages so the user actually gets the package!
       const [upResult] = await connection.query(
         `INSERT INTO user_packages 
          (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_segment, vehicle_id)
@@ -224,7 +478,6 @@ exports.createManual = async (req, res) => {
       );
       const userPackageId = upResult.insertId;
 
-      // Handle package custom services remaining balances
       if (package_custom_services && Array.isArray(package_custom_services)) {
         for (const item of package_custom_services) {
           const total = parseInt(item.total_count) || 0;
@@ -239,18 +492,22 @@ exports.createManual = async (req, res) => {
         }
       } else {
         const { getServiceBreakdown } = require('./userPackagesController');
-        const pkgServices = await getServiceBreakdown(connection, package_id);
-        for (const item of pkgServices) {
-          await connection.query(
-            "INSERT INTO package_usage (user_package_id, service_name, used_count, usage_status) VALUES (?, ?, 0, 'available')",
-            [userPackageId, item.service_name]
-          );
+        try {
+          const pkgServices = await getServiceBreakdown(connection, package_id);
+          for (const item of pkgServices) {
+            await connection.query(
+              "INSERT INTO package_usage (user_package_id, service_name, used_count, usage_status) VALUES (?, ?, 0, 'available')",
+              [userPackageId, item.service_name]
+            );
+          }
+        } catch (e) {
+          // fallback
         }
       }
       
       await connection.query(
         "INSERT INTO customer_notes (customer_id, note) VALUES (?, ?)",
-        [customerId, `Walk-in customer registered with manual package assignment (Package ID: ${package_id}).`]
+        [customerId, `Walk-in customer registered with manual package assignment (${packageName}).`]
       );
     } else {
       await connection.query(
@@ -324,6 +581,7 @@ exports.listManual = async (req, res) => {
   }
 };
 
+// ─── LOOKUP CUSTOMER BY MOBILE ─────────────────
 exports.lookupByMobile = async (req, res) => {
   try {
     const { mobile } = req.params;
@@ -331,9 +589,9 @@ exports.lookupByMobile = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Mobile number is required' });
     }
 
-    // Find customer by mobile
     const [users] = await pool.query(
-      "SELECT id, name, email FROM users WHERE mobile = ? AND role = 'customer' AND is_active = 1",
+      `SELECT id, name, email, mobile, custom_discount_type, custom_discount_value, crm_notes
+       FROM users WHERE mobile = ? AND role = 'customer' AND is_active = 1`,
       [mobile]
     );
 
@@ -343,9 +601,8 @@ exports.lookupByMobile = async (req, res) => {
 
     const customer = users[0];
 
-    // Find their primary vehicle (or latest registered vehicle)
     const [vehicles] = await pool.query(
-      "SELECT brand, model, category, registration_no FROM vehicles WHERE customer_id = ? ORDER BY is_primary DESC, id DESC LIMIT 1",
+      "SELECT id, brand, model, category, registration_no FROM vehicles WHERE customer_id = ? ORDER BY is_primary DESC, id DESC LIMIT 1",
       [customer.id]
     );
 
@@ -356,6 +613,10 @@ exports.lookupByMobile = async (req, res) => {
         id: customer.id,
         name: customer.name,
         email: customer.email,
+        mobile: customer.mobile,
+        custom_discount_type: customer.custom_discount_type,
+        custom_discount_value: customer.custom_discount_value,
+        crm_notes: customer.crm_notes,
         vehicle: vehicles.length ? vehicles[0] : null
       }
     });
@@ -364,4 +625,3 @@ exports.lookupByMobile = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
-

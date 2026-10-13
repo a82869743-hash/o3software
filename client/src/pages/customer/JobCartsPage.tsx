@@ -104,8 +104,35 @@ export default function CustomerJobCartsPage() {
                   {isOpen && (
                     <div className="px-5 pb-5 border-t border-gray-100 animate-fade-in">
                       <div className="py-3">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Services</p>
-                        <p className="text-sm text-[#5f5e5e]">{cart.services_count} service(s) · Total: {formatINR(cart.total_amount)}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Services Performed</p>
+                        {cart.services && cart.services.length > 0 ? (
+                          <div className="space-y-1.5 mb-2">
+                            {cart.services.map((s: any, sIdx: number) => (
+                              <div key={s.id || sIdx} className="flex items-center justify-between text-xs py-1.5 px-3 bg-gray-50 rounded-lg border border-gray-100">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-bold text-[#0F172A]">{s.service_name}</span>
+                                  {s.custom_notes && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200">
+                                      📝 {s.custom_notes}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="font-extrabold text-[#0F172A]">
+                                  {formatINR(s.custom_price || s.service_price || 0)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-[#5f5e5e]">{cart.services_count || 1} service(s) · Total: {formatINR(cart.total_amount)}</p>
+                        )}
+
+                        {cart.discount_amount > 0 && (
+                          <div className="mt-2 p-2 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 flex justify-between items-center">
+                            <span>Discount Applied {cart.discount_reason ? `(${cart.discount_reason})` : ''}</span>
+                            <span className="font-bold">- {formatINR(cart.discount_amount)}</span>
+                          </div>
+                        )}
                       </div>
 
                       {cart.status === 'complete' && (

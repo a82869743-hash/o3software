@@ -78,7 +78,7 @@ export const useCompleteJobCart = () => {
 export const useAddService = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...body }: { id: number; service_name: string; service_price: number; labor_charges: number; products?: any[] }) => {
+    mutationFn: async ({ id, ...body }: { id: number; service_name: string; service_price: number; labor_charges: number; custom_notes?: string; products?: any[] }) => {
       const res = await api.post(`/job-carts/${id}/services`, body);
       return res.data.data;
     },

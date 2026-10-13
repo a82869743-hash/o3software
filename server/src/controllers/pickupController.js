@@ -127,7 +127,7 @@ exports.assign = async (req, res) => {
         ? new Date(pickup.scheduled_time).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })
         : 'scheduled time';
       
-      const driverMsg = `O3 Car Spa: Hi ${staff.name}, you have been assigned to pick up vehicle for booking #${pickup.booking_id} from ${customer.name}. Address: ${pickup.address}. Scheduled Time: ${timeStr}.`;
+      const driverMsg = `O3 Car Spaa: Hi ${staff.name}, you have been assigned to pick up vehicle for booking #${pickup.booking_id} from ${customer.name}. Address: ${pickup.address}. Scheduled Time: ${timeStr}.`;
       messagingService.sendWhatsApp(staff.mobile, null, { body: driverMsg }).catch(() => {});
     }
 
@@ -170,7 +170,7 @@ exports.markPickedUp = async (req, res) => {
         if (driverRows.length) driverName = driverRows[0].name;
       }
 
-      const custMsg = `🚙 *Vehicle Picked Up*\n\nHi ${customer.name},\nYour vehicle has been successfully picked up by ${driverName} for Booking #${pickup.booking_id} and is on the way to the studio.\n\nThank you, O3 Car Spa!`;
+      const custMsg = `🚙 *Vehicle Picked Up*\n\nHi ${customer.name},\nYour vehicle has been successfully picked up by ${driverName} for Booking #${pickup.booking_id} and is on the way to the studio.\n\nThank you, O3 Car Spaa!`;
       messagingService.sendWhatsApp(customer.mobile, null, { body: custMsg }).catch(() => {});
     }
 

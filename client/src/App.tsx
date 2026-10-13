@@ -12,6 +12,9 @@ import ProtectedRoute from './router/ProtectedRoute';
 import RoleRoute from './router/RoleRoute';
 import SuperAdminRoute from './router/SuperAdminRoute';
 import ToastContainer from './components/shared/Toast';
+import ImpersonationBanner from './components/shared/ImpersonationBanner';
+import ForcePasswordChangeModal from './components/shared/ForcePasswordChangeModal';
+import NoAccessPage from './pages/shared/NoAccessPage';
 
 import AllJobCardsPage from './pages/admin/AllJobCardsPage';
 import JobCartCreatePage from './pages/admin/JobCartCreatePage';
@@ -99,6 +102,7 @@ import PackageAlertsPage from './pages/admin/PackageAlertsPage';
 import PendingPaymentsPage from './pages/admin/PendingPaymentsPage';
 import FranchiseStockApprovalsPage from './pages/admin/FranchiseStockApprovalsPage';
 import FranchiseStockOrdersPage from './pages/admin/FranchiseStockOrdersPage';
+import FranchiseManagementPage from './pages/admin/FranchiseManagementPage';
 
 
 // Phase 5 pages
@@ -277,7 +281,9 @@ export default function App() {
   const getDefaultRedirect = () => {
     if (!isAuthenticated || !user) return '/login';
     const redirects: Record<string, string> = {
+      super_admin: '/admin',
       admin: '/admin',
+      manager: '/admin',
       customer: '/customer',
       staff: '/staff/job-carts',
     };
@@ -286,8 +292,12 @@ export default function App() {
 
   return (
     <>
+      <ImpersonationBanner />
+      <ForcePasswordChangeModal />
       <ToastContainer />
       <Routes>
+      {/* 403 Access Denied */}
+      <Route path="/403" element={<NoAccessPage />} />
       {/* Public routes */}
       <Route path="/login" element={
         isAuthenticated ? <Navigate to={getDefaultRedirect()} replace /> : <LoginPage />
@@ -359,6 +369,7 @@ export default function App() {
         <Route path="pending-payments" element={<PendingPaymentsPage />} />
         <Route path="stock-approvals" element={<SuperAdminRoute><FranchiseStockApprovalsPage /></SuperAdminRoute>} />
         <Route path="franchise-orders" element={<FranchiseStockOrdersPage />} />
+        <Route path="franchises" element={<SuperAdminRoute><FranchiseManagementPage /></SuperAdminRoute>} />
       </Route>
 
 

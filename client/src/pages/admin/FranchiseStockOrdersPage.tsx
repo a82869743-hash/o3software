@@ -70,18 +70,23 @@ export default function FranchiseStockOrdersPage() {
       
       // 1. Fetch Main Studio inventory for Franchise wholesale ordering
       const catalogRes = await api.get('/inventory?franchise_id=1');
-      if (catalogRes.data.success) {
+      if (catalogRes.data?.success) {
         setCatalog(catalogRes.data.data || []);
+      } else {
+        setCatalog([]);
       }
 
       // 2. Fetch franchise stock orders history
       const ordersRes = await api.get('/stock-requests');
-      if (ordersRes.data.success) {
+      if (ordersRes.data?.success) {
         setOrders(ordersRes.data.data || []);
+      } else {
+        setOrders([]);
       }
     } catch (err) {
-      console.error(err);
-      toast('error', 'Failed to load stock catalog or order history.');
+      console.warn('Initial load catalog or orders notice:', err);
+      setCatalog([]);
+      setOrders([]);
     } finally {
       setLoading(false);
     }

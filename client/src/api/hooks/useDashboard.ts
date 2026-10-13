@@ -1,14 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import api from '../axiosInstance';
 
-export const useDashboardStats = () =>
+export const useDashboardStats = (params?: { timeframe?: string; franchise_id?: string | number }) =>
   useQuery({
-    queryKey: ['dashboard', 'stats'],
+    queryKey: ['dashboard', 'stats', params?.timeframe || 'today', params?.franchise_id || 'default'],
     queryFn: async () => {
-      const res = await api.get('/dashboard/stats');
+      const res = await api.get('/dashboard/stats', { params });
       return res.data.data;
     },
-    refetchInterval: 60_000, // Auto-refresh every 60s
+    refetchInterval: 30_000, // Auto-refresh every 30s
   });
 
 export const useCustomerDashboard = () =>
@@ -18,5 +18,5 @@ export const useCustomerDashboard = () =>
       const res = await api.get('/dashboard/customer');
       return res.data.data;
     },
-    refetchInterval: 120_000, // Auto-refresh every 2 min
+    refetchInterval: 60_000, // Auto-refresh every 60s
   });

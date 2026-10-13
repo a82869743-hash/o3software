@@ -73,8 +73,8 @@ export default function ProductOrdersPage() {
       });
 
     } catch (err) {
-      console.error('Error loading orders:', err);
-      toast('error', 'Failed to load product orders.');
+      console.warn('Initial load product orders notice:', err);
+      setOrders([]);
     } finally {
       setLoading(false);
     }

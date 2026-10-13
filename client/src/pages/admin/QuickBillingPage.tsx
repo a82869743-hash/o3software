@@ -26,6 +26,8 @@ const schema = z.object({
   description: z.string().optional(),
   discount_type: z.enum(['fixed', 'percentage']).optional(),
   discount_value: z.number().min(0).optional(),
+  discount_reason: z.string().optional(),
+  discount_reference: z.string().optional(),
   gst_type: z.enum(['with_gst', 'none']).optional(),
   gst_pct: z.number().min(0).optional(),
   items: z.array(z.object({
@@ -66,6 +68,8 @@ export default function QuickBillingPage() {
       items: [],
       discount_type: 'fixed',
       discount_value: 0,
+      discount_reason: '',
+      discount_reference: '',
       gst_type: 'with_gst',
       gst_pct: 18,
       payment_method: 'cash',
@@ -191,6 +195,14 @@ export default function QuickBillingPage() {
       const payloadServices = data.items.filter(i => i.type === 'service').map(i => ({ service_name: i.name, price: i.price }));
       const payloadProducts = data.items.filter(i => i.type === 'product').map(i => ({ id: i.id, product_name: i.name, price: i.price, quantity: i.quantity }));
 
+      if ((data.discount_value || 0) > 0) {
+        if (!data.discount_reason?.trim() || !data.discount_reference?.trim()) {
+          toast.error('Discount reason and approved/referred by are mandatory');
+          setSubmitting(false);
+          return;
+        }
+      }
+
       const payload = {
         customer_id: matchedCustomer?.id,
         customer_name: data.customer_name,
@@ -199,6 +211,8 @@ export default function QuickBillingPage() {
         amount: total,
         discount_type: data.discount_type,
         discount_value: data.discount_value,
+        discount_reason: data.discount_reason,
+        discount_reference: data.discount_reference,
         gst_type: data.gst_type,
         gst_pct: data.gst_pct,
         services: payloadServices,
@@ -650,6 +664,29 @@ export default function QuickBillingPage() {
                     />
                   </div>
                 </div>
+
+                {discountValue > 0 && (
+                  <div className="space-y-2 p-2.5 bg-amber-50 rounded-xl border border-amber-200">
+                    <div>
+                      <label className="text-[10px] font-bold text-amber-900 uppercase">Discount Reason *</label>
+                      <input
+                        type="text"
+                        {...register("discount_reason")}
+                        placeholder="e.g. Regular Customer / Festive Offer"
+                        className="w-full text-xs p-1.5 mt-1 border border-amber-300 rounded bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-amber-900 uppercase">Approved / Referred By *</label>
+                      <input
+                        type="text"
+                        {...register("discount_reference")}
+                        placeholder="e.g. Approved by Sodhi Sir / Reference"
+                        className="w-full text-xs p-1.5 mt-1 border border-amber-300 rounded bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
                 
                 {discountAmount > 0 && (
                   <div className="flex justify-between text-sm text-green-600">

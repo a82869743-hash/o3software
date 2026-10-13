@@ -74,8 +74,8 @@ export default function ForgotPasswordPage() {
       <div className="hidden lg:flex w-1/2 bg-[#0F172A] relative overflow-hidden items-center justify-center pattern-overlay">
         <div className="absolute inset-0 bg-gradient-to-br from-[#2563EB]/15 via-transparent to-[#2563EB]/5 animate-gradient-shift" />
         <div className="relative z-10 px-16 max-w-md">
-          <div className="mb-6"><img src="/assets/logo.png" alt="O3 Car Spa" className="w-48 h-auto drop-shadow-lg" /></div>
-          <h1 className="text-4xl font-black text-white tracking-tight leading-tight">O3 Car Spa</h1>
+          <div className="mb-6"><img src="/assets/logo.png" alt="O3 Car Spaa" className="w-48 h-auto drop-shadow-lg" /></div>
+          <h1 className="text-4xl font-black text-white tracking-tight leading-tight">O3 Car Spaa</h1>
           <div className="w-16 h-1 bg-gradient-to-r from-[#2563EB] to-[#3B82F6] mt-6 mb-6 rounded-full" />
           <p className="text-gray-400 text-sm leading-relaxed font-medium">Reset your password securely with OTP verification.</p>
           <div className="mt-10 space-y-3">
@@ -98,8 +98,8 @@ export default function ForgotPasswordPage() {
       <div className="w-full lg:w-1/2 flex items-center justify-center p-8">
         <div className="w-full max-w-md animate-fade-in-up">
           <div className="lg:hidden text-center mb-10">
-            <img src="/assets/logo.png" alt="O3 Car Spa" className="w-36 h-auto mx-auto mb-3" />
-            <h1 className="text-3xl font-black text-[#0F172A] tracking-tight">O3 Car Spa</h1>
+            <img src="/assets/logo.png" alt="O3 Car Spaa" className="w-36 h-auto mx-auto mb-3" />
+            <h1 className="text-3xl font-black text-[#0F172A] tracking-tight">O3 Car Spaa</h1>
             <div className="w-12 h-1 bg-[#2563EB] mx-auto mt-3 rounded-full" />
           </div>
 
@@ -182,7 +182,7 @@ export default function ForgotPasswordPage() {
               Remember your password?{' '}<Link to="/login" className="text-[#2563EB] font-bold hover:underline">Sign In</Link>
             </p>
           </div>
-          <div className="mt-8 text-center"><p className="text-[10px] text-[#5f5e5e] font-medium">O3 Car Spa v1.0 · Anand, Gujarat</p></div>
+          <div className="mt-8 text-center"><p className="text-[10px] text-[#5f5e5e] font-medium">O3 Car Spaa v1.0 · Anand, Gujarat</p></div>
         </div>
       </div>
     </div>

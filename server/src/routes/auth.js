@@ -21,6 +21,7 @@ router.get('/me', authMiddleware, authController.getMe);
 router.put('/profile', authMiddleware, authController.updateProfile);
 router.post('/profile/picture', authMiddleware, uploadMiddleware.single('picture'), authController.uploadProfilePicture);
 router.post('/change-password', authMiddleware, authController.changePassword);
+router.post('/logout', authMiddleware, authController.logout);
 router.post('/refresh', authMiddleware, authController.refreshToken);
 
 // Admin routes

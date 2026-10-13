@@ -67,6 +67,16 @@ exports.create = async (req, res) => {
        note || null, transaction_date, req.user.id]
     );
 
+    // Phase 5 Automation: Buy/Sell bill soft copy PDF auto-sent by WhatsApp/Email
+    try {
+      const notificationService = require('../services/notificationService');
+      notificationService.handleBuySellBillAutoSend(result.insertId, 'buy_sell').catch(bErr => {
+        console.error('[BuySellBillAutoSend] Dispatch error (non-blocking):', bErr.message);
+      });
+    } catch (bErr) {
+      console.error('[BuySellBillAutoSend] Dispatch error (non-blocking):', bErr.message);
+    }
+
     res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Record created' });
   } catch (err) {
     console.error('BuySell create error:', err);

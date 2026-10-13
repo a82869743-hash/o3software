@@ -190,7 +190,7 @@ export default function StaffHRPage() {
     printWindow.document.write(`
       <html>
         <head>
-          <title>O3 Car Spa - Salary Slip</title>
+          <title>O3 Car Spaa - Salary Slip</title>
           <style>
             body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 40px; color: #333; }
             .slip-card { border: 2px solid #eaeaea; padding: 30px; border-radius: 12px; max-width: 600px; margin: 0 auto; }
@@ -979,7 +979,7 @@ export default function StaffHRPage() {
             <>
               <div id="salary-slip-print">
                 <div className="header">
-                  <h2>O3 Car Spa</h2>
+                  <h2>O3 Car Spaa</h2>
                   <p>Car Detailing Studio | Vitthal Udyognagar, Anand</p>
                   <p style={{ marginTop: '3px', fontWeight: 'bold' }}>SALARY SLIP FOR {new Date(2000, slipModal?.month - 1).toLocaleString('default', { month: 'long' }).toUpperCase()} {slipModal?.year}</p>
                 </div>
@@ -1027,7 +1027,7 @@ export default function StaffHRPage() {
 
             <div className="footer">
               <p>This is a system generated salary slip and does not require a physical signature.</p>
-              <p>O3 Car Spa © {new Date().getFullYear()}</p>
+              <p>O3 Car Spaa © {new Date().getFullYear()}</p>
             </div>
           </div>
 

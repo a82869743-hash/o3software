@@ -10,8 +10,7 @@ import Button from '../../components/ui/Button';
 export default function FranchiseStockApprovalsPage() {
   const toast = useUIStore((s) => s.toast);
   const { user } = useAuthStore();
-  const activeFranchiseId = parseInt(localStorage.getItem('active_franchise_id') || '1', 10);
-  const isMainStudioAdmin = (user?.role === 'admin' || user?.role === 'super_admin') && (!user?.franchise_id || user?.franchise_id === 1) && activeFranchiseId === 1;
+  const isMainStudioAdmin = (user?.role === 'admin' || user?.role === 'super_admin') && (!user?.franchise_id || user?.franchise_id === 1);
 
   const [requests, setRequests] = useState<any[]>([]);
   const [franchises, setFranchises] = useState<any[]>([]);

@@ -163,8 +163,10 @@ async function generateInvoicePDF(jobCartId) {
       const amount = servicePrice + laborCharges + productsTotal;
       subtotal += amount;
 
+      const noteText = s.custom_notes ? ` [${s.custom_notes}]` : '';
+
       return {
-        name: (s.service_name || '').toUpperCase(),
+        name: `${(s.service_name || '').toUpperCase()}${noteText.toUpperCase()}`,
         qty: '1 PCS',
         rate: `₹${formatINR(amount)}`,
         amount: `₹${formatINR(amount)}`,
@@ -203,8 +205,8 @@ async function generateInvoicePDF(jobCartId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const serviceRowsHtml = serviceRows.map((s) => `
       <tr>
@@ -241,6 +243,8 @@ async function generateInvoicePDF(jobCartId) {
       discountAmt,
       discountType: cart.discount_type,
       discountValue: cart.discount_value,
+      discountReason: cart.discount_reason,
+      discountReference: cart.discount_reference,
       isWithGst,
       gstPct,
       gstAmt,
@@ -264,15 +268,29 @@ async function generateJobCardPDF(jobCartId) {
   try {
     const [carts] = await conn.query(`
       SELECT jc.*, v.registration_no, v.brand, v.model, v.registration_year, v.customer_id,
-             u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email
+             u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email,
+             m.name AS handler_name, t.name AS technician_name
       FROM job_carts jc
       JOIN vehicles v ON jc.vehicle_id = v.id
       JOIN users u ON v.customer_id = u.id
+      LEFT JOIN users m ON jc.handler_id = m.id
+      LEFT JOIN users t ON jc.technician_id = t.id
       WHERE jc.id = ?
     `, [jobCartId]);
 
     if (!carts.length) throw new Error('Job cart not found');
     const cart = carts[0];
+
+    let teamMemberNames = [];
+    if (cart.team_incentive_users) {
+      try {
+        const teamIds = typeof cart.team_incentive_users === 'string' ? JSON.parse(cart.team_incentive_users) : cart.team_incentive_users;
+        if (Array.isArray(teamIds) && teamIds.length > 0) {
+          const [teamUsers] = await conn.query('SELECT name FROM users WHERE id IN (?)', [teamIds]);
+          teamMemberNames = teamUsers.map(u => u.name);
+        }
+      } catch (e) { /* ignore */ }
+    }
 
     const [services] = await conn.query(`
       SELECT js.*, 
@@ -298,28 +316,42 @@ async function generateJobCardPDF(jobCartId) {
       totalQty += 1;
       grandTotal += amount;
 
+      const noteText = s.custom_notes ? ` [${s.custom_notes}]` : '';
+
       return {
-        name: (s.service_name || '').toUpperCase(),
+        name: `${(s.service_name || '').toUpperCase()}${noteText.toUpperCase()}`,
         qty: '1 PCS',
         rate: `₹${formatINR(amount)}`,
         amount: `₹${formatINR(amount)}`,
       };
     });
 
+    let discountAmt = 0;
+    if (cart.discount_type === 'percentage') {
+      discountAmt = grandTotal * (parseFloat(cart.discount_value || 0) / 100);
+    } else if (cart.discount_type === 'fixed') {
+      discountAmt = parseFloat(cart.discount_value || 0);
+    }
+    discountAmt = Math.min(grandTotal, Math.max(0, discountAmt));
+
     const advancePaid = parseFloat(cart.advance_paid) || 0;
     const balanceDue = (cart.balance_due !== undefined && cart.balance_due !== null)
       ? parseFloat(cart.balance_due)
-      : Math.max(0, grandTotal - advancePaid);
+      : Math.max(0, grandTotal - discountAmt - advancePaid);
 
-    const visitDateStr = cart.visit_date
-      ? new Date(cart.visit_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-      : new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const createdAtStr = cart.created_at
+      ? new Date(cart.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : (cart.visit_date ? new Date(cart.visit_date).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'));
+    const isEdited = cart.updated_at && cart.created_at && (new Date(cart.updated_at).getTime() - new Date(cart.created_at).getTime() > 1000);
+    const editedAtStr = isEdited
+      ? new Date(cart.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : null;
 
     const invoiceNumber = `JC-${cart.id}`;
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:75px;height:75px;object-fit:contain;" />`
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:75px;height:75px;object-fit:contain;" />`
       : `<div style="width:75px;height:75px;background:#2563EB;border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:18px;">O3</div>`;
 
     const serviceRowsHtml = serviceRows.length > 0 ? serviceRows.map((s) => `
@@ -376,7 +408,7 @@ async function generateJobCardPDF(jobCartId) {
         .inspector-pill { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 800; display: inline-block; margin-top: 6px; }
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         th { background: #f1f5f9; color: #334155; font-size: 10px; font-weight: 900; text-transform: uppercase; padding: 10px 14px; border-bottom: 2px solid #cbd5e1; }
-        .totals-box { margin-left: auto; width: 240px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; font-size: 11px; margin-bottom: 20px; }
+        .totals-box { margin-left: auto; width: 280px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; font-size: 11px; margin-bottom: 20px; }
         .totals-row { display: flex; justify-content: space-between; padding: 3px 0; font-weight: 700; }
         .belongings-box { background: #fffbebfb; border: 1px solid #fde68a; border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
         .signature-box { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 30px; pt: 20px; border-top: 1px solid #e2e8f0; }
@@ -388,7 +420,7 @@ async function generateJobCardPDF(jobCartId) {
         <div style="display:flex;align-items:center;gap:12px;">
           ${logoHtml}
           <div>
-            <div class="company-name">O3 Car Spa</div>
+            <div class="company-name">O3 Car Spaa</div>
             <div class="company-sub">Official Job Card & Vehicle Intake Inspection</div>
             <div style="font-size:10px;color:#64748b;margin-top:2px;">Anand Branch • Premier Detailing Studio</div>
           </div>
@@ -396,7 +428,8 @@ async function generateJobCardPDF(jobCartId) {
         <div>
           <div class="jc-title">JOB CARD</div>
           <div class="jc-number">JC #${cart.id}</div>
-          <div style="font-size:10px;color:#64748b;text-align:right;margin-top:4px;">Date: ${visitDateStr}</div>
+          <div style="font-size:10px;color:#0f172a;text-align:right;margin-top:4px;font-weight:700;">Created on: ${createdAtStr}</div>
+          ${editedAtStr ? `<div style="font-size:10px;color:#dc2626;text-align:right;margin-top:2px;font-weight:700;">Edited on: ${editedAtStr}</div>` : ''}
         </div>
       </div>
 
@@ -415,6 +448,17 @@ async function generateJobCardPDF(jobCartId) {
           <div class="info-row"><strong>Mobile:</strong> ${cart.customer_mobile || 'N/A'}</div>
           <div class="info-row"><strong>Email:</strong> ${cart.customer_email || 'N/A'}</div>
           <div class="info-row"><strong>Status:</strong> <span style="text-transform:uppercase;font-weight:800;color:#10b981;">${cart.status || 'open'}</span></div>
+        </div>
+
+        <!-- Arrival Capture & Staff Assignment Details -->
+        <div class="info-card" style="grid-column: span 2;">
+          <div class="info-title">Vehicle Arrival Capture & Staff Assignment</div>
+          <div style="display:grid;grid-template-columns: repeat(4, 1fr);gap:12px;margin-top:4px;">
+            <div class="info-row"><strong>Referral:</strong><br><span style="color:#0284c7;font-weight:700;">${cart.referral_person || 'Direct / Walk-in'}</span></div>
+            <div class="info-row"><strong>Handling Manager:</strong><br><span style="font-weight:700;">${cart.handler_name || 'Store Manager'}</span></div>
+            <div class="info-row"><strong>Lead Technician:</strong><br><span style="font-weight:700;">${cart.technician_name || 'Assigned Staff'}</span></div>
+            <div class="info-row"><strong>Team Incentive:</strong><br><span style="color:#475569;">${teamMemberNames.length > 0 ? teamMemberNames.join(', ') : 'None'}</span></div>
+          </div>
         </div>
       </div>
 
@@ -436,6 +480,16 @@ async function generateJobCardPDF(jobCartId) {
 
       <div class="totals-box">
         <div class="totals-row"><span>Estimated Total:</span> <span>₹${formatINR(grandTotal)}</span></div>
+        ${discountAmt > 0 ? `
+        <div class="totals-row" style="color:#0284c7;">
+          <span>Discount (${cart.discount_type === 'percentage' ? cart.discount_value + '%' : 'Fixed'}):</span>
+          <span>- ₹${formatINR(discountAmt)}</span>
+        </div>
+        ${cart.discount_reason ? `
+        <div style="font-size:9px;color:#64748b;margin:2px 0 4px;line-height:1.3;">
+          Reason: <strong>${cart.discount_reason}</strong>${cart.discount_reference ? ` (Ref: ${cart.discount_reference})` : ''}
+        </div>` : ''}
+        ` : ''}
         <div class="totals-row"><span>Advance Amount:</span> <span>₹${formatINR(advancePaid)}</span></div>
         <div class="totals-row" style="color:#2563eb;font-size:12px;font-weight:900;border-top:1px solid #e2e8f0;padding-top:4px;margin-top:4px;">
           <span>Balance Due:</span> <span>₹${formatINR(balanceDue)}</span>
@@ -457,7 +511,7 @@ async function generateJobCardPDF(jobCartId) {
             <strong>Declaration & Pre-Inspection Agreement:</strong><br/>
             1. All listed personal belongings have been verified by the inspector.<br/>
             2. Workshop is not liable for items not declared above.<br/>
-            3. Customer authorizes O3 Car Spa to perform the above detailing tasks.
+            3. Customer authorizes O3 Car Spaa to perform the above detailing tasks.
           </div>
           <div class="sig-line">Customer Signature</div>
         </div>
@@ -466,7 +520,7 @@ async function generateJobCardPDF(jobCartId) {
           <div style="font-size:9px;color:#64748b;line-height:1.4;text-align:right;">
             <strong>Verified & Authorized By:</strong><br/>
             Inspector: ${cart.pre_inspector_name || 'Quality Inspector'}<br/>
-            Studio Location: 03 Car Spa Anand Premises
+            Studio Location: O3 Car Spaa Anand Premises
           </div>
           <div class="sig-line">Inspector / Manager Signature</div>
         </div>
@@ -484,7 +538,7 @@ async function generateJobCardPDF(jobCartId) {
 }
 
 /**
- * Generate "Bill of Supply" PDF for Buy/Sell transactions matching exact O3 Car Spa template
+ * Generate "Bill of Supply" PDF for Buy/Sell transactions matching exact O3 Car Spaa template
  */
 async function generateBuySellInvoicePDF(buySellId) {
   const conn = await pool.getConnection();
@@ -500,8 +554,8 @@ async function generateBuySellInvoicePDF(buySellId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="max-width: 150px; height: auto;">`
-      : `<h1 style="margin:0;color:#c00;font-size:24px;">O3 CAR SPA</h1>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="max-width: 150px; height: auto;">`
+      : `<h1 style="margin:0;color:#c00;font-size:24px;">O3 CAR SPAA</h1>`;
 
     const grandTotal = parseFloat(record.total_amount) || 0;
     
@@ -534,7 +588,7 @@ async function generateBuySellInvoicePDF(buySellId) {
       <div class="header">
         <div>${logoHtml}</div>
         <div class="company-details">
-          <strong style="font-size: 14px;">${settings.studio_name || 'O3 Car Spa'}</strong><br>
+          <strong style="font-size: 14px;">${settings.studio_name || 'O3 Car Spaa'}</strong><br>
           ${settings.studio_address || 'Address line 1'}<br>
           Mobile: ${settings.studio_mobile || 'N/A'} | Email: ${settings.studio_email || 'N/A'}<br>
           ${settings.studio_gst ? `GSTIN: ${settings.studio_gst}` : ''}
@@ -630,8 +684,8 @@ async function generateManualBillPDF(billId) {
     const invoiceDate = new Date(bill.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const services = bill.services_json ? (typeof bill.services_json === 'string' ? JSON.parse(bill.services_json) : bill.services_json) : [];
     const products = bill.products_json ? (typeof bill.products_json === 'string' ? JSON.parse(bill.products_json) : bill.products_json) : [];
@@ -649,6 +703,12 @@ async function generateManualBillPDF(billId) {
       const total = price * qty;
       grandTotal += total;
       itemRows.push({ name: (p.product_name || p.name || 'Product').toUpperCase(), qty: `${qty} PCS`, rate: `₹${formatINR(price)}`, amount: `₹${formatINR(total)}` });
+    }
+
+    if (itemRows.length === 0 && (parseFloat(bill.grand_total) > 0 || parseFloat(bill.amount) > 0)) {
+      const amt = parseFloat(bill.grand_total || bill.amount || 0);
+      grandTotal = amt;
+      itemRows.push({ name: (bill.description || 'MANUAL COUNTER BILL').toUpperCase(), qty: '1 PCS', rate: `₹${formatINR(amt)}`, amount: `₹${formatINR(amt)}` });
     }
 
     let discountAmt = 0;
@@ -691,6 +751,10 @@ async function generateManualBillPDF(billId) {
       totalQty: itemRows.length,
       grandTotal,
       discountAmt,
+      discountType: bill.discount_type || 'fixed',
+      discountValue: bill.discount_value || 0,
+      discountReason: bill.discount_reason || '',
+      discountReference: bill.discount_reference || '',
       finalTotal,
       notes: bill.description || '',
     });
@@ -720,8 +784,8 @@ async function generateSalarySlipPDF(salaryId) {
     const invoiceDate = new Date(rec.created_at || Date.now()).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const base = parseFloat(rec.base_salary || 0);
     const bonus = parseFloat(rec.bonus || 0);
@@ -777,6 +841,8 @@ function buildInvoiceHTML({
   discountAmt = 0,
   discountType = 'fixed',
   discountValue = 0,
+  discountReason = '',
+  discountReference = '',
   isWithGst = false,
   gstPct = 18,
   gstAmt = 0,
@@ -863,7 +929,7 @@ function buildInvoiceHTML({
     <div class="company-header">
       <div class="company-logo">${logoHtml}</div>
       <div class="company-info">
-        <h1>O3 Car Spa</h1>
+        <h1>O3 Car Spaa</h1>
         <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
         <div class="gst-row">
           <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
@@ -920,14 +986,21 @@ function buildInvoiceHTML({
     <div class="bottom-grid">
       <div class="bank-section">
         <div class="bank-title">BANK DETAILS</div>
-        <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spa</span></div>
+        <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
         <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
         <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
         <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
       </div>
       <div class="amounts-section">
         <div class="amount-row"><span>Subtotal</span><span>₹ ${formatINR(grandTotal)}</span></div>
-        ${discountAmt > 0 ? `<div class="amount-row" style="color:#0284C7;"><span>Discount (${discountType === 'percentage' ? discountValue + '%' : 'Fixed'})</span><span>- ₹ ${formatINR(discountAmt)}</span></div>` : ''}
+        ${discountAmt > 0 ? `
+        <div class="amount-row" style="color:#0284C7;">
+          <div>
+            <span>Discount (${discountType === 'percentage' ? discountValue + '%' : 'Fixed'})</span>
+            ${discountReason ? `<div style="font-size:9px;color:#64748b;font-weight:normal;margin-top:2px;">Reason: ${discountReason}${discountReference ? ` (Ref: ${discountReference})` : ''}</div>` : ''}
+          </div>
+          <span>- ₹ ${formatINR(discountAmt)}</span>
+        </div>` : ''}
         ${isTaxInvoice ? `
         <div class="amount-row"><span>CGST (${gstPct / 2}%)</span><span>+ ₹ ${formatINR(cgstAmt)}</span></div>
         <div class="amount-row"><span>SGST (${gstPct / 2}%)</span><span>+ ₹ ${formatINR(sgstAmt)}</span></div>
@@ -957,7 +1030,7 @@ function buildInvoiceHTML({
       <div class="signatory-line">
         <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
           <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-          <div class="signatory-name">O3 Car Spa</div>
+          <div class="signatory-name">O3 Car Spaa</div>
         </div>
       </div>
     </div>
@@ -973,7 +1046,7 @@ async function renderPDF(html, invoiceNumber) {
 }
 
 /**
- * Generate "Bill of Supply" PDF for Package Purchase matching exact O3 Car Spa template
+ * Generate "Bill of Supply" PDF for Package Purchase matching exact O3 Car Spaa template
  */
 async function generatePackageInvoicePDF(requestId) {
   const conn = await pool.getConnection();
@@ -1012,8 +1085,8 @@ async function generatePackageInvoicePDF(requestId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const grandTotal = parseFloat(record.price) || 0;
     
@@ -1082,7 +1155,7 @@ async function generatePackageInvoicePDF(requestId) {
       <div class="company-header">
         <div class="company-logo">${logoHtml}</div>
         <div class="company-info">
-          <h1>O3 Car Spa</h1>
+          <h1>O3 Car Spaa</h1>
           <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
           <div class="gst-row">
             <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
@@ -1137,7 +1210,7 @@ async function generatePackageInvoicePDF(requestId) {
       <div class="bottom-grid">
         <div class="bank-section">
           <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spa</span></div>
+          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
           <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
           <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
           <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
@@ -1164,7 +1237,7 @@ async function generatePackageInvoicePDF(requestId) {
         <div class="signatory-line">
           <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
             <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-            <div class="signatory-name">O3 Car Spa</div>
+            <div class="signatory-name">O3 Car Spaa</div>
           </div>
         </div>
       </div>
@@ -1234,8 +1307,8 @@ async function generateQuickWashInvoicePDF(bookingId) {
     // Logo
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const serviceRowsHtml = `
       <tr>
@@ -1306,8 +1379,8 @@ async function generatePaymentReceiptPDF(paymentId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const grandTotal = parseFloat(record.amount) || 0;
     
@@ -1373,8 +1446,8 @@ async function generateQuotationPDF(quotationId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const itemRowsHtml = items.map((item) => `
       <tr>
@@ -1467,7 +1540,7 @@ async function generateQuotationPDF(quotationId) {
       <div class="company-header">
         <div class="company-logo">${logoHtml}</div>
         <div class="company-info">
-          <h1>O3 Car Spa</h1>
+          <h1>O3 Car Spaa</h1>
           <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
           <div class="gst-row">
             <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
@@ -1534,7 +1607,7 @@ async function generateQuotationPDF(quotationId) {
       <div class="bottom-grid">
         <div class="bank-section">
           <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spa</span></div>
+          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
           <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
           <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
           <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
@@ -1565,7 +1638,7 @@ async function generateQuotationPDF(quotationId) {
         <div class="signatory-line">
           <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
             <div class="signatory-label">ESTIMATE PREPARED BY</div>
-            <div class="signatory-name">O3 Car Spa</div>
+            <div class="signatory-name">O3 Car Spaa</div>
           </div>
         </div>
       </div>
@@ -1606,8 +1679,8 @@ async function generateBookingInvoicePDF(bookingId) {
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spa" style="width:80px;height:80px;object-fit:contain;" />`
-      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spa</div>`;
+      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
+      : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
     const finalTotal = parseFloat(booking.total_amount) || 0;
     const advancePaid = booking.advance_payment_id ? parseFloat(booking.advance_amount) : 0;
@@ -1701,7 +1774,7 @@ async function generateBookingInvoicePDF(bookingId) {
       <div class="company-header">
         <div class="company-logo">${logoHtml}</div>
         <div class="company-info">
-          <h1>O3 Car Spa</h1>
+          <h1>O3 Car Spaa</h1>
           <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
           <div class="gst-row">
             <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
@@ -1752,7 +1825,7 @@ async function generateBookingInvoicePDF(bookingId) {
       <div class="bottom-grid">
         <div class="bank-section">
           <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spa</span></div>
+          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
           <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
           <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
           <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
@@ -1785,7 +1858,7 @@ async function generateBookingInvoicePDF(bookingId) {
         <div class="signatory-line">
           <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
             <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-            <div class="signatory-name">O3 Car Spa</div>
+            <div class="signatory-name">O3 Car Spaa</div>
           </div>
         </div>
       </div>

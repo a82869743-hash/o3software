@@ -513,3 +513,166 @@ exports.redeemPointsToWash = async (req, res) => {
     conn.release();
   }
 };
+
+// ═══════════════════════════════════════════════════════════
+// LOYALTY RULES (Franchise-scoped)
+// ═══════════════════════════════════════════════════════════
+exports.getRules = async (req, res) => {
+  try {
+    const fCond = req.getFranchiseCondition
+      ? req.getFranchiseCondition('franchise_id')
+      : { clause: ' WHERE (franchise_id = ? OR franchise_id IS NULL)', params: [req.franchiseId || 1] };
+
+    const [rules] = await pool.query(
+      `SELECT * FROM loyalty_rules ${fCond.clause} ORDER BY is_active DESC, id ASC`,
+      fCond.params
+    );
+    res.json({ success: true, data: rules });
+  } catch (err) {
+    console.error('getLoyaltyRules error:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch loyalty rules' });
+  }
+};
+
+exports.createRule = async (req, res) => {
+  try {
+    const {
+      rule_name,
+      service_id,
+      points_type = 'percentage_of_bill',
+      points_value = 5.0,
+      multiplier = 1.0,
+      expiry_days = 365,
+      is_active = 1
+    } = req.body;
+
+    if (!rule_name || !rule_name.trim()) {
+      return res.status(400).json({ success: false, error: 'Rule name is required' });
+    }
+
+    const franchiseId = req.franchiseId || req.body.franchise_id || 1;
+
+    const [result] = await pool.query(
+      `INSERT INTO loyalty_rules 
+       (franchise_id, rule_name, service_id, points_type, points_value, multiplier, expiry_days, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        franchiseId,
+        rule_name.trim(),
+        service_id || null,
+        points_type,
+        parseFloat(points_value) || 0,
+        parseFloat(multiplier) || 1.0,
+        parseInt(expiry_days, 10) || 365,
+        is_active ? 1 : 0
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Loyalty rule created successfully',
+      data: { id: result.insertId }
+    });
+  } catch (err) {
+    console.error('createLoyaltyRule error:', err);
+    res.status(500).json({ success: false, error: 'Failed to create loyalty rule' });
+  }
+};
+
+exports.updateRule = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      rule_name,
+      service_id,
+      points_type,
+      points_value,
+      multiplier,
+      expiry_days,
+      is_active
+    } = req.body;
+
+    const [existing] = await pool.query('SELECT franchise_id FROM loyalty_rules WHERE id = ?', [id]);
+    if (!existing.length) return res.status(404).json({ success: false, error: 'Rule not found' });
+
+    if (!req.isSuperAdmin && existing[0].franchise_id && req.franchiseId && parseInt(existing[0].franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Rule belongs to another franchise' });
+    }
+
+    await pool.query(
+      `UPDATE loyalty_rules SET
+        rule_name = COALESCE(?, rule_name),
+        service_id = ?,
+        points_type = COALESCE(?, points_type),
+        points_value = COALESCE(?, points_value),
+        multiplier = COALESCE(?, multiplier),
+        expiry_days = COALESCE(?, expiry_days),
+        is_active = COALESCE(?, is_active)
+       WHERE id = ?`,
+      [
+        rule_name ? rule_name.trim() : null,
+        service_id !== undefined ? service_id : null,
+        points_type || null,
+        points_value !== undefined ? parseFloat(points_value) : null,
+        multiplier !== undefined ? parseFloat(multiplier) : null,
+        expiry_days !== undefined ? parseInt(expiry_days, 10) : null,
+        is_active !== undefined ? (is_active ? 1 : 0) : null,
+        id
+      ]
+    );
+
+    res.json({ success: true, message: 'Loyalty rule updated successfully' });
+  } catch (err) {
+    console.error('updateLoyaltyRule error:', err);
+    res.status(500).json({ success: false, error: 'Failed to update loyalty rule' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// FULL CUSTOMER LOYALTY LEDGER
+// GET /loyalty/ledger/:customerId
+// ═══════════════════════════════════════════════════════════
+exports.getLedger = async (req, res) => {
+  try {
+    const customerId = req.params.customerId || req.user.id;
+
+    if (req.user.role === 'customer' && parseInt(customerId, 10) !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    const [loyaltyRows] = await pool.query('SELECT * FROM loyalty WHERE customer_id = ?', [customerId]);
+    const balance = loyaltyRows[0] || { credits: 0, free_washes: 0, wax_count: 0, points: 0 };
+
+    const [txRows] = await pool.query(
+      `SELECT lt.*, u.name AS created_by_name
+       FROM loyalty_transactions lt
+       LEFT JOIN users u ON lt.created_by = u.id
+       WHERE lt.customer_id = ?
+       ORDER BY lt.created_at DESC`,
+      [customerId]
+    );
+
+    let totalEarned = 0;
+    let totalRedeemed = 0;
+    txRows.forEach(tx => {
+      const p = parseFloat(tx.points) || 0;
+      if (p > 0) totalEarned += p;
+      else totalRedeemed += Math.abs(p);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        customer_id: parseInt(customerId, 10),
+        balance,
+        total_earned: totalEarned,
+        total_redeemed: totalRedeemed,
+        ledger: txRows
+      }
+    });
+  } catch (err) {
+    console.error('getLedger error:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch loyalty ledger' });
+  }
+};
+

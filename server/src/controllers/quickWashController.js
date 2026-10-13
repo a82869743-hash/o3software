@@ -16,26 +16,42 @@ exports.create = async (req, res) => {
 
     const {
       customer_id, vehicle_id, service_id, package_id,
-      vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category,
-      use_package, notes
+      vehicle_category, use_package, notes
     } = req.body;
 
-    // Validate
-    if (!customer_id && !vehicle_reg_no) {
-      await conn.rollback();
-      return res.status(400).json({ success: false, error: 'Customer or vehicle registration is required' });
-    }
+    const rawReg = req.body.vehicle_reg_no || req.body.registration_no || req.body.reg_no || req.body.regNo || '';
+    const rawBrand = req.body.vehicle_brand || req.body.car_brand || req.body.brand || null;
+    const rawModel = req.body.vehicle_model || req.body.car_model || req.body.model || null;
 
-    // Resolve customer and vehicle
     let resolvedCustomerId = customer_id || null;
     let resolvedVehicleId = vehicle_id || null;
-    let resolvedBrand = vehicle_brand || null;
-    let resolvedModel = vehicle_model || null;
-    let resolvedRegNo = vehicle_reg_no || null;
+    let resolvedBrand = rawBrand;
+    let resolvedModel = rawModel;
+    let resolvedRegNo = rawReg ? rawReg.toUpperCase().replace(/\s/g, '') : null;
 
-    if (vehicle_id && !vehicle_brand) {
+    // Resolve customer by mobile or create walk-in customer
+    if (!resolvedCustomerId) {
+      const custMobile = req.body.customer_mobile || '9999999999';
+      const custName = req.body.customer_name || 'Walk-in Customer';
+      const [existingUser] = await conn.query('SELECT id FROM users WHERE mobile = ?', [custMobile]);
+      if (existingUser.length) {
+        resolvedCustomerId = existingUser[0].id;
+      } else {
+        const bcrypt = require('bcryptjs');
+        const hash = await bcrypt.hash('123456', 10);
+        const [newUser] = await conn.query(
+          'INSERT INTO users (name, mobile, password_hash, role) VALUES (?, ?, ?, ?)',
+          [custName, custMobile, hash, 'customer']
+        );
+        resolvedCustomerId = newUser.insertId;
+        await conn.query('INSERT INTO loyalty (customer_id) VALUES (?)', [resolvedCustomerId]);
+      }
+    }
+
+    // Resolve vehicle by registration or vehicle_id
+    if (resolvedVehicleId && !resolvedBrand) {
       const [vRows] = await conn.query(
-        'SELECT id, brand, model, registration_no, customer_id FROM vehicles WHERE id = ?', [vehicle_id]
+        'SELECT id, brand, model, registration_no, customer_id FROM vehicles WHERE id = ?', [resolvedVehicleId]
       );
       if (vRows.length) {
         resolvedBrand = vRows[0].brand;
@@ -43,7 +59,30 @@ exports.create = async (req, res) => {
         resolvedRegNo = vRows[0].registration_no;
         if (!resolvedCustomerId) resolvedCustomerId = vRows[0].customer_id;
       }
+    } else if (resolvedRegNo && !resolvedVehicleId) {
+      const [vRows] = await conn.query(
+        'SELECT id, brand, model, registration_no, customer_id FROM vehicles WHERE registration_no = ?', [resolvedRegNo]
+      );
+      if (vRows.length) {
+        resolvedVehicleId = vRows[0].id;
+        if (!resolvedBrand) resolvedBrand = vRows[0].brand;
+        if (!resolvedModel) resolvedModel = vRows[0].model;
+        if (!resolvedCustomerId) resolvedCustomerId = vRows[0].customer_id;
+      } else {
+        const [newVeh] = await conn.query(
+          'INSERT INTO vehicles (customer_id, brand, model, registration_no, category) VALUES (?, ?, ?, ?, ?)',
+          [resolvedCustomerId, resolvedBrand || 'Generic', resolvedModel || 'Car', resolvedRegNo, 'sedan']
+        );
+        resolvedVehicleId = newVeh.insertId;
+      }
     }
+
+    // Validate
+    if (!resolvedCustomerId && !resolvedRegNo) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Customer or vehicle registration is required' });
+    }
+
 
     // Get or create a "walk-in" slot for today
     const now = new Date();
@@ -237,12 +276,26 @@ exports.updateStatus = async (req, res) => {
   try {
     await conn.beginTransaction();
     const { id } = req.params;
-    const { wash_status } = req.body;
-
-    const validStatuses = ['pending', 'washing', 'completed', 'delivered', 'cancelled'];
-    if (!validStatuses.includes(wash_status)) {
+    const rawStatus = (req.body.wash_status || req.body.status || '').toLowerCase().trim();
+    const statusMap = {
+      'waiting': 'pending',
+      'in_queue': 'pending',
+      'pending': 'pending',
+      'in_progress': 'washing',
+      'washing': 'washing',
+      'done': 'completed',
+      'completed': 'completed',
+      'delivered': 'delivered',
+      'cancelled': 'cancelled',
+      'canceled': 'cancelled',
+    };
+    const targetStatus = statusMap[rawStatus];
+    if (!targetStatus) {
       await conn.rollback();
-      return res.status(400).json({ success: false, error: `Invalid status. Must be: ${validStatuses.join(', ')}` });
+      return res.status(400).json({ 
+        success: false, 
+        error: `Invalid status "${req.body.wash_status || req.body.status}". Valid options: waiting, pending, in_progress, washing, completed, delivered, cancelled` 
+      });
     }
 
     const [existing] = await conn.query(
@@ -253,10 +306,11 @@ exports.updateStatus = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Quick wash booking not found' });
     }
 
-    const updates = { wash_status };
-    if (wash_status === 'completed') {
+    const updates = { wash_status: targetStatus };
+    if (targetStatus === 'completed') {
       updates.status = 'completed';
-    } else if (wash_status === 'cancelled') {
+      updates.current_phase = 'complete';
+    } else if (targetStatus === 'cancelled') {
       updates.status = 'cancelled';
 
       // Restore package usage if quick wash used a package service
@@ -266,13 +320,6 @@ exports.updateStatus = async (req, res) => {
           if (svcRows.length) {
             const serviceName = svcRows[0].name;
             const { cancelReservation } = require('./userPackagesController');
-            // Check if package_id in bookings is user_package_id or package_id
-            // userPackagesController checkAndUseService returns user_package_id, and we saved it as package_id.
-            // Wait, in regular bookings we save package_id, but checkAndUseService returns user_package_id.
-            // Let's check how bookingsController does it: 
-            // In bookingsController, cancel looks up user_package_id using package_id.
-            // For safety, let's look up the active user_package_id if package_id points to packages table.
-            // But since this is quick wash and we just added package_id logic, let's do it safely.
             const [userPkgs] = await conn.query(
               `SELECT id FROM user_packages 
                WHERE user_id = ? AND (id = ? OR package_id = ?) AND package_status = 'active'
@@ -288,6 +335,15 @@ exports.updateStatus = async (req, res) => {
           console.error(`[QUICK_WASH] Failed to restore package credit for booking #${id}:`, pkgErr.message);
         }
       }
+    } else if (targetStatus === 'washing') {
+      updates.status = 'in_progress';
+      if (!existing[0].current_phase || existing[0].current_phase === 'complete') {
+        updates.current_phase = 'pre_wash';
+      }
+    } else if (targetStatus === 'pending') {
+      updates.status = 'confirmed';
+    } else if (targetStatus === 'delivered') {
+      updates.status = 'delivered';
     }
 
     const setClauses = Object.entries(updates).map(([k]) => `${k} = ?`).join(', ');
@@ -299,7 +355,7 @@ exports.updateStatus = async (req, res) => {
     );
 
     // If wash completed, check first wash discount or award 10% loyalty points from 2nd wash onward
-    if (wash_status === 'completed' || status === 'completed') {
+    if (targetStatus === 'completed') {
       const [bRows] = await conn.query('SELECT customer_id, total_amount, discount_percent FROM bookings WHERE id = ?', [id]);
       if (bRows.length && bRows[0].customer_id) {
         const { markFirstWashDiscountUsed } = require('../utils/firstWashHelper');
@@ -320,10 +376,10 @@ exports.updateStatus = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('quick_wash_updated', { bookingId: parseInt(id), wash_status });
+      io.emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: targetStatus });
     }
 
-    res.json({ success: true, message: `Wash status updated to ${wash_status}` });
+    res.json({ success: true, message: `Wash status updated to ${targetStatus}`, wash_status: targetStatus });
   } catch (err) {
     await conn.rollback();
     console.error('Quick wash status update error:', err);
@@ -451,3 +507,21 @@ exports.getPhase = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+
+// ─── GET QUICK WASH INVOICE PDF ────────────
+exports.getInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const invoiceService = require('../services/invoiceService');
+    const pdfBuffer = await invoiceService.generateQuickWashInvoicePDF(id);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="quick-wash-${id}.pdf"`,
+    });
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('Quick wash invoice error:', err);
+    res.status(500).json({ success: false, error: 'Failed to generate quick wash invoice' });
+  }
+};
+

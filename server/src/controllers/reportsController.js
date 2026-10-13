@@ -4,10 +4,11 @@ const reportService = require('../services/reportService');
 // ─── SALES REPORT ───────────────────────────
 exports.salesReport = async (req, res) => {
   try {
-    const { from_date, to_date, format = 'json' } = req.query;
-    if (!from_date || !to_date) {
-      return res.status(400).json({ success: false, error: 'from_date and to_date are required' });
-    }
+    const today = new Date().toISOString().split('T')[0];
+    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+    const from_date = req.query.from_date || firstDay;
+    const to_date = req.query.to_date || today;
+    const { format = 'json' } = req.query;
 
     // Revenue breakdown by day
     const [dailyRevenue] = await pool.query(`
@@ -218,7 +219,7 @@ exports.packageHistoryReport = async (req, res) => {
     if (format === 'xlsx') {
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'O3 Car Spa';
+      workbook.creator = 'O3 Car Spaa';
       const sheet = workbook.addWorksheet('Bulk Package History');
 
       sheet.columns = [
@@ -294,7 +295,7 @@ exports.customerPackageHistoryReport = async (req, res) => {
     if (format === 'xlsx') {
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'O3 Car Spa';
+      workbook.creator = 'O3 Car Spaa';
 
       const pkgSheet = workbook.addWorksheet('Packages');
       pkgSheet.columns = [

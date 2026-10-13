@@ -472,7 +472,7 @@ export default function ProductsPage() {
           discount: discountPct > 0 ? discountPct + '% OFF' : '',
           description: db.description || db.product_name,
           features: [],
-          specs: { Category: db.category || 'Premium Utility', Brand: db.brand || 'O3 Car Spa', SKU: db.sku || '-' },
+          specs: { Category: db.category || 'Premium Utility', Brand: db.brand || 'O3 Car Spaa', SKU: db.sku || '-' },
           whyBuy: '',
           dbId: db.id,
           dbQty: dbQty,
@@ -570,7 +570,7 @@ export default function ProductsPage() {
           key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
           amount: orderData.amount,
           currency: orderData.currency,
-          name: 'O3 Car Spa',
+          name: 'O3 Car Spaa',
           description: `Purchase: ${selectedProduct.displayName}`,
           image: '/assets/logo.png',
           order_id: orderData.id,
@@ -677,7 +677,7 @@ export default function ProductsPage() {
             Premium Studio Accessories
           </span>
           <h2 className="text-2xl sm:text-4xl font-black text-white tracking-tight leading-tight">
-            O3 Car Spa Store
+            O3 Car Spaa Store
           </h2>
           <p className="text-sm text-slate-300">
             Professional grade detailing cloths, premium damping sheets, memory foam cushions, and car utilities designed to maintain and upgrade your ride.

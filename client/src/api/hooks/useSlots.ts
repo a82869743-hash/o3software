@@ -58,3 +58,76 @@ export const useDeleteSlot = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['slots'] }),
   });
 };
+
+export const useRestoreSlot = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await api.post(`/slots/${id}/restore`);
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['slots'] }),
+  });
+};
+
+export const useSlotClosures = () =>
+  useQuery({
+    queryKey: ['slot-closures'],
+    queryFn: async () => {
+      const res = await api.get('/slots/closures');
+      return res.data;
+    },
+  });
+
+export const useCheckClosureConflicts = () =>
+  useMutation({
+    mutationFn: async (payload: {
+      start_date: string;
+      end_date?: string;
+      slot_time?: string;
+    }) => {
+      const res = await api.post('/slots/closures/check', payload);
+      return res.data;
+    },
+  });
+
+export const useCreateClosure = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      closure_type: string;
+      start_date: string;
+      end_date?: string;
+      slot_time?: string;
+      reason?: string;
+      title?: string;
+      is_recurring?: boolean;
+      recurrence_type?: string;
+      recurrence_day?: number;
+      confirm?: boolean;
+      action?: string;
+    }) => {
+      const res = await api.post('/slots/closures', payload);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['slots'] });
+      qc.invalidateQueries({ queryKey: ['slot-closures'] });
+    },
+  });
+};
+
+export const useDeleteClosure = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await api.delete(`/slots/closures/${id}`);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['slots'] });
+      qc.invalidateQueries({ queryKey: ['slot-closures'] });
+    },
+  });
+};
+

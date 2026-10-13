@@ -7,12 +7,13 @@ exports.create = async (req, res) => {
     await conn.beginTransaction();
     const {
       customer_id, customer_name, customer_mobile,
-      amount, description, services, products, payment_method = 'cash',
+      amount, description, services, products, items, payment_method = 'cash',
       discount_type, discount_value, gst_type, gst_pct, loyalty_redeemed,
-      vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category
+      vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category,
+      franchise_id, discount_reason, discount_reference
     } = req.body;
 
-    // Compute subtotal from services and products
+    // Compute subtotal from services, products, or generic items
     let calcSubtotal = 0;
     if (services && Array.isArray(services)) {
       services.forEach(s => { calcSubtotal += parseFloat(s.price || s.service_price || 0); });
@@ -20,15 +21,32 @@ exports.create = async (req, res) => {
     if (products && Array.isArray(products)) {
       products.forEach(p => { calcSubtotal += (parseFloat(p.price || p.unit_cost || 0) * parseInt(p.quantity || 1)); });
     }
+    if (items && Array.isArray(items)) {
+      items.forEach(it => { calcSubtotal += (parseFloat(it.price || 0) * parseInt(it.quantity || 1)); });
+    }
     if (calcSubtotal === 0 && amount > 0) {
       calcSubtotal = parseFloat(amount);
     }
 
+    let numVal = parseFloat(discount_value || 0);
+    if (isNaN(numVal) || numVal < 0) numVal = 0;
+    if (discount_type === 'percentage' && numVal > 100) numVal = 100;
+
+    if (numVal > 0) {
+      if (!discount_reason || !discount_reason.trim() || !discount_reference || !discount_reference.trim()) {
+        await conn.rollback();
+        return res.status(400).json({
+          success: false,
+          error: 'Discount reason and approved/referred by reference are mandatory whenever a discount is applied'
+        });
+      }
+    }
+
     let discountAmt = 0;
     if (discount_type === 'percentage') {
-      discountAmt = calcSubtotal * (parseFloat(discount_value || 0) / 100);
+      discountAmt = calcSubtotal * (numVal / 100);
     } else if (discount_type === 'fixed') {
-      discountAmt = parseFloat(discount_value || 0);
+      discountAmt = Math.min(calcSubtotal, numVal);
     }
     discountAmt = Math.min(calcSubtotal, Math.max(0, discountAmt));
     const amountAfterDiscount = calcSubtotal - discountAmt;
@@ -41,8 +59,8 @@ exports.create = async (req, res) => {
     // Process products inventory deduction if present
     if (products && Array.isArray(products) && products.length > 0) {
       for (const prod of products) {
-        if (prod.id && prod.quantity > 0) {
-          await conn.query('UPDATE inventory SET quantity = GREATEST(0, quantity - ?) WHERE id = ?', [prod.quantity, prod.id]);
+        if (prod.id && parseInt(prod.quantity || 1) > 0) {
+          await conn.query('UPDATE inventory SET quantity = GREATEST(0, quantity - ?) WHERE id = ?', [parseInt(prod.quantity || 1), prod.id]);
         }
       }
     }
@@ -62,8 +80,8 @@ exports.create = async (req, res) => {
     const [result] = await conn.query(
       `INSERT INTO manual_bills 
        (customer_id, customer_name, customer_mobile, amount, discount_type, discount_value, discount_amount, gst_type, gst_pct, gst_amount, subtotal, grand_total, description, services_json, products_json, payment_method, created_by,
-        vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category, franchise_id, discount_reason, discount_reference)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         customer_id || null,
         customer_name || null,
@@ -85,7 +103,10 @@ exports.create = async (req, res) => {
         vehicle_brand || null,
         vehicle_model || null,
         vehicle_reg_no || null,
-        vehicle_category || null
+        vehicle_category || null,
+        req.franchiseId || franchise_id || req.user?.franchise_id || 1,
+        discount_reason || null,
+        discount_reference || null
       ]
     );
 
@@ -93,8 +114,27 @@ exports.create = async (req, res) => {
     await conn.query(
       `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by)
        VALUES ('job_revenue', ?, ?, 'in', ?, CURDATE(), ?)`,
-      [result.insertId, amount, `Manual Bill #${result.insertId}: ${description || 'POS Sale'}`, req.user.id]
+      [result.insertId, grandTotalVal, `Manual Bill #${result.insertId}: ${description || 'POS Sale'}`, req.user.id]
     );
+
+    // Log discount audit if applied
+    if (numVal > 0) {
+      const { logAudit } = require('./auditController');
+      await logAudit(
+        req.user?.id,
+        'DISCOUNT_APPLIED',
+        'manual_bills',
+        result.insertId,
+        {
+          discount_type: discount_type || 'fixed',
+          discount_value: numVal,
+          discount_amount: discountAmt,
+          discount_reason: discount_reason?.trim(),
+          discount_reference: discount_reference?.trim()
+        },
+        req.ip
+      );
+    }
 
     // Emit real-time customer and manual bill updates
     const io = req.app.get('io');
@@ -107,7 +147,7 @@ exports.create = async (req, res) => {
     if (customer_mobile) {
       try {
         const sendSms = require('../utils/sendSms');
-        const msg = `O3 Car Spa: Thank you ${customer_name || 'Customer'}! Your bill for Rs.${amount} is confirmed.`;
+        const msg = `O3 Car Spaa: Thank you ${customer_name || 'Customer'}! Your bill for Rs.${grandTotalVal} is confirmed.`;
         sendSms(customer_mobile, msg).catch(() => {});
       } catch (e) { /* ignore */ }
     }
@@ -120,7 +160,7 @@ exports.create = async (req, res) => {
       const [gstSettingNo] = await conn.query("SELECT value FROM settings WHERE key_name = 'gstin'");
       const gstin = gstSettingNo.length ? gstSettingNo[0].value : '';
 
-      const numericAmount = parseFloat(amount);
+      const numericAmount = parseFloat(grandTotalVal);
       const taxableAmount = numericAmount / 1.18;
       const totalGst = numericAmount - taxableAmount;
       const cgst = totalGst / 2;
@@ -135,7 +175,18 @@ exports.create = async (req, res) => {
     }
 
     await conn.commit();
-    console.log(`[BILLING] Manual bill #${result.insertId} created — ₹${amount}`);
+    console.log(`[BILLING] Manual bill #${result.insertId} created — ₹${grandTotalVal}`);
+
+    // Phase 5 Automation: Bill soft copy PDF auto-sent by WhatsApp/Email
+    try {
+      const notificationService = require('../services/notificationService');
+      notificationService.handleBuySellBillAutoSend(result.insertId, 'manual_bill').catch(bErr => {
+        console.error('[ManualBillAutoSend] Dispatch error (non-blocking):', bErr.message);
+      });
+    } catch (bErr) {
+      console.error('[ManualBillAutoSend] Dispatch error (non-blocking):', bErr.message);
+    }
+
     res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Bill created' });
   } catch (err) {
     await conn.rollback();
@@ -153,6 +204,13 @@ exports.list = async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let where = "mb.status != 'voided'";
     const params = [];
+
+    // Multi-tenant franchise isolation
+    const fCond = req.getFranchiseCondition
+      ? req.getFranchiseCondition('mb.franchise_id')
+      : { clause: ' AND (mb.franchise_id = ? OR mb.franchise_id IS NULL)', params: [req.franchiseId || 1] };
+    where += fCond.clause;
+    params.push(...fCond.params);
 
     if (from_date) { where += ' AND mb.created_at >= ?'; params.push(from_date); }
     if (to_date) { where += ' AND mb.created_at <= ?'; params.push(to_date + ' 23:59:59'); }
@@ -198,7 +256,14 @@ exports.getOne = async (req, res) => {
       WHERE mb.id = ?
     `, [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Bill not found' });
-    res.json({ success: true, data: rows[0] });
+    const bill = rows[0];
+
+    // Multi-tenant isolation: non-super admin can only view bill from their own franchise
+    if (!req.isSuperAdmin && bill.franchise_id && req.franchiseId && parseInt(bill.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot access bill from another franchise' });
+    }
+
+    res.json({ success: true, data: bill });
   } catch (err) {
     console.error('Get bill error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
@@ -224,6 +289,12 @@ exports.downloadInvoice = async (req, res) => {
 // ─── SOFT DELETE (VOID) A BILL ──────────────────
 exports.softDelete = async (req, res) => {
   try {
+    const [existing] = await pool.query('SELECT franchise_id FROM manual_bills WHERE id = ?', [req.params.id]);
+    if (!existing.length) return res.status(404).json({ success: false, error: 'Bill not found' });
+    if (!req.isSuperAdmin && existing[0].franchise_id && req.franchiseId && parseInt(existing[0].franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot void bill from another franchise' });
+    }
+
     await pool.query("UPDATE manual_bills SET status = 'voided' WHERE id = ?", [req.params.id]);
     res.json({ success: true, message: 'Bill voided' });
   } catch (err) {
@@ -235,6 +306,12 @@ exports.softDelete = async (req, res) => {
 // ─── RESTORE A VOIDED BILL ─────────────────────
 exports.restore = async (req, res) => {
   try {
+    const [existing] = await pool.query('SELECT franchise_id FROM manual_bills WHERE id = ?', [req.params.id]);
+    if (!existing.length) return res.status(404).json({ success: false, error: 'Bill not found' });
+    if (!req.isSuperAdmin && existing[0].franchise_id && req.franchiseId && parseInt(existing[0].franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot restore bill from another franchise' });
+    }
+
     await pool.query("UPDATE manual_bills SET status = 'paid' WHERE id = ?", [req.params.id]);
     res.json({ success: true, message: 'Bill restored' });
   } catch (err) {
@@ -242,3 +319,4 @@ exports.restore = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+

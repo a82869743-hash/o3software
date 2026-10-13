@@ -96,7 +96,7 @@ export default function LoyaltyPage() {
   };
 
   const handleWhatsAppShare = (code: string) => {
-    const text = `Hey! Sign up at O3 Car Spa Car Detailing using my referral code *${code}* and we both earn ${referral?.reward_points || 100} bonus reward points on your first service! Check it out:`;
+    const text = `Hey! Sign up at O3 Car Spaa Car Detailing using my referral code *${code}* and we both earn ${referral?.reward_points || 100} bonus reward points on your first service! Check it out:`;
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   };

@@ -10,6 +10,7 @@ import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import ErrorState from '../../components/shared/ErrorState';
 import Button from '../../components/ui/Button';
 import StatusBadge from '../../components/ui/StatusBadge';
+import CountUp from 'react-countup';
 import { formatINR, formatDate, formatTime } from '../../utils/formatters';
 import AddCarModal from '../../components/shared/AddCarModal';
 
@@ -100,7 +101,7 @@ export default function CustomerDashboardPage() {
                 Service is due package close to expiry ({activePackage.days_remaining > 0 ? `${activePackage.days_remaining} days left` : 'Expiring / Due'})
               </p>
               <p className="text-xs text-amber-100 font-medium">
-                Package: <strong>{activePackage.package_name}</strong> • Redeem your remaining detailing services at O3 Car Spa
+                Package: <strong>{activePackage.package_name}</strong> • Redeem your remaining detailing services at O3 Car Spaa
               </p>
             </div>
           </div>
@@ -146,7 +147,7 @@ export default function CustomerDashboardPage() {
                   Your package <strong className="text-amber-950 font-extrabold">{activePackage.package_name}</strong> {activePackage.vehicle_reg_no ? `for vehicle ${activePackage.vehicle_reg_no}` : ''} is about to expire next month ({activePackage.end_date ? new Date(activePackage.end_date).toLocaleDateString('en-IN') : 'soon'}).
                 </p>
                 <p className="text-xs text-amber-800 font-bold">
-                  Kindly visit O3 Car Spa to redeem your remaining service sessions!
+                  Kindly visit O3 Car Spaa to redeem your remaining service sessions!
                 </p>
               </div>
 
@@ -221,11 +222,11 @@ export default function CustomerDashboardPage() {
             {firstName} 👋
           </h1>
           <p className="text-sky-100 text-xs font-medium mt-1 mb-6">
-            Welcome to O3 Car Spa Detailing Studio
+            Welcome to O3 Car Spaa Detailing Studio
           </p>
 
-          {/* Loyalty Stats */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {/* Loyalty Stats + Studio Live Counter */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
               <p className="text-2xl font-black text-slate-900 tracking-tight">{loyalty.credits || 0}</p>
               <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Reward Points</p>
@@ -240,11 +241,23 @@ export default function CustomerDashboardPage() {
             </div>
             <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
               <p className="text-2xl font-black text-slate-900 tracking-tight">{totalVisits}</p>
-              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Total Visits</p>
+              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">My Total Visits</p>
+            </div>
+            <div className="bg-gradient-to-br from-amber-50 to-amber-100 hover:from-amber-100 hover:to-amber-200 shadow-md border border-amber-200/80 transition-all rounded-2xl p-3.5 text-center group col-span-2 sm:col-span-1">
+              <p className="text-2xl font-black text-amber-900 tracking-tight flex items-center justify-center gap-1.5">
+                <CountUp end={Number(data?.cars_serviced_this_year || 0)} duration={2} separator="," />
+                <Sparkles size={16} className="text-amber-600 animate-pulse" />
+              </p>
+              <p className="text-[10px] text-amber-800 font-black uppercase tracking-wider mt-1">Cars Serviced This Year</p>
+              <div className="flex items-center justify-center gap-1 mt-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                <span className="text-[9px] font-black text-emerald-700 uppercase tracking-widest">Live Counter</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
+
 
       {/* ── Quick Actions ────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -438,11 +451,21 @@ export default function CustomerDashboardPage() {
                     </p>
                   </div>
                 </div>
-                {job.invoice_number && (
-                  <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 hidden sm:block">
-                    {job.invoice_number}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  <Link
+                    to={`/job/${job.id}`}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#2563EB] rounded-xl text-xs font-bold transition-all shadow-xs"
+                    title="Track Detailing Pipeline Live"
+                  >
+                    <Clock size={12} />
+                    <span>Track Live</span>
+                  </Link>
+                  {job.invoice_number && (
+                    <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 hidden sm:block">
+                      {job.invoice_number}
+                    </span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

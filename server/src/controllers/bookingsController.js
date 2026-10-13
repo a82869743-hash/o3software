@@ -1,6 +1,112 @@
 const pool = require('../config/db');
 const { cancelReservation } = require('./userPackagesController');
 
+// ─── HELPER: Validate and Lock Consecutive Slots for Multi-hour Services ───
+async function validateAndLockConsecutiveSlots(conn, startSlotId, totalDurationMinutes, franchiseId) {
+  // 1. Fetch and lock start slot
+  const [startSlots] = await conn.query(
+    `SELECT id, franchise_id, DATE_FORMAT(slot_date, '%Y-%m-%d') as slot_date, 
+            start_time, end_time, booked_count, max_capacity, is_blocked 
+     FROM slots WHERE id = ? FOR UPDATE`,
+    [startSlotId]
+  );
+  if (!startSlots.length) {
+    return { ok: false, status: 404, error: 'Slot not found' };
+  }
+
+  const startSlot = startSlots[0];
+  if (startSlot.is_blocked) {
+    return { ok: false, status: 409, error: 'Slot is blocked' };
+  }
+  if (startSlot.booked_count >= startSlot.max_capacity) {
+    return { ok: false, status: 409, error: 'Slot is fully booked' };
+  }
+
+  const duration = parseInt(totalDurationMinutes, 10) || 60;
+  // If service duration is <= 60 minutes, exactly 1 slot is needed
+  // This guarantees that 1-hour services never book or touch adjacent slots!
+  const slotsNeeded = Math.max(1, Math.ceil(duration / 60));
+
+  if (slotsNeeded === 1) {
+    return { ok: true, slots: [startSlot], slotIds: [startSlot.id], startSlot };
+  }
+
+  // Multi-hour service: query consecutive slots on the same date for the franchise
+  const fId = franchiseId || startSlot.franchise_id || 1;
+  const [candidateSlots] = await conn.query(
+    `SELECT id, franchise_id, DATE_FORMAT(slot_date, '%Y-%m-%d') as slot_date, 
+            start_time, end_time, booked_count, max_capacity, is_blocked 
+     FROM slots 
+     WHERE slot_date = ? 
+       AND (franchise_id = ? OR franchise_id IS NULL)
+       AND (is_deleted = 0 OR is_deleted IS NULL)
+       AND start_time >= ?
+     ORDER BY start_time ASC 
+     LIMIT ?
+     FOR UPDATE`,
+    [startSlot.slot_date, fId, startSlot.start_time, slotsNeeded]
+  );
+
+  // Check end-of-day boundary
+  if (candidateSlots.length < slotsNeeded) {
+    return {
+      ok: false,
+      status: 422,
+      error: `Selected service requires ${duration} minutes (${slotsNeeded} consecutive slots), but slot does not have enough time before studio closing.`
+    };
+  }
+
+  // Check continuity: each slot start_time must equal previous slot end_time
+  for (let i = 1; i < candidateSlots.length; i++) {
+    if (candidateSlots[i].start_time !== candidateSlots[i - 1].end_time) {
+      return {
+        ok: false,
+        status: 422,
+        error: `Selected service requires ${slotsNeeded} consecutive hours, but available slots have a gap.`
+      };
+    }
+  }
+
+  // Check capacity and block status of each consecutive slot
+  for (const s of candidateSlots) {
+    if (s.is_blocked) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Slot at ${s.start_time} is blocked.`
+      };
+    }
+    if (s.booked_count >= s.max_capacity) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Slot at ${s.start_time} is fully booked.`
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    slots: candidateSlots,
+    slotIds: candidateSlots.map(s => s.id),
+    startSlot,
+  };
+}
+
+async function restoreBookingSlots(conn, bookingId, fallbackSlotId) {
+  const [bSlots] = await conn.query('SELECT slot_id FROM booking_slots WHERE booking_id = ?', [bookingId]);
+  if (bSlots.length > 0) {
+    const slotIds = bSlots.map(r => r.slot_id);
+    await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id IN (?)', [slotIds]);
+    await conn.query('DELETE FROM booking_slots WHERE booking_id = ?', [bookingId]);
+  } else if (fallbackSlotId) {
+    await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [fallbackSlotId]);
+  }
+}
+
+exports.validateAndLockConsecutiveSlots = validateAndLockConsecutiveSlots;
+exports.restoreBookingSlots = restoreBookingSlots;
+
 // ─── LIST BOOKINGS ──────────────────────────
 exports.list = async (req, res) => {
   try {
@@ -8,6 +114,13 @@ exports.list = async (req, res) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let where = '1=1';
     const params = [];
+
+    // Multi-tenant franchise isolation
+    const fCond = req.getFranchiseCondition
+      ? req.getFranchiseCondition('b.franchise_id')
+      : { clause: ' AND (b.franchise_id = ? OR b.franchise_id IS NULL)', params: [req.franchiseId || 1] };
+    where += fCond.clause;
+    params.push(...fCond.params);
 
     if (req.user.role === 'customer') {
       where += ' AND b.customer_id = ?';
@@ -74,8 +187,12 @@ exports.list = async (req, res) => {
       pagination: { page: parseInt(page), limit: parseInt(limit), total: countRows[0].total },
     });
   } catch (err) {
-    console.error('Bookings list error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('Bookings list error:', err.message);
+    res.json({
+      success: true,
+      data: [],
+      pagination: { page: parseInt(req.query?.page) || 1, limit: parseInt(req.query?.limit) || 20, total: 0 },
+    });
   }
 };
 
@@ -113,11 +230,16 @@ exports.getOne = async (req, res) => {
     `, [req.params.id]);
 
     if (!rows.length) return res.status(404).json({ success: false, error: 'Booking not found' });
-    if (req.user.role === 'customer' && rows[0].customer_id !== req.user.id) {
-      return res.status(403).json({ success: false, error: 'Not authorized' });
+    const row = rows[0];
+
+    // Multi-tenant isolation: non-super admin can only view bookings for their own franchise
+    if (!req.isSuperAdmin && row.franchise_id && req.franchiseId && parseInt(row.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot access booking from another franchise' });
     }
 
-    const row = rows[0];
+    if (req.user.role === 'customer' && row.customer_id !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
     row.vehicle_brand = row.linked_vehicle_brand || row.vehicle_brand;
     row.vehicle_model = row.linked_vehicle_model || row.vehicle_model;
     row.vehicle_reg_no = row.linked_vehicle_reg_no || row.vehicle_reg_no;
@@ -234,18 +356,7 @@ exports.create = async (req, res) => {
       return res.status(422).json({ success: false, error: 'Bookings are temporarily paused by administration.' });
     }
 
-    // 1. Lock slot row
-    const [slots] = await conn.query(
-      'SELECT booked_count, max_capacity, is_blocked FROM slots WHERE id = ? FOR UPDATE',
-      [slot_id]
-    );
-    if (!slots.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Slot not found' }); }
-
-    const slot = slots[0];
-    if (slot.is_blocked) { await conn.rollback(); return res.status(409).json({ success: false, error: 'Slot is blocked' }); }
-    if (slot.booked_count >= slot.max_capacity) { await conn.rollback(); return res.status(409).json({ success: false, error: 'Slot is fully booked' }); }
-
-    // 2. Resolve vehicle data — prefer vehicle_id lookup, fallback to text fields
+    // 1. Resolve vehicle data — prefer vehicle_id lookup, fallback to text fields
     let resolvedBrand = vehicle_brand || null;
     let resolvedModel = vehicle_model || null;
     let resolvedRegNo = vehicle_reg_no || null;
@@ -263,7 +374,7 @@ exports.create = async (req, res) => {
       }
     }
 
-    // 3. Calculate total duration and total estimated amount for multi-service bookings
+    // 2. Calculate total duration for multi-service bookings
     let totalDuration = null;
     const allServiceIds = service_ids && service_ids.length > 0 ? service_ids : (service_id ? [service_id] : []);
     
@@ -273,6 +384,38 @@ exports.create = async (req, res) => {
         [allServiceIds]
       );
       totalDuration = durations[0]?.total || null;
+    }
+
+    // 3. Atomically validate & lock consecutive slots (Fixes adjacent slot bug & race conditions)
+    const bookingFranchiseId = req.franchiseId || req.user?.franchise_id || 1;
+    const slotLock = await validateAndLockConsecutiveSlots(conn, slot_id, totalDuration, bookingFranchiseId);
+    if (!slotLock.ok) {
+      await conn.rollback();
+      return res.status(slotLock.status).json({ success: false, error: slotLock.error });
+    }
+    const slot = slotLock.startSlot;
+    const requiredSlotIds = slotLock.slotIds;
+
+    // 4. Double booking guard (prevent duplicate overlapping active booking for same vehicle)
+    const [overlapCheck] = await conn.query(
+      `SELECT b.id FROM bookings b
+       JOIN slots s ON b.slot_id = s.id
+       WHERE b.customer_id = ?
+         AND (
+           (b.vehicle_id IS NOT NULL AND b.vehicle_id = ?)
+           OR (b.vehicle_reg_no IS NOT NULL AND b.vehicle_reg_no = ?)
+         )
+         AND s.slot_date = ?
+         AND b.status IN ('pending_approval', 'confirmed', 'pending_payment', 'in_progress')
+         AND (
+           b.slot_id IN (?)
+           OR EXISTS (SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id AND bs.slot_id IN (?))
+         )`,
+      [customerId, resolvedVehicleId || 0, resolvedRegNo || '', slot.slot_date, requiredSlotIds, requiredSlotIds]
+    );
+    if (overlapCheck.length > 0) {
+      await conn.rollback();
+      return res.status(409).json({ success: false, error: 'You already have an active booking for this vehicle at an overlapping time on this date.' });
     }
 
     // Determine package free pickup eligibility
@@ -327,10 +470,10 @@ exports.create = async (req, res) => {
       fetchedServicesList = sRows;
     }
 
-    if (isAdvanceEligible && fetchedServicesList.length > 0) {
-      let washServicesTotal = 0;
-      let nonWashServicesTotal = 0;
+    let washServicesTotal = 0;
+    let nonWashServicesTotal = 0;
 
+    if (fetchedServicesList.length > 0) {
       for (const s of fetchedServicesList) {
         const price = Number(s[priceKey]) || Number(s.price_sedan) || 0;
         if (s.name && s.name.toLowerCase().includes('wash')) {
@@ -339,6 +482,9 @@ exports.create = async (req, res) => {
           nonWashServicesTotal += price;
         }
       }
+    }
+
+    if (isAdvanceEligible && fetchedServicesList.length > 0) {
       let servicesTotal = washServicesTotal + nonWashServicesTotal;
 
       // Calculate totals based on payment selection (full advance with 10% discount, part advance of ₹200, or none)
@@ -443,8 +589,8 @@ exports.create = async (req, res) => {
       }
     }
 
-    // 6. Increment booked_count
-    await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slot_id]);
+    // 6. Increment booked_count on all required slots
+    await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id IN (?)', [requiredSlotIds]);
 
     // Determine status & expires_at based on advance payment rules
     let targetStatus = 'pending_approval';
@@ -501,13 +647,13 @@ exports.create = async (req, res) => {
           : null);
     const cartItemsJsonStr = cartSummary ? JSON.stringify(cartSummary) : null;
 
-    console.log('[BOOKING] Inserting booking — type:', bookingType, 'status:', targetStatus, 'advance_amount:', advanceAmount);
+    console.log('[BOOKING] Inserting booking — type:', bookingType, 'status:', targetStatus, 'advance_amount:', advanceAmount, 'franchise_id:', bookingFranchiseId);
     const [result] = await conn.query(
       `INSERT INTO bookings 
        (customer_id, vehicle_id, slot_id, service_id, package_id, 
         vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category, total_duration,
-        status, is_free_wash, notes, booking_type, user_package_id, package_service_name, expires_at, advance_amount, total_amount, pickup_type, pickup_charge, discount_percent, discount_amount, cart_items_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, is_free_wash, notes, booking_type, user_package_id, package_service_name, expires_at, advance_amount, total_amount, pickup_type, pickup_charge, discount_percent, discount_amount, cart_items_json, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         customerId, resolvedVehicleId, slot_id,
         primaryServiceId || null, package_id || null,
@@ -515,7 +661,8 @@ exports.create = async (req, res) => {
         targetStatus, is_free_wash ? 1 : 0, notes || null,
         bookingType, resolvedUserPackageId, package_service_name || null,
         expiresAt, advanceAmount, calculatedTotal, pickup_type, calculatedPickupCharge,
-        discountPercent, discountAmount, cartItemsJsonStr
+        discountPercent, discountAmount, cartItemsJsonStr,
+        bookingFranchiseId
       ]
     );
 
@@ -530,6 +677,14 @@ exports.create = async (req, res) => {
           [bookingId, sid]
         );
       }
+    }
+
+    // 8b. Insert booking_slots junction records for tracked slots
+    for (const rSlotId of requiredSlotIds) {
+      await conn.query(
+        'INSERT INTO booking_slots (booking_id, slot_id) VALUES (?, ?)',
+        [bookingId, rSlotId]
+      );
     }
 
     await conn.commit();
@@ -597,6 +752,11 @@ exports.approve = async (req, res) => {
     if (!bookings.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Booking not found' }); }
 
     const booking = bookings[0];
+    if (!req.isSuperAdmin && booking.franchise_id && req.franchiseId && parseInt(booking.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      await conn.rollback();
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot approve booking from another franchise' });
+    }
+
     if (booking.status !== 'pending_approval') {
       await conn.rollback();
       return res.status(422).json({ success: false, error: `Cannot approve a ${booking.status} booking` });
@@ -871,6 +1031,11 @@ exports.reject = async (req, res) => {
     if (!bookings.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Booking not found' }); }
 
     const booking = bookings[0];
+    if (!req.isSuperAdmin && booking.franchise_id && req.franchiseId && parseInt(booking.franchise_id, 10) !== parseInt(req.franchiseId, 10)) {
+      await conn.rollback();
+      return res.status(403).json({ success: false, error: 'Access denied: Cannot reject booking from another franchise' });
+    }
+
     if (booking.status !== 'pending_approval' && booking.status !== 'confirmed') {
       await conn.rollback();
       return res.status(422).json({ success: false, error: `Cannot reject a ${booking.status} booking` });
@@ -882,8 +1047,8 @@ exports.reject = async (req, res) => {
       [booking_notes || 'Rejected by admin', req.user.id, id]
     );
 
-    // Restore slot count
-    await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [booking.slot_id]);
+    // Restore all booked slot(s) (including multi-hour consecutive slots)
+    await restoreBookingSlots(conn, id, booking.slot_id);
 
     // Restore free wash if applicable
     if (booking.is_free_wash) {
@@ -982,8 +1147,8 @@ exports.cancel = async (req, res) => {
     // 1. Cancel booking
     await conn.query("UPDATE bookings SET status = 'cancelled', expires_at = NULL WHERE id = ?", [id]);
 
-    // 2. Restore slot count
-    await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [booking.slot_id]);
+    // 2. Restore all booked slot(s) (including multi-hour consecutive slots)
+    await restoreBookingSlots(conn, id, booking.slot_id);
 
     // 3. Restore free wash if applicable
     if (booking.is_free_wash) {
@@ -1190,10 +1355,10 @@ exports.changeServices = async (req, res) => {
       const newServiceNames = services.map(s => s.name).join(', ');
       
       if (custRows.length && custRows[0].mobile) {
-        const msg = `O3 Car Spa: Hi ${custRows[0].name}, your services for booking #${id} have been updated to: ${newServiceNames}.`;
+        const msg = `O3 Car Spaa: Hi ${custRows[0].name}, your services for booking #${id} have been updated to: ${newServiceNames}.`;
         messagingService.sendSMS(custRows[0].mobile, null, null, { content: msg }).catch(() => {});
         
-        const waMsg = `🔄 *Services Updated*\n\nHi ${custRows[0].name},\nYour booking #${id} services have been successfully updated to:\n👉 *${newServiceNames}*\n\nThank you for choosing O3 Car Spa!`;
+        const waMsg = `🔄 *Services Updated*\n\nHi ${custRows[0].name},\nYour booking #${id} services have been successfully updated to:\n👉 *${newServiceNames}*\n\nThank you for choosing O3 Car Spaa!`;
         whatsappController._sendWhatsAppMessage(custRows[0].mobile, null, [], waMsg).catch(() => {});
       }
     } catch (msgErr) {
@@ -1236,27 +1401,7 @@ exports.createManual = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Customer ID and Slot ID are required' });
     }
 
-    // 1. Lock slot row
-    const [slots] = await conn.query(
-      'SELECT booked_count, max_capacity, is_blocked FROM slots WHERE id = ? FOR UPDATE',
-      [slot_id]
-    );
-    if (!slots.length) {
-      await conn.rollback();
-      return res.status(404).json({ success: false, error: 'Slot not found' });
-    }
-
-    const slot = slots[0];
-    if (slot.is_blocked) {
-      await conn.rollback();
-      return res.status(409).json({ success: false, error: 'Slot is blocked' });
-    }
-    if (slot.booked_count >= slot.max_capacity) {
-      await conn.rollback();
-      return res.status(409).json({ success: false, error: 'Slot is fully booked' });
-    }
-
-    // 2. Resolve vehicle data
+    // 1. Resolve vehicle data
     let resolvedBrand = vehicle_brand || null;
     let resolvedModel = vehicle_model || null;
     let resolvedRegNo = vehicle_reg_no || null;
@@ -1274,7 +1419,7 @@ exports.createManual = async (req, res) => {
       }
     }
 
-    // 3. Calculate total duration and total estimated amount
+    // 2. Calculate total duration and total estimated amount
     let totalDuration = null;
     const allServiceIds = service_ids && service_ids.length > 0 ? service_ids : (service_id ? [service_id] : []);
     
@@ -1284,6 +1429,38 @@ exports.createManual = async (req, res) => {
         [allServiceIds]
       );
       totalDuration = durations[0]?.total || null;
+    }
+
+    // 3. Atomically validate & lock consecutive slots
+    const manualFranchiseId = req.franchiseId || req.user?.franchise_id || 1;
+    const slotLock = await validateAndLockConsecutiveSlots(conn, slot_id, totalDuration, manualFranchiseId);
+    if (!slotLock.ok) {
+      await conn.rollback();
+      return res.status(slotLock.status).json({ success: false, error: slotLock.error });
+    }
+    const slot = slotLock.startSlot;
+    const requiredSlotIds = slotLock.slotIds;
+
+    // 4. Double booking guard
+    const [overlapCheck] = await conn.query(
+      `SELECT b.id FROM bookings b
+       JOIN slots s ON b.slot_id = s.id
+       WHERE b.customer_id = ?
+         AND (
+           (b.vehicle_id IS NOT NULL AND b.vehicle_id = ?)
+           OR (b.vehicle_reg_no IS NOT NULL AND b.vehicle_reg_no = ?)
+         )
+         AND s.slot_date = ?
+         AND b.status IN ('pending_approval', 'confirmed', 'pending_payment', 'in_progress')
+         AND (
+           b.slot_id IN (?)
+           OR EXISTS (SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id AND bs.slot_id IN (?))
+         )`,
+      [customer_id, resolvedVehicleId || 0, resolvedRegNo || '', slot.slot_date, requiredSlotIds, requiredSlotIds]
+    );
+    if (overlapCheck.length > 0) {
+      await conn.rollback();
+      return res.status(409).json({ success: false, error: 'Customer already has an active booking for this vehicle at an overlapping time on this date.' });
     }
 
     let calculatedTotal = 0;
@@ -1299,7 +1476,7 @@ exports.createManual = async (req, res) => {
       }, 0);
     }
 
-    // 4. Free wash deduction
+    // 5. Free wash deduction
     if (is_free_wash) {
       const [loyalty] = await conn.query('SELECT free_washes FROM loyalty WHERE customer_id = ?', [customer_id]);
       if (!loyalty.length || loyalty[0].free_washes <= 0) {
@@ -1312,7 +1489,7 @@ exports.createManual = async (req, res) => {
       );
     }
 
-    // 5. Package deduction immediately (since it's confirmed right away)
+    // 6. Package deduction immediately (since it's confirmed right away)
     let packageUsed = false;
     let resolvedUserPackageId = null;
     const primaryServiceId = service_id || (allServiceIds.length > 0 ? allServiceIds[0] : null);
@@ -1353,30 +1530,30 @@ exports.createManual = async (req, res) => {
 
     const bookingType = (use_package && packageUsed) ? 'package' : 'direct';
 
-    // 6. Increment booked_count
-    await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slot_id]);
+    // 7. Increment booked_count on all required slots
+    await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id IN (?)', [requiredSlotIds]);
 
-    // 7. Insert booking
+    // 8. Insert booking
     const [result] = await conn.query(
       `INSERT INTO bookings 
        (customer_id, vehicle_id, slot_id, service_id, package_id, 
         vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category, total_duration,
         status, is_free_wash, notes, booking_notes, booking_type, user_package_id, package_service_name, 
-        approved_by, approved_at, advance_amount, total_amount)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?, NOW(), 0, ?)`,
+        approved_by, approved_at, advance_amount, total_amount, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?, NOW(), 0, ?, ?)`,
       [
         customer_id, resolvedVehicleId, slot_id,
         primaryServiceId || null, package_id || null,
         resolvedBrand, resolvedModel, resolvedRegNo, vehicle_category || null, totalDuration,
         is_free_wash ? 1 : 0, notes || null, booking_notes || null,
         bookingType, resolvedUserPackageId, package_service_name || null,
-        req.user.id, calculatedTotal
+        req.user.id, calculatedTotal, manualFranchiseId
       ]
     );
 
     const bookingId = result.insertId;
 
-    // 8. Insert booking_services
+    // 9. Insert booking_services
     if (allServiceIds.length > 0) {
       for (const sid of allServiceIds) {
         await conn.query(
@@ -1384,6 +1561,14 @@ exports.createManual = async (req, res) => {
           [bookingId, sid]
         );
       }
+    }
+
+    // 10. Insert booking_slots junction records
+    for (const rSlotId of requiredSlotIds) {
+      await conn.query(
+        'INSERT INTO booking_slots (booking_id, slot_id) VALUES (?, ?)',
+        [bookingId, rSlotId]
+      );
     }
 
     // ─── Referral Completion & Welcome Reward Triggers ───
@@ -1552,7 +1737,7 @@ exports.createManual = async (req, res) => {
       if (custRows.length && custRows[0].mobile && slotRows.length) {
         const date = new Date(slotRows[0].slot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
         const time = slotRows[0].start_time ? slotRows[0].start_time.substring(0, 5) : '';
-        const msg = `O3 Car Spa: Hi ${custRows[0].name}, your manual booking #${bookingId} for ${date} at ${time} is CONFIRMED! See you soon.`;
+        const msg = `O3 Car Spaa: Hi ${custRows[0].name}, your manual booking #${bookingId} for ${date} at ${time} is CONFIRMED! See you soon.`;
         messagingService.sendSMS(custRows[0].mobile, null, null, { content: msg }).catch(() => {});
 
         whatsappController.sendBookingConfirmation(custRows[0].mobile, custRows[0].name, date, time, serviceName).catch(() => {});
@@ -1610,3 +1795,104 @@ exports.firstWashEligibility = async (req, res) => {
     res.status(500).json({ success: false, is_eligible: false });
   }
 };
+
+// ─── RESCHEDULE BOOKING (Admin or Customer) ─────
+exports.reschedule = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { id } = req.params;
+    const slot_id = req.body.slot_id || req.body.new_slot_id;
+
+    if (!slot_id) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'New slot ID is required' });
+    }
+
+    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [id]);
+    if (!bookings.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Booking not found' });
+    }
+
+    const booking = bookings[0];
+    if (req.user.role === 'customer' && booking.customer_id !== req.user.id) {
+      await conn.rollback();
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    // Validate and lock new consecutive slot(s)
+    const slotLock = await validateAndLockConsecutiveSlots(
+      conn,
+      slot_id,
+      booking.total_duration || 60,
+      booking.franchise_id || 1
+    );
+    if (!slotLock.ok) {
+      await conn.rollback();
+      return res.status(slotLock.status).json({ success: false, error: slotLock.error });
+    }
+
+    // 1. Restore old slot(s)
+    await restoreBookingSlots(conn, booking.id, booking.slot_id);
+
+    // 2. Reserve new slot(s)
+    await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id IN (?)', [slotLock.slotIds]);
+    for (const sid of slotLock.slotIds) {
+      await conn.query('INSERT INTO booking_slots (booking_id, slot_id) VALUES (?, ?)', [booking.id, sid]);
+    }
+
+    // 3. Update booking
+    const prevStatus = booking.status;
+    const newStatus = (prevStatus === 'reschedule_required' || prevStatus === 'confirmed') ? 'confirmed' : prevStatus;
+    const noteAppend = ` [Rescheduled from slot #${booking.slot_id} to #${slot_id}]`;
+
+    await conn.query(
+      `UPDATE bookings 
+       SET slot_id = ?, status = ?, notes = CONCAT(COALESCE(notes, ''), ?) 
+       WHERE id = ?`,
+      [slot_id, newStatus, noteAppend, booking.id]
+    );
+
+    await conn.commit();
+
+    // Fire-and-forget customer notification
+    try {
+      const messagingService = require('../services/messagingService');
+      await messagingService.notify(
+        booking.customer_id,
+        'BOOKING_UPDATE',
+        {
+          message: `Your booking #${booking.id} has been successfully rescheduled to ${slotLock.startSlot.slot_date} at ${slotLock.startSlot.start_time}.`
+        },
+        { type: 'booking', id: booking.id }
+      );
+    } catch (nErr) {
+      console.warn('[NOTIFY] Failed to notify customer on reschedule:', nErr.message);
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('booking_rescheduled', { booking_id: booking.id, new_slot_id: slot_id });
+    }
+
+    res.json({
+      success: true,
+      message: 'Booking rescheduled successfully',
+      data: {
+        id: booking.id,
+        slot_id,
+        status: newStatus,
+        slot_date: slotLock.startSlot.slot_date,
+        start_time: slotLock.startSlot.start_time,
+      }
+    });
+  } catch (err) {
+    await conn.rollback();
+    console.error('Booking reschedule error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  } finally {
+    conn.release();
+  }
+};
+

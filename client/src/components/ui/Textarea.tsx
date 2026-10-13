@@ -20,9 +20,10 @@ const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           ref={ref}
           id={textareaId}
           rows={3}
-          className={`w-full px-4 py-3 bg-[#f6f3f2] border-none rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white placeholder:text-[#8f6f6c]/60 transition-all text-base md:text-sm resize-none ${
+          className={`w-full px-4 py-3 bg-[#f6f3f2] border-none rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white placeholder:text-[#8f6f6c]/60 transition-all text-base md:text-sm resize-y min-h-[90px] whitespace-pre-wrap break-words ${
             error ? 'ring-2 ring-blue-400' : ''
           } ${className}`}
+
           {...props}
         />
         {error && <p className="text-[11px] text-blue-600 mt-1.5 font-medium">{error}</p>}

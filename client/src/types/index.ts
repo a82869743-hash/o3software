@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════
-export type UserRole = 'admin' | 'customer' | 'staff' | 'super_admin' | 'franchise';
+export type UserRole = 'admin' | 'customer' | 'staff' | 'super_admin' | 'manager' | 'franchise';
 
 export interface User {
   id: number;
@@ -17,6 +17,11 @@ export interface User {
   permissions?: string[];
   profile_picture?: string | null;
   franchise_id?: number;
+  must_change_password?: boolean;
+  is_impersonating?: boolean;
+  impersonator_id?: number;
+  impersonator_name?: string;
+  franchise_name?: string;
 }
 
 // ═══════════════════════════════════════════
@@ -91,6 +96,7 @@ export interface JobService {
   labor_charges: number;
   products: JobProduct[];
   subtotal?: number;
+  custom_notes?: string;
 }
 
 export interface JobPhoto {
@@ -128,6 +134,13 @@ export interface JobCart {
   pickup_charge?: number;
   invoice_notes?: string;
   pre_inspector_name?: string;
+  referral_person?: string;
+  handler_id?: number;
+  technician_id?: number;
+  team_incentive_users?: any[];
+  incentive_amount?: number;
+  incentive_splits?: any[];
+  edit_logs?: any[];
 }
 
 export interface JobCartCreatePayload {

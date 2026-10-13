@@ -17,10 +17,10 @@ export default function Logo({ size = 'md', showText = true, className = '', var
 
   return (
     <div className={`flex items-center gap-2.5 font-sans ${className}`}>
-      {/* Official O3 Car Spa Logo Badge */}
+      {/* Official O3 Car Spaa Logo Badge */}
       <img
         src="/assets/o3_logo.jpeg"
-        alt="O3 Car Spa Logo"
+        alt="O3 Car Spaa Logo"
         style={{ width: `${icon}px`, height: `${icon}px` }}
         className="rounded-lg object-contain shrink-0 shadow-xs"
       />
@@ -32,7 +32,7 @@ export default function Logo({ size = 'md', showText = true, className = '', var
               O3
             </span>
             <span className={`font-extrabold tracking-wider text-[11px] uppercase ${isLight ? 'text-sky-400' : 'text-[#0284C7]'}`}>
-              CAR-SPA
+              CAR-SPAA
             </span>
           </div>
           <span className={`text-[9px] font-bold tracking-widest uppercase ${isLight ? 'text-slate-400' : 'text-slate-500'} mt-0.5`}>

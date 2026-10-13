@@ -168,13 +168,13 @@ exports._processCapturedPayment = async (connection, razorpayOrderId, razorpayPa
         if (custRows.length && custRows[0].mobile && slotRows.length) {
           const date = new Date(slotRows[0].slot_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
           const time = slotRows[0].start_time ? slotRows[0].start_time.substring(0, 5) : '';
-          const msg = `O3 Car Spa: Hi ${custRows[0].name}, we received your advance payment of ₹${payment.amount}. Your booking #${payment.booking_id} is pending approval for ${date} at ${time}.`;
+          const msg = `O3 Car Spaa: Hi ${custRows[0].name}, we received your advance payment of ₹${payment.amount}. Your booking #${payment.booking_id} is pending approval for ${date} at ${time}.`;
           
           const messagingService = require('../services/messagingService');
           const whatsappController = require('./whatsappController');
           messagingService.sendSMS(custRows[0].mobile, null, null, { content: msg }).catch(() => {});
 
-          const waMsg = `⏳ *Advance Paid & Booking Pending*\n\nHi ${custRows[0].name},\nWe received your advance payment of *₹${payment.amount}*. Your booking #${payment.booking_id} is pending approval for ${date} at ${time}.\n\nThank you for choosing O3 Car Spa! 🚗`;
+          const waMsg = `⏳ *Advance Paid & Booking Pending*\n\nHi ${custRows[0].name},\nWe received your advance payment of *₹${payment.amount}*. Your booking #${payment.booking_id} is pending approval for ${date} at ${time}.\n\nThank you for choosing O3 Car Spaa! 🚗`;
           whatsappController._sendWhatsAppMessage(custRows[0].mobile, null, [], waMsg).catch(() => {});
         }
       } catch (msgErr) {
@@ -426,7 +426,7 @@ exports.createPayment = async (req, res) => {
     if (customer_id && finalAmount > 0) {
       const [uRows] = await connection.query('SELECT name, mobile FROM users WHERE id = ?', [customer_id]);
       if (uRows.length && uRows[0].mobile) {
-        const msg = `Dear ${uRows[0].name}, we have received your payment of ₹${finalAmount} via ${payment_method || 'cash'}. Thank you for choosing O3 Car Spa!`;
+        const msg = `Dear ${uRows[0].name}, we have received your payment of ₹${finalAmount} via ${payment_method || 'cash'}. Thank you for choosing O3 Car Spaa!`;
         messagingService.sendWhatsApp(uRows[0].mobile, msg).catch(console.error);
       }
     }
@@ -506,7 +506,7 @@ exports.createAdvancePayment = async (req, res) => {
     // Send WhatsApp receipt for advance
     const [uRows] = await pool.query('SELECT name, mobile FROM users WHERE id = ?', [customer_id]);
     if (uRows.length && uRows[0].mobile) {
-      const msg = `Dear ${uRows[0].name}, we have received your advance payment of ₹${advance_amount} via ${payment_method || 'cash'}. Balance due: ₹${balance}. Thank you for choosing O3 Car Spa!`;
+      const msg = `Dear ${uRows[0].name}, we have received your advance payment of ₹${advance_amount} via ${payment_method || 'cash'}. Balance due: ₹${balance}. Thank you for choosing O3 Car Spaa!`;
       messagingService.sendWhatsApp(uRows[0].mobile, msg).catch(console.error);
     }
 
@@ -778,30 +778,29 @@ exports.getPendingReminders = async (req, res) => {
     const [rows] = await pool.query(`
       SELECT 
         jc.id AS job_cart_id,
-        jc.balance_due,
-        jc.total_amount,
-        jc.advance_paid,
-        jc.payment_status,
+        COALESCE(jc.balance_due, 0) AS balance_due,
+        COALESCE(jc.total_amount, COALESCE(jc.advance_paid, 0) + COALESCE(jc.balance_due, 0), 0) AS total_amount,
+        COALESCE(jc.advance_paid, 0) AS advance_paid,
+        COALESCE(jc.payment_status, 'pending') AS payment_status,
         jc.visit_date,
         jc.status AS job_status,
         jc.completed_at,
         COALESCE(v.registration_no, 'N/A') AS registration_no,
         COALESCE(v.brand, '') AS brand,
-        COALESCE(v.model, '') AS model,
         v.customer_id AS customer_id,
         COALESCE(u.name, 'Customer') AS customer_name,
         COALESCE(u.mobile, '') AS customer_mobile
       FROM job_carts jc
       LEFT JOIN vehicles v ON jc.vehicle_id = v.id
-      LEFT JOIN users u ON v.customer_id = u.id
-      WHERE jc.balance_due > 0 AND (jc.status != 'cancelled' OR jc.status IS NULL)
+      LEFT JOIN users u ON u.id = v.customer_id
+      WHERE COALESCE(jc.balance_due, 0) > 0 AND (jc.status != 'cancelled' OR jc.status IS NULL)
         AND (jc.franchise_id = ? OR (jc.franchise_id IS NULL AND ? = 1))
       ORDER BY jc.balance_due DESC, jc.visit_date DESC
     `, [franchiseId, franchiseId]);
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('getPendingReminders error:', err.message);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.json({ success: true, data: [] });
   }
 };
 

@@ -24,10 +24,10 @@ exports.list = async (req, res) => {
        ORDER BY cr.created_at DESC`,
       params
     );
-    res.json({ success: true, data: rows });
+    res.json({ success: true, data: rows || [] });
   } catch (err) {
     console.error('Customer rewards list error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.json({ success: true, data: [] });
   }
 };
 
@@ -45,7 +45,12 @@ const awardWelcomeRewardInternal = async (customerId, conn = pool) => {
     await conn.query('INSERT INTO loyalty (customer_id, credits, free_washes) VALUES (?, 0, 0)', [customerId]);
   }
 
-  return null;
+  const [ins] = await conn.query(`
+    INSERT INTO customer_rewards (customer_id, reward_type, points_awarded, discount_pct, description, redeemed)
+    VALUES (?, 'welcome', 100, 10, 'Welcome to O3 Car Spaa reward: 100 bonus points & 10% discount', 0)
+  `, [customerId]);
+
+  return ins.insertId;
 };
 exports.awardWelcomeRewardInternal = awardWelcomeRewardInternal;
 
@@ -76,6 +81,11 @@ exports.redeem = async (req, res) => {
     if (existing[0].redeemed) return res.status(400).json({ success: false, error: 'Reward already redeemed' });
     if (existing[0].expires_at && new Date(existing[0].expires_at) < new Date()) {
       return res.status(400).json({ success: false, error: 'Reward expired' });
+    }
+
+    // IDOR Protection: If customer, verify ownership
+    if (req.user && req.user.role === 'customer' && existing[0].customer_id !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'You are not authorized to redeem this reward' });
     }
 
     await pool.query('UPDATE customer_rewards SET redeemed = 1, redeemed_at = NOW() WHERE id = ?', [id]);

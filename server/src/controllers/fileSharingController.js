@@ -188,7 +188,7 @@ exports.getSharedFile = async (req, res) => {
       return res.send(`
         <html>
         <head>
-          <title>${file.file_name} - Shared via O3 Car Spa</title>
+          <title>${file.file_name} - Shared via O3 Car Spaa</title>
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <style>
             body {
@@ -257,7 +257,7 @@ exports.getSharedFile = async (req, res) => {
           <div class="preview-container">
             <img src="${file.file_url}" alt="${file.file_name}" />
             <div class="title">${file.file_name}</div>
-            <div class="subtitle">Shared from O3 Car Spa Studio</div>
+            <div class="subtitle">Shared from O3 Car Spaa Studio</div>
             <a href="${file.file_url}" download="${file.file_name}" class="btn">Download Original Image</a>
           </div>
         </body>

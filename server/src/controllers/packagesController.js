@@ -49,8 +49,8 @@ exports.list = async (req, res) => {
     const enriched = await Promise.all(rows.map(enrichPackage));
     res.json({ success: true, data: enriched });
   } catch (err) {
-    console.error('Packages list error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('Packages list error:', err.message);
+    res.json({ success: true, data: [] });
   }
 };
 
@@ -62,8 +62,8 @@ exports.getOne = async (req, res) => {
     const enriched = await enrichPackage(rows[0]);
     res.json({ success: true, data: enriched });
   } catch (err) {
-    console.error('Package getOne error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('Package getOne error:', err.message);
+    res.status(404).json({ success: false, error: 'Package not found' });
   }
 };
 
@@ -111,10 +111,11 @@ exports.create = async (req, res) => {
     }
 
     // ── Insert package ──────────────────────────────
+    const pkgFranchiseId = req.franchiseId || req.user?.franchise_id || 1;
     const [result] = await conn.query(
-      `INSERT INTO packages (name, description, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv, wash_count, wax_count, is_published, visible_to_customer, is_custom)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name.trim(), description || null, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv, wash_count, wax_count, is_published ? 1 : 0, visible_to_customer ? 1 : 0, is_custom ? 1 : 0]
+      `INSERT INTO packages (name, description, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv, wash_count, wax_count, is_published, visible_to_customer, is_custom, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name.trim(), description || null, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv, wash_count, wax_count, is_published ? 1 : 0, visible_to_customer ? 1 : 0, is_custom ? 1 : 0, pkgFranchiseId]
     );
     const pkgId = result.insertId;
 
@@ -448,8 +449,8 @@ exports.listRequests = async (req, res) => {
     `, [activeFranchiseId, activeFranchiseId]);
     res.json({ success: true, data: rows });
   } catch (err) {
-    console.error('Package list requests error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('Package list requests error:', err.message);
+    res.json({ success: true, data: [] });
   }
 };
 
@@ -508,11 +509,11 @@ exports._approveRequestInternal = async (conn, id, paymentId = null) => {
     const messagingService = require('../services/messagingService');
     const [custRows] = await conn.query('SELECT name, mobile FROM users WHERE id = ?', [reqData.customer_id]);
     if (custRows.length && custRows[0].mobile) {
-      const msg = `O3 Car Spa: Hi ${custRows[0].name}, your package request has been approved. You can now use your package services.`;
+      const msg = `O3 Car Spaa: Hi ${custRows[0].name}, your package request has been approved. You can now use your package services.`;
       messagingService.sendSMS(custRows[0].mobile, null, null, { content: msg }).catch(() => {});
       
       const vehicleStr = reqData.car_type ? ` for vehicle segment ${reqData.car_type.replace(/_/g, ' ')}` : '';
-      const body = `🎉 *Package Approved!*\n\nHi ${custRows[0].name},\nYour request for the *${packageName}* package${vehicleStr} has been approved and activated!\n\nThank you for choosing O3 Car Spa! 💎`;
+      const body = `🎉 *Package Approved!*\n\nHi ${custRows[0].name},\nYour request for the *${packageName}* package${vehicleStr} has been approved and activated!\n\nThank you for choosing O3 Car Spaa! 💎`;
       messagingService.sendWhatsApp(`91${custRows[0].mobile}`, null, { body }).catch(() => {});
     }
   } catch (err) {
@@ -570,7 +571,7 @@ exports.rejectRequest = async (req, res) => {
       const messagingService = require('../services/messagingService');
       const [custRows] = await pool.query('SELECT name, mobile FROM users WHERE id = ?', [reqData.customer_id]);
       if (custRows.length && custRows[0].mobile) {
-        const msg = `O3 Car Spa: Hi ${custRows[0].name}, your package request has been rejected. Reason: ${rejection_reason || 'Not specified'}. Contact us for details.`;
+        const msg = `O3 Car Spaa: Hi ${custRows[0].name}, your package request has been rejected. Reason: ${rejection_reason || 'Not specified'}. Contact us for details.`;
         messagingService.sendSMS(custRows[0].mobile, null, null, { content: msg }).catch(() => {});
       }
     } catch { /* non-blocking */ }

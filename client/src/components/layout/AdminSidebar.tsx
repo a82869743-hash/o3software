@@ -7,7 +7,7 @@ import {
   DollarSign, MessageSquare, HelpCircle, Upload, Settings, LogOut, X, ShoppingCart,
   Layers, FileText, Wallet, Archive, PlusCircle, Trash2, ChevronDown, ChevronRight,
   Droplets, Star, Truck, Sparkles, CreditCard, BarChart3, Shield, CheckSquare, Gift, MapPin,
-  ShoppingBag, Bell
+  ShoppingBag, Bell, Building2
 } from 'lucide-react';
 import Logo from '../shared/Logo';
 import FranchiseSwitcher from '../admin/FranchiseSwitcher';
@@ -26,6 +26,7 @@ interface NavItem {
   end?: boolean;
   badge?: string;
   permission?: string;
+  superAdminOnly?: boolean;
 }
 
 const navCategories: NavCategory[] = [
@@ -79,7 +80,7 @@ const navCategories: NavCategory[] = [
     items: [
       { to: '/admin/inventory', icon: Package, label: 'Inventory', permission: 'inventory.view' },
       { to: '/admin/franchise-orders', icon: ShoppingBag, label: 'Franchise Stock Order', badge: 'Order', permission: 'inventory.view' },
-      { to: '/admin/stock-approvals', icon: ShoppingCart, label: 'Stock Approvals Console', badge: 'Admin', permission: 'inventory.view' },
+      { to: '/admin/stock-approvals', icon: ShoppingCart, label: 'Stock Approvals Console', badge: 'Super', permission: 'inventory.view', superAdminOnly: true },
       { to: '/admin/buy-sell', icon: ShoppingCart, label: 'Buy & Sell', permission: 'inventory.view' },
       { to: '/admin/product-orders', icon: ShoppingBag, label: 'Product Orders', permission: 'inventory.view' },
     ],
@@ -120,10 +121,11 @@ const navCategories: NavCategory[] = [
     label: 'System',
     defaultOpen: true,
     items: [
-      { to: '/admin/roles', icon: Shield, label: 'Roles & RBAC', badge: 'New', permission: 'settings.view' },
-      { to: '/admin/audit-logs', icon: Shield, label: 'Audit Logs', badge: 'New', permission: 'settings.view' },
+      { to: '/admin/franchises', icon: Building2, label: 'Franchise Network', badge: 'Super', permission: 'settings.view', superAdminOnly: true },
+      { to: '/admin/roles', icon: Shield, label: 'Roles & RBAC', badge: 'Super', permission: 'settings.view', superAdminOnly: true },
+      { to: '/admin/audit-logs', icon: Shield, label: 'Audit Logs', badge: 'Super', permission: 'settings.view', superAdminOnly: true },
       { to: '/admin/import', icon: Upload, label: 'Import', permission: 'settings.view' },
-      { to: '/admin/archive', icon: Trash2, label: 'Recycle Bin', permission: 'settings.view' },
+      { to: '/admin/archive', icon: Trash2, label: 'Recycle Bin', badge: 'Super', permission: 'settings.view', superAdminOnly: true },
       { to: '/admin/settings', icon: Settings, label: 'Settings', permission: 'settings.view' },
     ],
   },
@@ -230,11 +232,15 @@ export default function AdminSidebar() {
   const filteredCategories = navCategories
     .map((category) => {
       const items = category.items.filter((item) => {
+        // Enforce Super Admin only items strictly on Super Admin role
+        if (item.superAdminOnly && user?.role !== 'super_admin') return false;
+
         // Main Studio holds master stock & central pricing; cannot order for itself (only approves/rejects)
         if (item.to === '/admin/franchise-orders' && (user?.franchise_id === 1 || !user?.franchise_id) && activeFranchiseId === 1) return false;
 
+        if (user?.role === 'super_admin') return true;
         if (!item.permission) return true;
-        if (user?.role === 'admin' || user?.role === 'super_admin') return true;
+        if (user?.role === 'admin') return true;
         return user?.permissions?.includes(item.permission);
       });
       return { ...category, items };
@@ -290,8 +296,10 @@ export default function AdminSidebar() {
               {user?.name?.charAt(0) || 'S'}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-slate-900 font-extrabold truncate">{user?.name || 'Sharanpalsingh Sodhi'}</p>
-              <p className="text-[10px] text-slate-500 font-medium truncate">Solo Admin</p>
+              <p className="text-xs text-slate-900 font-extrabold truncate">{user?.name || 'Administrator'}</p>
+              <p className="text-[10px] text-slate-500 font-medium truncate">
+                {user?.role === 'super_admin' ? 'Super Admin' : user?.role === 'admin' ? 'Franchise Admin' : (user?.role || 'Staff')}
+              </p>
             </div>
             <button
               onClick={handleLogout}

@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import {
   ChevronLeft, ChevronRight, Calendar, Plus, Loader2, X,
   Lock, Unlock, Trash2, Car, FileText, Phone, Clock,
-  ArrowRight, User, ExternalLink
+  ArrowRight, User, ExternalLink, RotateCcw, Ban, AlertTriangle
 } from 'lucide-react';
-import { useSlots, useBulkCreateSlots, useUpdateSlot, useDeleteSlot } from '../../api/hooks/useSlots';
+import {
+  useSlots, useBulkCreateSlots, useUpdateSlot, useDeleteSlot, useRestoreSlot,
+  useSlotClosures, useCreateClosure, useDeleteClosure
+} from '../../api/hooks/useSlots';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -35,13 +38,37 @@ export default function SlotsPage() {
   const navigate = useNavigate();
   const toast = useUIStore((s) => s.toast);
   const [weekOffset, setWeekOffset] = useState(0);
+  const [showDeleted, setShowDeleted] = useState(false);
   const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset]);
   const from_date = fmtDate(weekDates[0]);
   const to_date = fmtDate(weekDates[6]);
 
-  const { data, isLoading, refetch } = useSlots({ from_date, to_date });
+  const { data, isLoading, refetch } = useSlots({ from_date, to_date, include_deleted: showDeleted } as any);
   const updateMut = useUpdateSlot();
   const deleteMut = useDeleteSlot();
+  const restoreMut = useRestoreSlot();
+
+  const { data: closuresData, refetch: refetchClosures } = useSlotClosures();
+  const createClosureMut = useCreateClosure();
+  const deleteClosureMut = useDeleteClosure();
+  const closuresList = closuresData?.data || [];
+
+  // ─── Closure / Holiday state ───────────
+  const [closureModalOpen, setClosureModalOpen] = useState(false);
+  const [closureTab, setClosureTab] = useState<'create' | 'list'>('create');
+  const [closureType, setClosureType] = useState<string>('full_day');
+  const [closureStartDate, setClosureStartDate] = useState('');
+  const [closureEndDate, setClosureEndDate] = useState('');
+  const [closureSlotTime, setClosureSlotTime] = useState('09:00');
+  const [closureRecurrenceDay, setClosureRecurrenceDay] = useState<number>(0);
+  const [closureTitle, setClosureTitle] = useState('');
+  const [closureReason, setClosureReason] = useState('');
+  const [closureLoading, setClosureLoading] = useState(false);
+
+  // ─── Conflict & Reschedule state ──────
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [affectedBookings, setAffectedBookings] = useState<any[]>([]);
+  const [pendingClosurePayload, setPendingClosurePayload] = useState<any>(null);
 
   // ─── Generate modal ─────────────────────
   const [genOpen, setGenOpen] = useState(false);
@@ -51,6 +78,7 @@ export default function SlotsPage() {
   const [genEnd, setGenEnd] = useState('18:00');
   const [genDuration, setGenDuration] = useState('60');
   const [genCapacity, setGenCapacity] = useState(3);
+  const [isGenerating, setIsGenerating] = useState(false);
   const bulkMut = useBulkCreateSlots();
 
   // ─── Slide-out panel ────────────────────
@@ -112,18 +140,36 @@ export default function SlotsPage() {
   }, [slots]);
 
   const handleGenerate = async () => {
+    if (bulkMut.isPending || isGenerating) return;
     if (!genFrom || !genTo) { toast('error', 'Select date range'); return; }
+    
+    // Normalize date format if browser or user used DD-MM-YYYY
+    const normalizeDate = (val: string) => {
+      if (!val) return '';
+      const parts = val.trim().split(/[-/]/);
+      if (parts.length === 3 && parts[2].length === 4) {
+        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+      return val;
+    };
+
+    setIsGenerating(true);
     try {
       const res = await bulkMut.mutateAsync({
-        from_date: genFrom, to_date: genTo,
-        start_time: genStart, end_time: genEnd,
-        slot_duration_minutes: parseInt(genDuration), max_capacity: genCapacity,
+        from_date: normalizeDate(genFrom),
+        to_date: normalizeDate(genTo),
+        start_time: genStart,
+        end_time: genEnd,
+        slot_duration_minutes: parseInt(genDuration),
+        max_capacity: genCapacity,
       });
-      toast('success', res.message || 'Slots generated');
+      toast('success', res.message || 'Slots generated successfully');
       setGenOpen(false);
       refetch();
     } catch (err: any) {
-      toast('error', err?.response?.data?.error || 'Failed');
+      toast('error', err?.response?.data?.error || 'Failed to generate slots. Please check database connection.');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -154,6 +200,115 @@ export default function SlotsPage() {
     } catch { toast('error', 'Failed to update slot'); }
   };
 
+  const handleSaveClosure = async (forceConfirm = false) => {
+    if (!closureStartDate && closureType !== 'recurring_weekly') {
+      toast('error', 'Please select a date');
+      return;
+    }
+
+    let finalStart = closureStartDate;
+    let finalEnd = closureEndDate;
+    let isRecurring = false;
+    let recType = 'none';
+    let recDay = null;
+
+    if (closureType === 'single_slot') {
+      finalEnd = finalStart;
+    } else if (closureType === 'full_day') {
+      finalEnd = finalStart;
+    } else if (closureType === 'week') {
+      const d = new Date(finalStart + 'T00:00:00');
+      d.setDate(d.getDate() + 6);
+      finalEnd = fmtDate(d);
+    } else if (closureType === 'range') {
+      if (!finalEnd) finalEnd = finalStart;
+    } else if (closureType === 'recurring_weekly') {
+      isRecurring = true;
+      recType = 'weekly';
+      recDay = closureRecurrenceDay;
+      if (!finalStart) finalStart = fmtDate(new Date());
+      finalEnd = finalStart;
+    } else if (closureType === 'recurring_yearly') {
+      isRecurring = true;
+      recType = 'yearly';
+      finalEnd = finalStart;
+    }
+
+    const payload: any = {
+      closure_type: closureType,
+      start_date: finalStart,
+      end_date: finalEnd,
+      slot_time: closureType === 'single_slot' ? closureSlotTime : undefined,
+      title: closureTitle.trim() || undefined,
+      reason: closureReason.trim() || undefined,
+      is_recurring: isRecurring,
+      recurrence_type: recType,
+      recurrence_day: recDay,
+      confirm: forceConfirm,
+      action: 'reschedule_notify',
+    };
+
+    setClosureLoading(true);
+    try {
+      const res = await createClosureMut.mutateAsync(payload);
+      if (res.requires_confirmation) {
+        setAffectedBookings(res.affected_bookings || []);
+        setPendingClosurePayload(payload);
+        setConflictModalOpen(true);
+        return;
+      }
+
+      toast('success', res.message || 'Closure created successfully');
+      setClosureModalOpen(false);
+      setConflictModalOpen(false);
+      setAffectedBookings([]);
+      setPendingClosurePayload(null);
+      refetch();
+      refetchClosures();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to create closure');
+    } finally {
+      setClosureLoading(false);
+    }
+  };
+
+  const handleConfirmConflictReschedule = async () => {
+    if (!pendingClosurePayload) return;
+    setClosureLoading(true);
+    try {
+      const res = await createClosureMut.mutateAsync({
+        ...pendingClosurePayload,
+        confirm: true,
+        action: 'reschedule_notify',
+      });
+      toast('success', res.message || 'Closure applied and bookings marked for reschedule');
+      setConflictModalOpen(false);
+      setClosureModalOpen(false);
+      setAffectedBookings([]);
+      setPendingClosurePayload(null);
+      refetch();
+      refetchClosures();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to confirm closure');
+    } finally {
+      setClosureLoading(false);
+    }
+  };
+
+  const handleReopenClosure = async (closureId: number, title?: string) => {
+    const confirm = window.confirm(`Are you sure you want to reopen this closure "${title || 'Closure'}"? All matching slots will be reopened immediately.`);
+    if (!confirm) return;
+
+    try {
+      await deleteClosureMut.mutateAsync(closureId);
+      toast('success', 'Closure reopened and slots restored!');
+      refetch();
+      refetchClosures();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to reopen closure');
+    }
+  };
+
   const handleSaveCap = async () => {
     if (!selectedSlot) return;
     const val = parseInt(capVal);
@@ -168,7 +323,8 @@ export default function SlotsPage() {
   };
 
   const getCellStyle = (slot: any) => {
-    if (slot.is_blocked) return 'bg-gray-100 border-gray-200';
+    if (slot.is_deleted) return 'bg-red-50/70 border-red-200 opacity-70 hover:opacity-100';
+    if (slot.is_blocked) return 'bg-rose-50 border-rose-200';
     if (slot.booked_count >= slot.max_capacity) return 'bg-blue-50 border-blue-200';
     if (slot.booked_count > 0) return 'bg-amber-50 border-amber-200';
     return 'bg-green-50 border-green-200';
@@ -181,6 +337,14 @@ export default function SlotsPage() {
         subtitle={`Week of ${weekDates[0].toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${weekDates[6].toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`}
         actions={
           <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => { setClosureTab('create'); setClosureModalOpen(true); }}
+              icon={<Ban size={14} className="text-rose-500" />}
+            >
+              Close Slots / Holidays {closuresList.length > 0 ? `(${closuresList.length})` : ''}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -197,19 +361,31 @@ export default function SlotsPage() {
       />
 
       {/* Week Navigation */}
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={() => setWeekOffset(weekOffset - 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-          <ChevronLeft size={20} />
-        </button>
-        <button
-          onClick={() => setWeekOffset(0)}
-          className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider bg-[#f6f3f2] rounded-lg hover:bg-[#e5e2e1] transition-colors"
-        >
-          This Week
-        </button>
-        <button onClick={() => setWeekOffset(weekOffset + 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
-          <ChevronRight size={20} />
-        </button>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <button onClick={() => setWeekOffset(weekOffset - 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
+            <ChevronLeft size={20} />
+          </button>
+          <button
+            onClick={() => setWeekOffset(0)}
+            className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider bg-[#f6f3f2] rounded-lg hover:bg-[#e5e2e1] transition-colors"
+          >
+            This Week
+          </button>
+          <button onClick={() => setWeekOffset(weekOffset + 1)} className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
+            <ChevronRight size={20} />
+          </button>
+        </div>
+
+        <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#5f5e5e] hover:text-[#0F172A] transition-colors bg-white px-3 py-1.5 rounded-lg border border-gray-200">
+          <input
+            type="checkbox"
+            checked={showDeleted}
+            onChange={(e) => setShowDeleted(e.target.checked)}
+            className="rounded border-gray-300 text-[#2563EB] focus:ring-[#2563EB]"
+          />
+          <span>Show Archived / Deleted Slots</span>
+        </label>
       </div>
 
       <div className="flex gap-6">
@@ -233,9 +409,30 @@ export default function SlotsPage() {
                     <th className="p-3 text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] text-left w-24 sticky left-0 bg-white z-10">Time</th>
                     {weekDates.map((d) => {
                       const isToday = fmtDate(d) === fmtDate(new Date());
+                      const dayClosure = closuresList.find((c: any) => {
+                        if (c.is_recurring) {
+                          if (c.recurrence_type === 'weekly') return d.getDay() === parseInt(c.recurrence_day, 10);
+                          if (c.recurrence_type === 'yearly' && c.start_date) {
+                            const [cy, cm, cd] = c.start_date.split('-').map(Number);
+                            return (d.getMonth() + 1) === cm && d.getDate() === cd;
+                          }
+                        } else {
+                          if (!c.slot_time) {
+                            const ds = fmtDate(d);
+                            return ds >= c.start_date && ds <= c.end_date;
+                          }
+                        }
+                        return false;
+                      });
+
                       return (
                         <th key={fmtDate(d)} className={`p-3 text-[10px] font-extrabold uppercase tracking-widest text-center min-w-[140px] ${isToday ? 'text-[#2563EB] bg-blue-50/30' : 'text-[#5f5e5e]'}`}>
-                          {fmtDay(d)}
+                          <div>{fmtDay(d)}</div>
+                          {dayClosure && (
+                            <div className="text-[9px] font-black text-rose-700 bg-rose-100 rounded px-1.5 py-0.5 mt-0.5 max-w-[130px] truncate mx-auto border border-rose-200" title={dayClosure.title || dayClosure.reason || 'Closed'}>
+                              {dayClosure.title || 'Studio Closed'}
+                            </div>
+                          )}
                         </th>
                       );
                     })}
@@ -262,7 +459,13 @@ export default function SlotsPage() {
                               className={`w-full rounded-xl border text-left transition-all hover:shadow-md hover:scale-[1.02] ${getCellStyle(slot)} ${selectedSlot?.id === slot.id ? 'ring-2 ring-[#2563EB] shadow-md' : ''}`}
                               style={{ minHeight: '64px' }}
                             >
-                              {slot.is_blocked ? (
+                              {slot.is_deleted ? (
+                                <div className="p-2 flex flex-col items-center justify-center text-red-500 text-center" title="Deleted Slot — Click to Restore">
+                                  <RotateCcw size={14} className="shrink-0 text-red-500" />
+                                  <span className="text-[10px] font-extrabold mt-1 line-through text-red-600">Deleted</span>
+                                  <span className="text-[8px] font-bold text-red-500 uppercase tracking-wider mt-0.5">Click to Undo</span>
+                                </div>
+                              ) : slot.is_blocked ? (
                                 <div className="p-2 flex flex-col items-center justify-center text-gray-400 text-center" title={slot.blocked_reason || 'Blocked'}>
                                   <Lock size={14} className="shrink-0" />
                                   <span className="text-[10px] font-bold mt-1">Blocked</span>
@@ -479,32 +682,64 @@ export default function SlotsPage() {
 
             {/* Slot Actions */}
             <div className="mt-5 pt-4 border-t border-gray-100 space-y-2">
-              <Button
-                variant={selectedSlot.is_blocked ? 'primary' : 'secondary'}
-                size="sm"
-                className="w-full"
-                onClick={() => handleToggleBlock(selectedSlot)}
-                icon={selectedSlot.is_blocked ? <Unlock size={14} /> : <Lock size={14} />}
-              >
-                {selectedSlot.is_blocked ? 'Unblock Slot' : 'Block Slot'}
-              </Button>
-              {selectedSlot.booked_count === 0 && (
+              {selectedSlot.is_deleted ? (
                 <Button
-                  variant="danger"
+                  variant="primary"
                   size="sm"
                   className="w-full"
                   onClick={async () => {
                     try {
-                      await deleteMut.mutateAsync(selectedSlot.id);
-                      toast('success', 'Slot deleted');
+                      await restoreMut.mutateAsync(selectedSlot.id);
+                      toast('success', 'Slot restored and synced live with customers');
                       setSelectedSlot(null);
                       refetch();
-                    } catch (err: any) { toast('error', err?.response?.data?.error || 'Failed'); }
+                    } catch (err: any) { toast('error', err?.response?.data?.error || 'Failed to restore'); }
                   }}
-                  icon={<Trash2 size={14} />}
+                  icon={<RotateCcw size={14} />}
                 >
-                  Delete Slot
+                  Restore / Undo Delete Slot
                 </Button>
+              ) : (
+                <>
+                  {selectedSlot.is_blocked && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-xs font-medium space-y-1">
+                      <div className="font-extrabold flex items-center gap-1.5 text-rose-900">
+                        <Ban size={14} /> Closed / Blocked
+                      </div>
+                      <div>Reason: <strong>{selectedSlot.blocked_reason || 'Manual block'}</strong></div>
+                      {selectedSlot.closure_type && (
+                        <div className="text-[10px] text-rose-600 uppercase font-bold">Scope: {selectedSlot.closure_type}</div>
+                      )}
+                    </div>
+                  )}
+                  <Button
+                    variant={selectedSlot.is_blocked ? 'primary' : 'secondary'}
+                    size="sm"
+                    className="w-full"
+                    onClick={() => handleToggleBlock(selectedSlot)}
+                    icon={selectedSlot.is_blocked ? <Unlock size={14} /> : <Lock size={14} />}
+                  >
+                    {selectedSlot.is_blocked ? 'Unblock Slot' : 'Block Slot'}
+                  </Button>
+                  {selectedSlot.booked_count === 0 && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="w-full"
+                      onClick={async () => {
+                        try {
+                          await deleteMut.mutateAsync(selectedSlot.id);
+                          toast('success', 'Slot deleted. Check "Show Archived / Deleted Slots" to undo anytime.');
+                          setSelectedSlot(null);
+                          refetch();
+                        } catch (err: any) { toast('error', err?.response?.data?.error || 'Failed'); }
+                      }}
+                      icon={<Trash2 size={14} />}
+                    >
+                      Delete Slot
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -519,8 +754,8 @@ export default function SlotsPage() {
         size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setGenOpen(false)}>Cancel</Button>
-            <Button onClick={handleGenerate} loading={bulkMut.isPending}>Generate</Button>
+            <Button variant="ghost" onClick={() => setGenOpen(false)} disabled={bulkMut.isPending || isGenerating}>Cancel</Button>
+            <Button onClick={handleGenerate} loading={bulkMut.isPending || isGenerating} disabled={bulkMut.isPending || isGenerating}>Generate</Button>
           </>
         }
       >
@@ -549,6 +784,353 @@ export default function SlotsPage() {
             value={genCapacity || ''}
             onChange={(e) => setGenCapacity(parseInt(e.target.value) || 1)}
           />
+        </div>
+      </Modal>
+
+      {/* ═══ Slot Closures & Holidays Management Modal ═══ */}
+      <Modal
+        open={closureModalOpen}
+        onClose={() => setClosureModalOpen(false)}
+        title="Slot Closures & Holiday Management"
+        size="lg"
+      >
+        <div className="space-y-4">
+          {/* Tabs */}
+          <div className="flex border-b border-gray-100">
+            <button
+              onClick={() => setClosureTab('create')}
+              className={`pb-2.5 px-4 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 ${
+                closureTab === 'create'
+                  ? 'border-[#2563EB] text-[#2563EB]'
+                  : 'border-transparent text-[#5f5e5e] hover:text-[#0F172A]'
+              }`}
+            >
+              + Add Closure or Holiday
+            </button>
+            <button
+              onClick={() => setClosureTab('list')}
+              className={`pb-2.5 px-4 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 flex items-center gap-1.5 ${
+                closureTab === 'list'
+                  ? 'border-[#2563EB] text-[#2563EB]'
+                  : 'border-transparent text-[#5f5e5e] hover:text-[#0F172A]'
+              }`}
+            >
+              Active Closures & Holidays
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-gray-100 text-[#0F172A]">
+                {closuresList.length}
+              </span>
+            </button>
+          </div>
+
+          {closureTab === 'create' ? (
+            <div className="space-y-4 pt-1">
+              <div>
+                <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                  Closure Scope *
+                </label>
+                <select
+                  value={closureType}
+                  onChange={(e) => setClosureType(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-[#f6f3f2] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
+                >
+                  <option value="single_slot">Single Slot (Specific Date & Time)</option>
+                  <option value="full_day">Whole Day (Entire Date Closed)</option>
+                  <option value="week">Whole Week (7 Consecutive Days)</option>
+                  <option value="range">Custom Date Range (From - To Dates)</option>
+                  <option value="recurring_weekly">Recurring Weekly Holiday (e.g. Every Monday / Sunday)</option>
+                  <option value="recurring_yearly">Recurring Yearly Holiday (e.g. Diwali / National Holiday)</option>
+                </select>
+              </div>
+
+              {/* Dynamic Inputs depending on type */}
+              {closureType === 'single_slot' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input
+                    label="Date *"
+                    type="date"
+                    value={closureStartDate}
+                    onChange={(e) => setClosureStartDate(e.target.value)}
+                  />
+                  <Input
+                    label="Slot Time *"
+                    type="time"
+                    value={closureSlotTime}
+                    onChange={(e) => setClosureSlotTime(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {closureType === 'full_day' && (
+                <div>
+                  <Input
+                    label="Closure Date *"
+                    type="date"
+                    value={closureStartDate}
+                    onChange={(e) => setClosureStartDate(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {closureType === 'week' && (
+                <div>
+                  <Input
+                    label="Week Start Date (Closes 7 Consecutive Days) *"
+                    type="date"
+                    value={closureStartDate}
+                    onChange={(e) => setClosureStartDate(e.target.value)}
+                  />
+                  <p className="text-[11px] text-[#5f5e5e] mt-1">
+                    Will automatically close from this date for the following 7 days.
+                  </p>
+                </div>
+              )}
+
+              {closureType === 'range' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input
+                    label="From Date *"
+                    type="date"
+                    value={closureStartDate}
+                    onChange={(e) => setClosureStartDate(e.target.value)}
+                  />
+                  <Input
+                    label="To Date *"
+                    type="date"
+                    value={closureEndDate}
+                    onChange={(e) => setClosureEndDate(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {closureType === 'recurring_weekly' && (
+                <div>
+                  <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                    Repeats Every Week On *
+                  </label>
+                  <select
+                    value={closureRecurrenceDay}
+                    onChange={(e) => setClosureRecurrenceDay(parseInt(e.target.value, 10))}
+                    className="w-full px-3 py-2.5 bg-[#f6f3f2] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
+                  >
+                    <option value={0}>Sunday</option>
+                    <option value={1}>Monday</option>
+                    <option value={2}>Tuesday</option>
+                    <option value={3}>Wednesday</option>
+                    <option value={4}>Thursday</option>
+                    <option value={5}>Friday</option>
+                    <option value={6}>Saturday</option>
+                  </select>
+                </div>
+              )}
+
+              {closureType === 'recurring_yearly' && (
+                <div>
+                  <Input
+                    label="Holiday Date (Month & Day repeats annually) *"
+                    type="date"
+                    value={closureStartDate}
+                    onChange={(e) => setClosureStartDate(e.target.value)}
+                  />
+                  <p className="text-[11px] text-[#5f5e5e] mt-1">
+                    This day will automatically be marked closed every year on the same month & day.
+                  </p>
+                </div>
+              )}
+
+              <Input
+                label="Holiday / Closure Title *"
+                placeholder="e.g. Diwali Holiday, Studio Deep Cleaning, Sunday Off"
+                value={closureTitle}
+                onChange={(e) => setClosureTitle(e.target.value)}
+              />
+
+              <div>
+                <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                  Reason Shown to Customers *
+                </label>
+                <textarea
+                  rows={2}
+                  value={closureReason}
+                  onChange={(e) => setClosureReason(e.target.value)}
+                  placeholder="e.g. Studio is closed for Diwali celebrations. Appointments will resume tomorrow."
+                  className="w-full px-3 py-2 bg-[#f6f3f2] border border-transparent rounded-lg text-sm text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all"
+                />
+                <p className="text-[11px] text-[#5f5e5e] mt-1">
+                  Customers will see this notice clearly on the booking calendar and time slot screen.
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                <Button variant="ghost" onClick={() => setClosureModalOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => handleSaveClosure(false)}
+                  loading={closureLoading || createClosureMut.isPending}
+                  disabled={closureLoading || createClosureMut.isPending}
+                  icon={<Ban size={14} />}
+                >
+                  Create Closure / Holiday
+                </Button>
+              </div>
+            </div>
+          ) : (
+            /* Active Closures Table */
+            <div className="pt-1">
+              {closuresList.length === 0 ? (
+                <div className="py-12 text-center bg-gray-50 rounded-xl border border-gray-100">
+                  <Calendar size={32} className="text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm font-bold text-[#0F172A]">No Active Closures or Holidays</p>
+                  <p className="text-xs text-[#5f5e5e] mt-0.5">Add a closure using the tab above.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-[420px] rounded-lg border border-gray-200">
+                  <table className="w-full border-collapse text-left text-xs">
+                    <thead className="bg-[#f6f3f2] sticky top-0 z-10 border-b border-gray-200">
+                      <tr>
+                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Title & Reason</th>
+                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Scope</th>
+                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Schedule</th>
+                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e] text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                      {closuresList.map((c: any) => {
+                        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                        let scheduleText = '';
+                        if (c.is_recurring) {
+                          if (c.recurrence_type === 'weekly') {
+                            scheduleText = `Weekly: Every ${dayNames[c.recurrence_day] || 'Week'}`;
+                          } else if (c.recurrence_type === 'yearly') {
+                            scheduleText = `Annual: Every year on ${c.start_date ? c.start_date.substring(5) : ''}`;
+                          }
+                        } else {
+                          if (c.slot_time) {
+                            scheduleText = `${c.start_date} at ${formatTime(c.slot_time)}`;
+                          } else if (c.start_date === c.end_date) {
+                            scheduleText = `${c.start_date} (Full Day)`;
+                          } else {
+                            scheduleText = `${c.start_date} to ${c.end_date}`;
+                          }
+                        }
+
+                        return (
+                          <tr key={c.id} className="hover:bg-gray-50/70 transition-colors">
+                            <td className="p-3">
+                              <p className="font-extrabold text-[#0F172A]">{c.title || 'Studio Closure'}</p>
+                              {c.reason && <p className="text-gray-500 text-[11px] mt-0.5">{c.reason}</p>}
+                            </td>
+                            <td className="p-3">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-50 text-rose-700 border border-rose-200">
+                                {c.closure_type || (c.is_recurring ? c.recurrence_type : 'closure')}
+                              </span>
+                            </td>
+                            <td className="p-3 text-gray-700 font-medium">
+                              {scheduleText}
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                onClick={() => handleReopenClosure(c.id, c.title)}
+                                className="px-2.5 py-1 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors uppercase tracking-wider"
+                              >
+                                Reopen
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* ═══ Affected Bookings Conflict Modal ═══ */}
+      <Modal
+        open={conflictModalOpen}
+        onClose={() => setConflictModalOpen(false)}
+        title="⚠️ Existing Bookings Found in Closure Range"
+        size="lg"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setConflictModalOpen(false)}
+              disabled={closureLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleConfirmConflictReschedule}
+              loading={closureLoading}
+              disabled={closureLoading}
+              icon={<RotateCcw size={14} />}
+            >
+              Confirm Closure & Mark for Reschedule ({affectedBookings.length})
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3">
+            <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <p className="font-extrabold text-sm text-amber-950">
+                Action Required: {affectedBookings.length} Active Booking(s) Affected
+              </p>
+              <p className="mt-1 leading-relaxed">
+                As per system policy, bookings are <strong>NEVER silently deleted</strong>. Confirming this closure will automatically:
+              </p>
+              <ul className="list-disc list-inside mt-1 font-semibold space-y-0.5">
+                <li>Change their status to <strong>Reschedule Required</strong></li>
+                <li>Send automated notification to the customer with reschedule link</li>
+                <li>Safely preserve payment and package credit history</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto max-h-[300px] rounded-lg border border-gray-200">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead className="bg-[#f6f3f2] sticky top-0 border-b border-gray-200">
+                <tr>
+                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Booking #</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Customer</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Vehicle</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Slot Time</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 bg-white">
+                {affectedBookings.map((b: any) => (
+                  <tr key={b.id} className="hover:bg-gray-50">
+                    <td className="p-2.5 font-extrabold text-[#2563EB]">
+                      #{b.id}
+                    </td>
+                    <td className="p-2.5">
+                      <p className="font-bold text-[#0F172A]">{b.customer_name || 'Customer'}</p>
+                      <p className="text-[11px] text-[#5f5e5e]">{b.customer_mobile || '-'}</p>
+                    </td>
+                    <td className="p-2.5">
+                      <p className="font-semibold text-[#0F172A]">{b.vehicle_brand} {b.vehicle_model}</p>
+                      <p className="text-[10px] text-gray-500 uppercase">{b.vehicle_reg_no || ''}</p>
+                    </td>
+                    <td className="p-2.5 font-medium text-gray-700">
+                      {b.slot_date} at {formatTime(b.start_time)}
+                    </td>
+                    <td className="p-2.5">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200">
+                        {b.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </Modal>
     </>

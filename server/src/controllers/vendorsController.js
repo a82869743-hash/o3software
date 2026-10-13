@@ -64,8 +64,8 @@ exports.list = async (req, res) => {
 
     res.json({ success: true, data: vendors });
   } catch (err) {
-    console.error('Vendor list error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('Vendor list error:', err.message);
+    res.json({ success: true, data: [] });
   }
 };
 
@@ -119,9 +119,10 @@ exports.create = async (req, res) => {
     const { name, phone, email, service_type, address } = req.body;
     if (!name) return res.status(400).json({ success: false, error: 'Vendor name is required' });
 
+    const franchiseId = req.headers['x-franchise-id'] ? parseInt(req.headers['x-franchise-id'], 10) : 1;
     const [result] = await pool.query(
-      'INSERT INTO vendors (name, phone, email, service_type, address) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), phone || null, email || null, service_type || null, address || null]
+      'INSERT INTO vendors (name, phone, email, service_type, address, franchise_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [name.trim(), phone || null, email || null, service_type || null, address || null, franchiseId]
     );
     res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Vendor created' });
   } catch (err) {

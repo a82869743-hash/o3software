@@ -6,8 +6,8 @@ interface SuperAdminRouteProps {
 }
 
 /**
- * SuperAdminRoute — Restricts access strictly to Main Studio Branch Super Admins.
- * Non-main branch admins are redirected back to the main admin dashboard (/admin).
+ * SuperAdminRoute — Restricts access strictly to Platform Super Admins (role === 'super_admin').
+ * Franchise admins and employees are blocked.
  */
 export default function SuperAdminRoute({ children }: SuperAdminRouteProps) {
   const { user } = useAuthStore();
@@ -16,7 +16,7 @@ export default function SuperAdminRoute({ children }: SuperAdminRouteProps) {
     return <Navigate to="/login" replace />;
   }
 
-  const isSuperAdmin = user.role === 'admin' || user.role === 'super_admin';
+  const isSuperAdmin = user.role === 'super_admin';
 
   if (!isSuperAdmin) {
     return <Navigate to="/admin" replace />;

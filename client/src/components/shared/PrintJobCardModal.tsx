@@ -13,6 +13,7 @@ interface ServiceItem {
   service_price: number;
   labor_charges: number;
   products_cost?: number;
+  custom_notes?: string;
 }
 
 interface Props {
@@ -40,18 +41,31 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
     const amount = servicePrice + laborCharges + productsTotal;
     totalQty += 1;
     grandTotal += amount;
+    const noteText = s.custom_notes ? ` [${s.custom_notes}]` : '';
     return {
-      name: (s.service_name || '').toUpperCase(),
+      name: `${(s.service_name || '').toUpperCase()}${noteText.toUpperCase()}`,
       qty: '1 PCS',
       rate: amount,
       amount: amount,
     };
   });
 
+  let discountAmt = 0;
+  if (cart.discount_type === 'percentage') {
+    discountAmt = grandTotal * ((parseFloat(cart.discount_value) || 0) / 100);
+  } else if (cart.discount_type === 'fixed') {
+    discountAmt = parseFloat(cart.discount_value) || 0;
+  }
+  discountAmt = Math.min(grandTotal, Math.max(0, discountAmt));
+
   const advancePaid = parseFloat(cart.advance_paid || 0);
   const balanceDue = (cart.balance_due !== undefined && cart.balance_due !== null) 
     ? parseFloat(cart.balance_due) 
-    : Math.max(0, grandTotal - advancePaid);
+    : Math.max(0, grandTotal - discountAmt - advancePaid);
+
+  const createdAtFormatted = cart.created_at ? new Date(cart.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : formatDate(cart.visit_date);
+  const isEdited = cart.updated_at && cart.created_at && (new Date(cart.updated_at).getTime() - new Date(cart.created_at).getTime() > 1000);
+  const editedAtFormatted = isEdited ? new Date(cart.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
 
   return (
     <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-[100] flex items-center justify-center p-4 overflow-y-auto">
@@ -61,7 +75,7 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
         <div className="px-6 py-4 bg-[#0284C7] text-white flex items-center justify-between print:hidden">
           <div>
             <h2 className="font-extrabold text-base tracking-wide">Official Job Card — Print & Preview</h2>
-            <p className="text-xs text-sky-100">Format matches official O3 Car Spa Bill of Supply</p>
+            <p className="text-xs text-sky-100">Format matches official O3 Car Spaa Bill of Supply</p>
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -103,10 +117,10 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
           <div style={{ background: '#0284C7', padding: '14px 18px', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '14px', marginTop: '6px' }}>
             <div style={{ background: '#FFFFFF', padding: '6px 10px', borderRadius: '6px', textAlign: 'center', minWidth: '70px' }}>
               <span style={{ fontSize: '20px', fontWeight: 900, color: '#0284C7', display: 'block', lineHeight: 1 }}>O3</span>
-              <span style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>Car Spa</span>
+              <span style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>Car Spaa</span>
             </div>
             <div style={{ color: '#FFFFFF' }}>
-              <h1 style={{ fontSize: '22px', fontWeight: 900, margin: 0, lineHeight: 1.2 }}>O3 Car Spa</h1>
+              <h1 style={{ fontSize: '22px', fontWeight: 900, margin: 0, lineHeight: 1.2 }}>O3 Car Spaaa</h1>
               <p style={{ fontSize: '10px', margin: '2px 0 0', opacity: 0.95, lineHeight: 1.4 }}>
                 Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Vitthal Udyognagar, Anand, Gujarat - 388121
               </p>
@@ -122,6 +136,11 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
               <span style={{ fontSize: '10px', color: '#0284C7', fontWeight: 700 }}>Job Card No.: </span>
               <span style={{ fontSize: '14px', fontWeight: 800 }}>JC-{cart.id}</span>
             </div>
+            <div style={{ flex: 1, padding: '8px 12px', borderLeft: '1px solid #0284C7', textAlign: 'center' }}>
+              <div style={{ fontSize: '10px', color: '#0284C7', fontWeight: 700 }}>Timeline: </div>
+              <div style={{ fontSize: '11px', fontWeight: 700 }}>Created on: {createdAtFormatted}</div>
+              {editedAtFormatted && <div style={{ fontSize: '11px', fontWeight: 800, color: '#dc2626' }}>Edited on: {editedAtFormatted}</div>}
+            </div>
             <div style={{ flex: 1, padding: '8px 12px', borderLeft: '1px solid #0284C7', textAlign: 'right' }}>
               <span style={{ fontSize: '10px', color: '#0284C7', fontWeight: 700 }}>Visit Date: </span>
               <span style={{ fontSize: '14px', fontWeight: 800 }}>{formatDate(cart.visit_date)}</span>
@@ -129,7 +148,7 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
           </div>
 
           {/* 4. Customer & Vehicle Details */}
-          <div style={{ display: 'flex', border: '1px solid #0284C7', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', border: '1px solid #0284C7', marginBottom: '12px' }}>
             <div style={{ flex: 1, padding: '10px 14px' }}>
               <div style={{ fontSize: '10px', fontStyle: 'normal', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>CUSTOMER DETAILS</div>
               <div style={{ fontSize: '14px', fontWeight: 800, color: '#1a1a1a', marginTop: '3px' }}>{cart.customer_name || '-'}</div>
@@ -142,6 +161,26 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
               <div style={{ fontSize: '14px', fontWeight: 900, color: '#0284C7', marginTop: '3px' }}>{cart.registration_no || '-'}</div>
               <div style={{ fontSize: '12px', fontWeight: 700, color: '#1a1a1a', marginTop: '2px' }}>{(cart.brand || '').toUpperCase()} {(cart.model || '').toUpperCase()}</div>
               {cart.registration_year && <div style={{ fontSize: '11px', color: '#555' }}>Year: {cart.registration_year}</div>}
+            </div>
+          </div>
+
+          {/* 4b. Car Arrival & Staff Assignment */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', border: '1px solid #0284C7', background: '#F8FAFC', padding: '10px 14px', marginBottom: '16px' }}>
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>REFERRAL PERSON</div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#1a1a1a', marginTop: '2px' }}>{cart.referral_person || 'Direct / Walk-in'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>HANDLING MANAGER</div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#1a1a1a', marginTop: '2px' }}>{cart.handler_name || 'Workshop Manager'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>LEAD TECHNICIAN</div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#1a1a1a', marginTop: '2px' }}>{cart.technician_name || 'Assigned Staff'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#0284C7', textTransform: 'uppercase' }}>TEAM INCENTIVE</div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: '#475569', marginTop: '2px' }}>{Array.isArray(cart.team_incentive_users) && cart.team_incentive_users.length > 0 ? `${cart.team_incentive_users.length} Members` : 'Standard'}</div>
             </div>
           </div>
 
@@ -215,6 +254,19 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
                 <span style={{ fontWeight: 600 }}>Estimated Total</span>
                 <span style={{ fontWeight: 700 }}>₹ {formatINR(grandTotal)}</span>
               </div>
+              {discountAmt > 0 && (
+                <div style={{ padding: '6px 12px', fontSize: '11px', borderBottom: '1px solid #eee', color: '#0284C7' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+                    <span>Discount ({cart.discount_type === 'percentage' ? `${cart.discount_value}%` : 'Fixed'})</span>
+                    <span>- ₹ {formatINR(discountAmt)}</span>
+                  </div>
+                  {cart.discount_reason && (
+                    <div style={{ fontSize: '9px', color: '#64748b', marginTop: '2px', fontWeight: 500 }}>
+                      Reason: <strong>{cart.discount_reason}</strong>{cart.discount_reference ? ` (Ref: ${cart.discount_reference})` : ''}
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 12px', fontSize: '11px', borderBottom: '1px solid #eee' }}>
                 <span style={{ fontWeight: 600 }}>Advance Paid</span>
                 <span style={{ fontWeight: 700 }}>₹ {formatINR(advancePaid)}</span>
@@ -246,7 +298,7 @@ export default function PrintJobCardModal({ open, onClose, cart, belongings }: P
                   AUTHORISED SIGNATORY FOR
                 </div>
                 <div style={{ fontSize: '12px', fontWeight: 800, color: '#1a1a1a', marginTop: '2px' }}>
-                  O3 Car Spa
+                  O3 Car Spaaa
                 </div>
               </div>
             </div>

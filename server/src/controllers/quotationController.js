@@ -42,9 +42,9 @@ exports.create = async (req, res) => {
         customer_name,
         customer_mobile,
         customer_email || null,
-        vehicle_no || null,
-        car_brand || null,
-        car_model || null,
+        vehicle_no || req.body.registration_no || null,
+        car_brand || req.body.brand || null,
+        car_model || req.body.model || null,
         car_segment || null,
         subtotal || 0,
         discount_type || 'fixed',
@@ -71,10 +71,10 @@ exports.create = async (req, res) => {
           quotationId,
           item.item_type || 'custom',
           item.item_id || null,
-          item.name,
-          item.price || 0,
+          item.name || item.description || 'Service',
+          item.price || item.unit_price || 0,
           item.quantity || 1,
-          item.total || 0
+          item.total || item.total_price || ((item.price || item.unit_price || 0) * (item.quantity || 1))
         ]
       );
     }

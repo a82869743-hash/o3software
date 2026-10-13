@@ -14,6 +14,7 @@ router.get('/:id/invoice', auth, role(['admin', 'customer']), ctrl.downloadInvoi
 router.post('/manual',    auth, role(['admin']), ctrl.createManual);
 router.post('/',          auth, role(['customer', 'admin']), ctrl.create);
 router.patch('/:id/cancel', auth, role(['admin', 'customer']), ctrl.cancel);
+router.patch('/:id/reschedule', auth, role(['admin', 'customer']), ctrl.reschedule);
 
 // ─── Approval Workflow (Admin only) ─────────────────────
 router.patch('/:id/approve', auth, role(['admin']), ctrl.approve);

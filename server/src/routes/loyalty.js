@@ -8,8 +8,18 @@ const role = require('../middleware/role');
 const loyaltyController = require('../controllers/loyaltyController');
 
 // ─── Customer routes ─────────────────────────
-router.get('/mine',          protect, role(['customer']), loyaltyController.get);
-router.get('/mine/history',  protect, role(['customer']), loyaltyController.history);
+router.get('/mine',          protect, role(['customer', 'admin']), loyaltyController.get);
+router.get('/balance',       protect, role(['customer', 'admin']), loyaltyController.get);
+router.get('/',              protect, role(['customer', 'admin']), loyaltyController.get);
+router.get('/mine/history',  protect, role(['customer', 'admin']), loyaltyController.history);
+
+// ─── Admin Rules Management (Must be before /:customerId) ─────────
+router.get('/rules',         protect, role(['admin']), loyaltyController.getRules);
+router.post('/rules',        protect, role(['admin']), loyaltyController.createRule);
+router.put('/rules/:id',     protect, role(['admin']), loyaltyController.updateRule);
+
+// ─── Customer Ledger ─────────────────────────
+router.get('/ledger/:customerId', protect, role(['admin', 'customer']), loyaltyController.getLedger);
 
 // ─── Admin routes ────────────────────────────
 router.get('/search',        protect, role(['admin']), loyaltyController.search);

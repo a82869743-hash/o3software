@@ -38,8 +38,15 @@ const pool = mysql.createPool({
     console.log(`✓ MySQL connected: ${process.env.DB_NAME}@${process.env.DB_HOST} (Timezone set to IST +05:30)`);
     conn.release();
   } catch (err) {
-    console.error('✗ MySQL connection failed:', err.message);
-    console.error('  Check your DB_HOST, DB_USER, DB_PASSWORD, DB_NAME environment variables');
+    console.error('\n' + '═'.repeat(60));
+    console.error('⚠  MySQL Connection Notice:', err.message);
+    if (err.code === 'ER_ACCESS_DENIED_ERROR') {
+      console.error('   MySQL root password on your system differs from .env (DB_PASSWORD=1234).');
+      console.error('   Please run the 1-click password reset script or update .env DB_PASSWORD.');
+    } else {
+      console.error('   Please verify MySQL service is running on ' + (process.env.DB_HOST || 'localhost') + ':' + (process.env.DB_PORT || '3306'));
+    }
+    console.error('═'.repeat(60) + '\n');
   }
 })();
 

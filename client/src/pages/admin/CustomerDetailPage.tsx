@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
-import { UserCircle, Car, ArrowLeft, Loader2, Send, History, Calendar, ClipboardList, Package, Clock, RefreshCw, Download, Plus, Trash2 } from 'lucide-react';
+import { UserCircle, Car, ArrowLeft, Loader2, Send, History, Calendar, ClipboardList, Package, Clock, RefreshCw, Download, Plus, Trash2, Tag, Award, Save, Wrench, CheckCircle } from 'lucide-react';
 import Modal from '../../components/ui/Modal';
 import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
@@ -18,6 +18,12 @@ export default function CustomerDetailPage() {
   const [loading, setLoading] = useState(true);
   const [newNote, setNewNote] = useState('');
   const [submittingNote, setSubmittingNote] = useState(false);
+
+  // Customer CRM Discount & Settings
+  const [customDiscountType, setCustomDiscountType] = useState<'none' | 'percentage' | 'fixed'>('none');
+  const [customDiscountValue, setCustomDiscountValue] = useState<number>(0);
+  const [crmNotes, setCrmNotes] = useState<string>('');
+  const [savingCrm, setSavingCrm] = useState(false);
 
   // Assign package state
   const [assignModalOpen, setAssignModalOpen] = useState(false);
@@ -251,6 +257,9 @@ export default function CustomerDetailPage() {
       ]);
       if (resCust.data.success) {
         setData(resCust.data.data);
+        setCustomDiscountType(resCust.data.data.custom_discount_type || 'none');
+        setCustomDiscountValue(Number(resCust.data.data.custom_discount_value) || 0);
+        setCrmNotes(resCust.data.data.crm_notes || '');
       }
       if (resPkg.data && resPkg.data.success && resPkg.data.data) {
         setActivePackage(resPkg.data.data);
@@ -268,6 +277,26 @@ export default function CustomerDetailPage() {
       navigate('/admin/customers');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveCrmSettings = async () => {
+    setSavingCrm(true);
+    try {
+      const res = await api.put(`/customers/${id}`, {
+        custom_discount_type: customDiscountType,
+        custom_discount_value: customDiscountValue,
+        crm_notes: crmNotes,
+      });
+      if (res.data.success) {
+        alert('CRM discount & profile settings saved successfully!');
+        fetchDetail();
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(err.response?.data?.error || 'Failed to update CRM settings');
+    } finally {
+      setSavingCrm(false);
     }
   };
 
@@ -373,6 +402,98 @@ export default function CustomerDetailPage() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Customer CRM Profile & Custom Discount Card */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Tag className="w-4 h-4 text-amber-600" />
+                CRM Discount & Loyalty
+              </h3>
+              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-amber-100 text-amber-800 rounded">
+                Auto-Billing
+              </span>
+            </div>
+
+            {/* Loyalty summary */}
+            <div className="grid grid-cols-2 gap-2 bg-gradient-to-r from-amber-50 to-orange-50 p-3 rounded-xl border border-amber-200/60">
+              <div>
+                <span className="text-[10px] font-bold text-amber-800 uppercase block">Loyalty Points</span>
+                <span className="text-base font-black text-amber-950">
+                  {data.loyalty?.points || 0} pts
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-amber-800 uppercase block">Wash Credits</span>
+                <span className="text-base font-black text-amber-950">
+                  {data.loyalty?.credits || 0}
+                </span>
+              </div>
+            </div>
+
+            {/* Custom discount setting */}
+            <div className="space-y-3 pt-1">
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Customer Default Discount</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['none', 'percentage', 'fixed'] as const).map(type => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setCustomDiscountType(type)}
+                      className={`py-1.5 text-xs font-bold rounded-lg border transition-all uppercase ${
+                        customDiscountType === type
+                          ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
+                          : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                      }`}
+                    >
+                      {type === 'none' ? 'None' : type === 'percentage' ? '% Off' : '₹ Flat'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {customDiscountType !== 'none' && (
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">
+                    {customDiscountType === 'percentage' ? 'Discount Percentage (%)' : 'Discount Amount (₹)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={customDiscountType === 'percentage' ? '100' : undefined}
+                    value={customDiscountValue}
+                    onChange={e => setCustomDiscountValue(parseFloat(e.target.value) || 0)}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 font-bold"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    * Automatically pre-fills on new job cards & quick billing for {data.name}.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">Internal CRM Special Instructions</label>
+                <textarea
+                  value={crmNotes}
+                  onChange={e => setCrmNotes(e.target.value)}
+                  placeholder="e.g. VIP client, prefers Sunil technician, allergic to strong scent..."
+                  rows={2}
+                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveCrmSettings}
+                disabled={savingCrm}
+                className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                {savingCrm ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                <span>Save CRM & Discount Settings</span>
+              </button>
             </div>
           </div>
 
@@ -566,9 +687,108 @@ export default function CustomerDetailPage() {
           </div>
         </div>
 
-        {/* Right Column: CRM History Notes */}
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-12rem)] min-h-[500px]">
+        {/* Right Column: Service History & CRM Notes */}
+        <div className="lg:col-span-2 space-y-6">
+
+          {/* Vehicle Service History (Job Cards) */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="p-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Wrench className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-gray-900">
+                  Service History & Job Cards ({data.service_history?.length || 0})
+                </h3>
+              </div>
+              <button
+                onClick={() => navigate('/admin/job-carts/create', { state: { prefill: { customer_name: data.name, customer_mobile: data.mobile, customer_email: data.email, id: data.id } } })}
+                className="text-xs font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center gap-1 transition cursor-pointer"
+              >
+                <Plus size={13} /> New Job Card
+              </button>
+            </div>
+
+            <div className="p-5 max-h-[420px] overflow-y-auto space-y-3">
+              {(!data.service_history || data.service_history.length === 0) ? (
+                <div className="text-center py-8 text-gray-400">
+                  <ClipboardList className="w-10 h-10 mx-auto mb-2 opacity-40" />
+                  <p className="text-sm">No job cards found for this customer.</p>
+                </div>
+              ) : (
+                data.service_history.map((jc: any) => (
+                  <div key={jc.id} className="p-4 rounded-xl border border-gray-200 hover:border-blue-300 bg-white transition shadow-2xs space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-2.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-sm text-[#0F172A] tracking-wide">
+                          🚗 {jc.registration_no || 'Vehicle'}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          ({jc.brand} {jc.model})
+                        </span>
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                          Visit #{jc.visit_number || 1}
+                        </span>
+                        <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded ${
+                          jc.status === 'complete' ? 'bg-green-100 text-green-800' :
+                          jc.status === 'in_progress' ? 'bg-blue-100 text-blue-800' :
+                          'bg-amber-100 text-amber-800'
+                        }`}>
+                          {jc.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <span className="text-xs text-gray-400 block font-medium">
+                            {new Date(jc.visit_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                          <span className="text-sm font-black text-[#0F172A]">
+                            ₹{Number(jc.total_amount || 0).toLocaleString('en-IN')}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => navigate(`/admin/job-carts/${jc.id}`)}
+                          className="px-2.5 py-1 text-xs font-bold bg-gray-50 hover:bg-blue-50 text-gray-700 hover:text-blue-700 rounded-lg border border-gray-200 transition cursor-pointer"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Services row */}
+                    {jc.services && jc.services.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {jc.services.map((s: any, sIdx: number) => (
+                          <span key={s.id || sIdx} className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-200 rounded text-xs text-slate-800 font-medium">
+                            <span>{s.service_name}</span>
+                            {s.custom_notes && (
+                              <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded">
+                                📝 {s.custom_notes}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Discount row if present */}
+                    {Number(jc.discount_value || jc.discount_amount) > 0 && (
+                      <div className="text-[11px] text-amber-900 bg-amber-50/70 px-2.5 py-1 rounded-md border border-amber-200/60 flex items-center justify-between">
+                        <span>
+                          🏷️ Discount: <strong>{jc.discount_type === 'percentage' ? `${jc.discount_value}%` : `₹${jc.discount_amount || jc.discount_value}`}</strong>
+                          {jc.discount_reason && ` (${jc.discount_reason})`}
+                        </span>
+                        {jc.discount_reference && (
+                          <span className="text-[10px] text-amber-700 font-semibold">Ref: {jc.discount_reference}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* CRM History Notes */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col min-h-[350px]">
             <div className="p-4 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
               <History className="w-5 h-5 text-blue-600" />
               <h3 className="font-bold text-gray-900">CRM History Notes</h3>

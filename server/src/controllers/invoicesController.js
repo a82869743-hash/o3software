@@ -267,7 +267,7 @@ exports.exportPdf = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=Invoice_${invoiceData.reference}.pdf`);
     doc.pipe(res);
 
-    doc.fontSize(20).text('O3 Car Spa', { align: 'center' });
+    doc.fontSize(20).text('O3 Car Spaa', { align: 'center' });
     doc.fontSize(10).text('Premium Car Detailing Studio', { align: 'center' });
     doc.moveDown();
     

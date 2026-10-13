@@ -66,8 +66,9 @@ export default function AllJobCardsPage() {
         setTotal(res.data.pagination?.total ?? res.data.data.length);
       }
     } catch (e) {
-      console.error(e);
-      toast.error('Failed to load job cards');
+      console.error('Failed to load job cards:', e);
+      setRecords([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
@@ -196,7 +197,7 @@ export default function AllJobCardsPage() {
         {[
           { key: 'all', label: 'All Categories' },
           { key: 'ceramic', label: '🛡️ Ceramic & Coating' },
-          { key: 'wash', label: '🧼 Car Spa & Wash' },
+          { key: 'wash', label: '🧼 Car Spaa & Wash' },
           { key: 'denting', label: '🎨 Denting & Painting' },
           { key: 'ppf', label: '🛡️ PPF & Wrapping' },
           { key: 'interior', label: '✨ Interior Detailing' },

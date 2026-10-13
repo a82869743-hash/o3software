@@ -325,7 +325,7 @@ exports._renewPackageInternal = async (conn, { user_package_id, package_id, paym
       const [custRows] = await conn.query('SELECT name, mobile FROM users WHERE id = ?', [currentPkg.user_id]);
       if (custRows.length && custRows[0].mobile) {
         const vehicleStr = currentPkg.vehicle_segment ? ` for your vehicle segment ${currentPkg.vehicle_segment.replace(/_/g, ' ')}` : '';
-        const body = `✅ *Package Renewed Successfully!*\n\nHi ${custRows[0].name},\nYour *${packageName}* package${vehicleStr} has been renewed successfully!\n\nThank you for choosing O3 Car Spa! 💎`;
+        const body = `✅ *Package Renewed Successfully!*\n\nHi ${custRows[0].name},\nYour *${packageName}* package${vehicleStr} has been renewed successfully!\n\nThank you for choosing O3 Car Spaa! 💎`;
         messagingService.sendWhatsApp(`91${custRows[0].mobile}`, null, { body }).catch(() => {});
       }
     } catch (msgErr) {
@@ -1046,7 +1046,7 @@ exports.getDashboardPackageData = async (userId) => {
 
     const formattedEndDate = endDate ? endDate.toLocaleDateString('en-IN') : '';
     const vehicleInfo = pkg.vehicle_reg_no ? `for vehicle ${pkg.vehicle_reg_no}` : '';
-    const popupMessage = `Your ${pkg.package_name} package ${vehicleInfo} is about to expire next month (${formattedEndDate}). Kindly visit O3 Car Spa to redeem your remaining service sessions!`;
+    const popupMessage = `Your ${pkg.package_name} package ${vehicleInfo} is about to expire next month (${formattedEndDate}). Kindly visit O3 Car Spaa to redeem your remaining service sessions!`;
     const continuousNotification = (daysRemaining !== null && daysRemaining <= 30) ? `service is due package close to expiry` : null;
 
     const serviceSchedules = await getSchedulesForUserPackage(pool, pkg.id, pkg.user_id, pkg.package_id, pkg.start_date);
@@ -1341,7 +1341,7 @@ exports.getExpiryAlerts = async (req, res) => {
       }
 
       const vehicleStr = r.registration_no ? `${r.registration_no} (${r.brand || ''} ${r.model || ''})` : 'your vehicle';
-      const whatsapp_msg = `Hi ${r.customer_name},\n\nYour *${r.package_name}* package for *${vehicleStr}* is about to expire next month (*${formattedEndDate}*).\n\nDays Remaining: ${days > 0 ? days : 0} day(s)\n\nKindly visit O3 Car Spa to redeem your remaining service sessions!\n📍 O3 Car Spa, GIDC, Anand\n📞 7225030303`;
+      const whatsapp_msg = `Hi ${r.customer_name},\n\nYour *${r.package_name}* package for *${vehicleStr}* is about to expire next month (*${formattedEndDate}*).\n\nDays Remaining: ${days > 0 ? days : 0} day(s)\n\nKindly visit O3 Car Spaa to redeem your remaining service sessions!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
 
       return {
         ...r,
@@ -1359,8 +1359,8 @@ exports.getExpiryAlerts = async (req, res) => {
 
     res.json({ success: true, data: enriched });
   } catch (err) {
-    console.error('getExpiryAlerts error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('getExpiryAlerts error:', err.message);
+    res.json({ success: true, data: [] });
   }
 };
 

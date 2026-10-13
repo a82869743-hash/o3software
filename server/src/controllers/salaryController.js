@@ -2,8 +2,8 @@ const pool = require('../config/db');
 
 exports.getSalary = async (req, res) => {
   try {
-    const { month_year } = req.query; // 'YYYY-MM'
-    if (!month_year) return res.status(400).json({ success: false, error: 'month_year is required' });
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const month_year = req.query.month_year || currentMonth;
 
     const [rows] = await pool.query(`
       SELECT s.*, u.name as staff_name, u.mobile as staff_mobile
@@ -21,8 +21,8 @@ exports.getSalary = async (req, res) => {
 exports.calculateSalary = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const { month_year } = req.body;
-    if (!month_year) return res.status(400).json({ success: false, error: 'month_year is required' });
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const month_year = req.body.month_year || currentMonth;
 
     await conn.beginTransaction();
 

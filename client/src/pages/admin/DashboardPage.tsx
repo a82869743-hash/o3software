@@ -3,11 +3,13 @@ import {
   Briefcase, IndianRupee, Package, Users, TrendingUp,
   Calendar, Clock, ChevronRight, Car, CalendarCheck, AlertTriangle,
   UserCheck, Zap, BarChart3, Bell, FileText, Wrench, Plus,
-  ClipboardList, ArrowRight, CreditCard, MessageCircle, ShoppingCart
+  ClipboardList, ArrowRight, CreditCard, MessageCircle, ShoppingCart,
+  Building2, Award, CheckCircle2, Loader2
 } from 'lucide-react';
 
 import { useDashboardStats } from '../../api/hooks/useDashboard';
 import { useJobCarts } from '../../api/hooks/useJobCarts';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { Link } from 'react-router-dom';
 import StatusBadge from '../../components/ui/StatusBadge';
@@ -18,15 +20,34 @@ import { useAuthStore } from '../../store/authStore';
 
 export default function DashboardPage() {
   const { token } = useAuthStore();
-  const { data: stats, isLoading: statsLoading } = useDashboardStats();
+  const [period, setPeriod] = useState<'today' | 'weekly' | 'monthly' | 'yearly' | 'all_time'>('today');
+  const [franchiseFilter, setFranchiseFilter] = useState<string>('all');
+  const { data: stats, isLoading: statsLoading } = useDashboardStats({ timeframe: period, franchise_id: franchiseFilter });
   const { data: recentJobs, isLoading: jobsLoading } = useJobCarts({ limit: 5 });
-
   const [todayBookings, setTodayBookings] = useState<any[]>([]);
+
   const [bookingsLoading, setBookingsLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [pendingPkgCount, setPendingPkgCount] = useState(0);
   const [expiryAlerts, setExpiryAlerts] = useState<any[]>([]);
   const [showExpiryModal, setShowExpiryModal] = useState(false);
+  const [sendingPkgId, setSendingPkgId] = useState<number | string | null>(null);
+  const sendWhatsApp = useSendWhatsApp();
+
+  const handleSendExpiryWhatsApp = (item: any, msg: string) => {
+    if (!item.customer_mobile) return;
+    setSendingPkgId(item.user_package_id);
+    sendWhatsApp.mutate(
+      {
+        phone: item.customer_mobile,
+        message: msg,
+        customer_id: item.customer_id
+      },
+      {
+        onSettled: () => setSendingPkgId(null)
+      }
+    );
+  };
 
   useEffect(() => {
     const t = setInterval(() => setCurrentTime(new Date()), 60_000);
@@ -95,14 +116,54 @@ export default function DashboardPage() {
         <div className="absolute -right-10 -top-10 w-48 h-48 bg-white/15 rounded-full blur-2xl pointer-events-none" />
         <div className="absolute left-1/3 -bottom-10 w-40 h-40 bg-sky-200/20 rounded-full blur-xl pointer-events-none" />
 
-        <div className="relative z-10 flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2.5">
+        <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <h2 className="text-white font-extrabold text-base tracking-wide uppercase">Today's Studio Overview</h2>
+            <h2 className="text-white font-extrabold text-base tracking-wide uppercase">Studio Performance Overview</h2>
           </div>
-          <span className="text-sky-100 text-xs font-semibold bg-white/20 backdrop-blur-md px-3 py-1 rounded-full border border-white/25 shadow-xs">
-            {currentTime.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-          </span>
+            
+          {/* Period Filter Tabs & Super Admin Franchise Selector via ONE clean bar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center bg-white/10 backdrop-blur-md p-1 rounded-xl border border-white/20">
+              {[
+                { key: 'today', label: 'Today' },
+                { key: 'weekly', label: 'Weekly' },
+                { key: 'monthly', label: 'Monthly' },
+                { key: 'yearly', label: 'Yearly' },
+                { key: 'all_time', label: 'All-Time' },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setPeriod(tab.key as any)}
+                  className={`px-3 py-1 text-xs font-black rounded-lg transition-all ${
+                    period === tab.key
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-sky-100 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Consolidated Super Admin Franchise Toggle */}
+            <div className="flex items-center bg-white/15 backdrop-blur-md px-2.5 py-1 rounded-xl border border-white/20 text-xs font-bold text-white shadow-2xs">
+              <Building2 size={13} className="mr-1.5 text-sky-200" />
+              <select
+                value={franchiseFilter}
+                onChange={(e) => setFranchiseFilter(e.target.value)}
+                className="bg-transparent text-white font-black text-xs focus:outline-none cursor-pointer pr-1 [&>option]:text-slate-900"
+              >
+                <option value="all">🏢 All Franchises (Consolidated)</option>
+                {(stats?.franchise_breakdown || []).map((f: any) => (
+                  <option key={f.id} value={String(f.id)}>
+                    📍 {f.name} ({f.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
 
         {statsLoading ? (
@@ -111,36 +172,56 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
-            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-2 text-[#2563EB] shadow-xs group-hover:scale-110 transition-transform">
-                <Briefcase size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{stats?.open_job_carts || 0}</p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Jobs Today</p>
-            </Link>
-
-            <Link to="/admin/customer-bookings" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-2 text-[#2563EB] shadow-xs group-hover:scale-110 transition-transform">
-                <CalendarCheck size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{stats?.todayBookings || 0}</p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Bookings</p>
-            </Link>
-
-            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-2 text-[#2563EB] shadow-xs group-hover:scale-110 transition-transform">
-                <Clock size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{stats?.completedLast7Days || 0}</p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">In Progress</p>
-            </Link>
-
+            {/* 1. Revenue */}
             <Link to="/admin/accounts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
               <div className="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto mb-2 text-emerald-600 shadow-xs group-hover:scale-110 transition-transform">
                 <IndianRupee size={20} />
               </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">{formatINR(stats?.today_revenue || 0)}</p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Today Revenue</p>
+              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                {formatINR(stats?.revenue ?? stats?.today_revenue ?? 0)}
+              </p>
+              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
+                {stats?.timeframe_label || 'Today'} Revenue
+              </p>
+            </Link>
+
+            {/* 2. Cars Serviced */}
+            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
+              <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-2 text-[#2563EB] shadow-xs group-hover:scale-110 transition-transform">
+                <Car size={20} />
+              </div>
+              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                {stats?.cars_serviced ?? 0}
+              </p>
+              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
+                Cars Serviced ({stats?.timeframe_label || 'Today'})
+              </p>
+            </Link>
+
+            {/* 3. Pending Payments */}
+            <Link to="/admin/pending-payments" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
+              <div className="w-11 h-11 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center mx-auto mb-2 text-red-600 shadow-xs group-hover:scale-110 transition-transform">
+                <CreditCard size={20} />
+              </div>
+              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                {formatINR(stats?.pending_payments || 0)}
+              </p>
+              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
+                Pending Receivables
+              </p>
+            </Link>
+
+            {/* 4. Active Jobs */}
+            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
+              <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center mx-auto mb-2 text-sky-600 shadow-xs group-hover:scale-110 transition-transform">
+                <Briefcase size={20} />
+              </div>
+              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+                {stats?.open_job_carts || 0}
+              </p>
+              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
+                Active Jobs
+              </p>
             </Link>
           </div>
         )}
@@ -325,8 +406,7 @@ export default function DashboardPage() {
               const vehicleInfo = item.registration_no 
                 ? `${item.registration_no} (${item.brand || ''} ${item.model || ''})`
                 : item.brand ? `${item.brand} ${item.model || ''}` : 'N/A';
-              const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nKindly visit O3 Car Spa to redeem your remaining services!`;
-              const waUrl = item.whatsapp_url || `https://wa.me/91${item.customer_mobile}?text=${encodeURIComponent(defaultMsg)}`;
+              const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nKindly visit O3 Car Spaa to redeem your remaining services!`;
 
               return (
                 <div key={item.user_package_id} className="bg-white rounded-2xl p-3.5 border border-amber-200/80 shadow-2xs flex items-center justify-between gap-3">
@@ -335,15 +415,20 @@ export default function DashboardPage() {
                     <p className="text-[11px] text-slate-500 font-medium truncate">{item.package_name} • {vehicleInfo}</p>
                     <p className="text-[10px] font-extrabold text-amber-700 mt-0.5">Expires in {item.days_remaining} day(s)</p>
                   </div>
-                  <a
-                    href={waUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl transition-colors shrink-0 text-xs font-bold flex items-center gap-1"
+                  <button
+                    type="button"
+                    disabled={sendingPkgId === item.user_package_id}
+                    onClick={() => handleSendExpiryWhatsApp(item, defaultMsg)}
+                    className="p-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0 text-xs font-bold flex items-center gap-1 cursor-pointer"
                     title="Send WhatsApp Reminder"
                   >
-                    <MessageCircle size={14} /> Remind
-                  </a>
+                    {sendingPkgId === item.user_package_id ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <MessageCircle size={14} />
+                    )}
+                    <span>{sendingPkgId === item.user_package_id ? 'Sending...' : 'Remind'}</span>
+                  </button>
                 </div>
               );
             })}
@@ -463,6 +548,147 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── Super Admin Consolidated Multi-Franchise Breakdown Table ── */}
+      {(stats?.is_consolidated || franchiseFilter === 'all') && (
+        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                <Building2 size={18} />
+              </span>
+              <div>
+                <h3 className="font-extrabold text-slate-900 text-base">Consolidated Multi-Franchise Studio Performance</h3>
+                <p className="text-xs text-slate-500">Cross-studio comparison for {stats?.timeframe_label || 'selected period'}</p>
+              </div>
+            </div>
+            <span className="px-3 py-1 bg-indigo-100 text-indigo-900 font-extrabold text-xs rounded-full uppercase tracking-wider">
+              {stats?.franchise_breakdown?.length || 0} Outlets Active
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-extrabold border-b border-slate-200">
+                  <th className="py-3 px-4 rounded-l-xl">Studio / Franchise</th>
+                  <th className="py-3 px-4">Code</th>
+                  <th className="py-3 px-4">City</th>
+                  <th className="py-3 px-4 text-right">Revenue ({stats?.timeframe_label})</th>
+                  <th className="py-3 px-4 text-right">Cars Serviced</th>
+                  <th className="py-3 px-4 text-right">Pending Dues</th>
+                  <th className="py-3 px-4 text-right rounded-r-xl">Active Jobs</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
+                {(stats?.franchise_breakdown || []).map((f: any) => (
+                  <tr key={f.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3.5 px-4 font-black text-slate-900 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <span>{f.name}</span>
+                    </td>
+                    <td className="py-3.5 px-4">
+                      <span className="px-2 py-0.5 bg-slate-100 rounded text-slate-600 font-bold">{f.code}</span>
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-500">{f.city || 'Indore'}</td>
+                    <td className="py-3.5 px-4 text-right font-black text-emerald-700">{formatINR(f.revenue || 0)}</td>
+                    <td className="py-3.5 px-4 text-right font-black text-slate-900">{f.cars_serviced || 0}</td>
+                    <td className="py-3.5 px-4 text-right font-black text-red-600">{formatINR(f.pending_payments || 0)}</td>
+                    <td className="py-3.5 px-4 text-right">
+                      <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-[#2563EB] font-bold">
+                        {f.active_jobs || 0}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50/80 font-black text-slate-900 border-t-2 border-slate-200">
+                  <td className="py-3 px-4" colSpan={3}>Consolidated Total Across All Outlets</td>
+                  <td className="py-3 px-4 text-right text-emerald-700">
+                    {formatINR((stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.revenue || 0), 0))}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    {(stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.cars_serviced || 0), 0)}
+                  </td>
+                  <td className="py-3 px-4 text-right text-red-600">
+                    {formatINR((stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.pending_payments || 0), 0))}
+                  </td>
+                  <td className="py-3 px-4 text-right text-[#2563EB]">
+                    {(stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.active_jobs || 0), 0)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Staff & Technician Performance Leaderboard ──────────── */}
+      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
+              <Award size={18} />
+            </span>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-base">Staff & Technician Performance Leaderboard</h3>
+              <p className="text-xs text-slate-500">Completed jobs, revenue generated, and incentives earned ({stats?.timeframe_label})</p>
+            </div>
+          </div>
+          <Link
+            to="/admin/staff"
+            className="text-xs font-bold text-[#2563EB] hover:underline flex items-center gap-1 self-start sm:self-auto"
+          >
+            Manage Staff HR <ChevronRight size={13} />
+          </Link>
+        </div>
+
+        {stats?.staff_performance && stats.staff_performance.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-extrabold border-b border-slate-200">
+                  <th className="py-3 px-4 rounded-l-xl">Staff Member / Technician</th>
+                  <th className="py-3 px-4">Role</th>
+                  <th className="py-3 px-4 text-right">Jobs Completed</th>
+                  <th className="py-3 px-4 text-right">Revenue Generated</th>
+                  <th className="py-3 px-4 text-right rounded-r-xl">Incentives Earned</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
+                {stats.staff_performance.map((staff: any, idx: number) => (
+                  <tr key={staff.staff_id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3.5 px-4 font-black text-slate-900 flex items-center gap-2.5">
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black ${
+                        idx === 0 ? 'bg-amber-100 text-amber-900' : idx === 1 ? 'bg-slate-200 text-slate-800' : 'bg-slate-100 text-slate-600'
+                      }`}>
+                        #{idx + 1}
+                      </span>
+                      <div>
+                        <span>{staff.staff_name}</span>
+                        {staff.mobile && <p className="text-[10px] text-slate-400 font-medium">{staff.mobile}</p>}
+                      </div>
+                    </td>
+                    <td className="py-3.5 px-4 capitalize">
+                      <span className="px-2 py-0.5 bg-slate-100 rounded text-slate-700 font-bold text-[10px]">
+                        {staff.role}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-right font-black text-slate-900">{staff.completed_jobs}</td>
+                    <td className="py-3.5 px-4 text-right font-black text-emerald-700">{formatINR(staff.total_revenue || 0)}</td>
+                    <td className="py-3.5 px-4 text-right font-black text-amber-700">{formatINR(staff.incentives_earned || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-8 text-center text-slate-400 text-xs italic">
+            No staff performance records for this period.
+          </div>
+        )}
       </div>
 
 
@@ -649,9 +875,7 @@ export default function DashboardPage() {
                   ? `${item.registration_no} (${item.brand || ''} ${item.model || ''})`
                   : item.brand ? `${item.brand} ${item.model || ''}` : 'N/A';
 
-                const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire next month (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nDays Remaining: ${item.days_remaining} day(s)\n\nKindly visit O3 Car Spa to redeem your remaining service sessions!\n📍 O3 Car Spa, GIDC, Anand\n📞 7225030303`;
-
-                const waUrl = item.whatsapp_url || `https://wa.me/91${item.customer_mobile}?text=${encodeURIComponent(defaultMsg)}`;
+                const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire next month (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nDays Remaining: ${item.days_remaining} day(s)\n\nKindly visit O3 Car Spaa to redeem your remaining service sessions!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
 
                 return (
                   <div key={item.user_package_id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 p-3 rounded-2xl transition-colors">
@@ -690,14 +914,19 @@ export default function DashboardPage() {
                       </div>
                     </div>
 
-                    <a
-                      href={waUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl flex items-center justify-center gap-1.5 shrink-0 shadow-sm text-xs transition-colors"
+                    <button
+                      type="button"
+                      disabled={sendingPkgId === item.user_package_id}
+                      onClick={() => handleSendExpiryWhatsApp(item, defaultMsg)}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold rounded-xl flex items-center justify-center gap-1.5 shrink-0 shadow-sm text-xs transition-colors cursor-pointer"
                     >
-                      <MessageCircle size={14} /> WhatsApp Remind
-                    </a>
+                      {sendingPkgId === item.user_package_id ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <MessageCircle size={14} />
+                      )}
+                      <span>{sendingPkgId === item.user_package_id ? 'Sending...' : 'WhatsApp Remind'}</span>
+                    </button>
                   </div>
                 );
               })}

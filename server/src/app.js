@@ -1,6 +1,15 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
+// Process-level error resilience: prevents server crashes on unexpected runtime exceptions
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL] Uncaught exception safely caught (server kept alive):', err.message);
+  console.error(err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[CRITICAL] Unhandled promise rejection safely caught (server kept alive):', reason);
+});
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -85,7 +94,7 @@ app.get('/api/v1/health', async (req, res) => {
 
   res.json({
     success: true,
-    message: 'O3 Car Spa API is running',
+    message: 'O3 Car Spaaa API is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     database: dbStatus,
@@ -95,7 +104,9 @@ app.get('/api/v1/health', async (req, res) => {
 // ─── Routes ─────────────────────────────────────────
 const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
-app.use('/api/job-carts',  require('./routes/jobCarts'));
+const jobCartsRoutes = require('./routes/jobCarts');
+app.use('/api/job-carts', jobCartsRoutes);
+app.use('/api/job-cards', jobCartsRoutes); // Route alias for maximum compatibility
 app.use('/api/inventory',  require('./routes/inventory'));
 app.use('/api/slots',      require('./routes/slots'));
 app.use('/api/bookings',   require('./routes/bookings'));
@@ -118,6 +129,7 @@ app.use('/api/quotations', require('./routes/quotations'));
 // ─── New Feature Routes ─────────────────────────────────────
 app.use('/api/user-packages', require('./routes/userPackages'));
 app.use('/api/reports',       require('./routes/reports'));
+app.use('/api/incentives',    require('./routes/incentives'));
 app.use('/api/billing',       require('./routes/billing'));
 app.use('/api/vendors',       require('./routes/vendors'));
 app.use('/api/salary',        require('./routes/salary'));
@@ -133,21 +145,27 @@ app.use('/api/payments',      require('./routes/payments'));
 app.use('/api/feedback',      require('./routes/feedback'));
 app.use('/api/balance-sheet', require('./routes/balanceSheet'));
 app.use('/api/audit',         require('./routes/audit'));
-app.use('/api/staff',         require('./routes/staff'));
 app.use('/api/staff-hr',      require('./routes/staffHR'));
 app.use('/api/whatsapp',      require('./routes/whatsapp'));
 app.use('/api/admin/roles',   require('./routes/roles'));
+app.use('/api/roles',         require('./routes/roles'));
 app.use('/api/shared-files',  require('./routes/sharedFiles'));
 app.get('/api/shared/:token', require('./controllers/fileSharingController').getSharedFile);
 app.use('/api/purchase-bills', require('./routes/purchaseBills'));
 app.use('/api/gst-reports',    require('./routes/gstReports'));
-app.use('/api/customer-rewards', require('./routes/customerRewards'));
+const rewardsRoutes = require('./routes/customerRewards');
+app.use('/api/customer-rewards', rewardsRoutes);
+app.use('/api/rewards', rewardsRoutes); // Route alias
 app.use('/api/referrals',     require('./routes/referrals'));
 app.use('/api/pickup-requests', require('./routes/pickup'));
+app.use('/api/pickups',         require('./routes/pickup')); // Route alias
 app.use('/api/products',      require('./routes/products'));
 app.use('/api/wallets',       require('./routes/wallets'));
 app.use('/api/franchises',    require('./routes/franchises'));
 app.use('/api/stock-requests', require('./routes/stockRequests'));
+app.use('/api/users',         authRoutes); // Alias for user profile/auth endpoints
+app.use('/api/notifications',  require('./routes/notifications'));
+
 
 
 // ─── Socket.io Auth + GPS ───────────────────────────
@@ -239,6 +257,17 @@ app.use((req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.url} not found` });
 });
 
+// Central 500 error handler
+app.use((err, req, res, next) => {
+  console.error(`[SERVER ERROR] ${req.method} ${req.url}:`, err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({
+    success: false,
+    error: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
 // ─── Graceful shutdown ──────────────────────────────
 const gracefulShutdown = (signal) => {
   console.log(`\n${signal} received — shutting down gracefully...`);
@@ -257,7 +286,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // ─── Start server ───────────────────────────────────
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`\n🚗 O3 Car Spa API running on port ${PORT}`);
+  console.log(`\n🚗 O3 Car Spaa API running on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`   Allowed origins: ${allowedOrigins.join(', ')}\n`);
 
@@ -271,6 +300,25 @@ server.listen(PORT, () => {
   // Initialize cron jobs
   const cronService = require('./services/cronService');
   cronService.initCronJobs();
+
+  // Phase 5: Initialize notification queue worker with Socket.io
+  const notificationQueue = require('./services/notificationQueue');
+  notificationQueue.setIo(io);
+  notificationQueue.startWorker(15000);
+
+  // Phase 5: Initialize Baileys WhatsApp engine (free, auto-reconnecting)
+  const baileys = require('./services/whatsappBaileys');
+  baileys.setIo(io);
+  baileys.connect().catch(err => {
+    // Non-fatal: server still boots; admin can trigger reconnect from UI
+    console.warn('[Baileys] Initial connect deferred:', err.message);
+  });
+
+  // Ensure all database schema columns & tables exist on startup
+  const { runStartupMigrations } = require('../scripts/migrate_columns');
+  runStartupMigrations(pool).catch((err) => {
+    console.warn('[MIGRATIONS] Notice during startup migrations:', err.message);
+  });
 });
 
 module.exports = { app, io };

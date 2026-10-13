@@ -4,7 +4,9 @@ const vehiclesController = require('../controllers/vehiclesController');
 const auth = require('../middleware/auth');
 const role = require('../middleware/role');
 
-// Existing routes (untouched)
+// Existing routes
+router.get('/',           auth, vehiclesController.getVehicles);
+router.post('/',          auth, vehiclesController.addCar);
 router.get('/my-vehicles', auth, vehiclesController.getVehicles);
 router.get('/brands', vehiclesController.getBrands);
 router.get('/models', vehiclesController.getModels);

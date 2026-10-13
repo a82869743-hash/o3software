@@ -118,7 +118,7 @@ export default function SettingsPage() {
 
   return (
     <>
-      <AdminTopBar title="System Settings" subtitle="Configure O3 Car Spa details, UPI QR Code, and operational defaults" />
+      <AdminTopBar title="System Settings" subtitle="Configure O3 Car Spaa details, UPI QR Code, and operational defaults" />
 
       <div className="max-w-4xl">
         {/* Admin Profile Picture Section */}
@@ -180,7 +180,7 @@ export default function SettingsPage() {
                   if (!title) return;
                   const upi_id = window.prompt('UPI VPA / ID (e.g. 7225030303@ybl):', '7225030303@paytm');
                   if (!upi_id) return;
-                  const upi_name = window.prompt('Payee Account Name:', form.upi_name || 'O3 Car Spa');
+                  const upi_name = window.prompt('Payee Account Name:', form.upi_name || 'O3 Car Spaa');
                   const upi_number = window.prompt('UPI Mobile Number:', form.upi_number || '7225030303');
                   try {
                     await api.post('/settings/payment-qrs', { title, upi_id, upi_name, upi_number, is_active: 0 });

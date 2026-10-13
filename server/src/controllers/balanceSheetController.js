@@ -232,7 +232,7 @@ exports.exportBalanceSheet = async (req, res) => {
 
     if (format === 'xlsx') {
       const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'O3 Car Spa';
+      workbook.creator = 'O3 Car Spaa';
       workbook.created = new Date();
 
       const summarySheet = workbook.addWorksheet('Balance Sheet');

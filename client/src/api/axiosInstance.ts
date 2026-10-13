@@ -30,7 +30,7 @@ api.interceptors.response.use(
   (err) => {
     // Network error (server down / no connection)
     if (!err.response) {
-      err.message = 'Unable to connect to server. Please check your connection.';
+      err.message = 'Unable to connect to server. Please check your network connection.';
       return Promise.reject(err);
     }
 
@@ -38,11 +38,18 @@ api.interceptors.response.use(
     if (err.response.status === 401) {
       sessionStorage.removeItem('gk-auth-v1');
       localStorage.removeItem('gk-auth-v1');
-      // Only redirect if not already on login/register
       const path = window.location.pathname;
       if (path !== '/login' && path !== '/register') {
         window.location.href = '/login';
       }
+    } else if (err.response.status === 403) {
+      err.message = err.response.data?.error || 'Access denied: You do not have permission to perform this action.';
+    } else if (err.response.status === 404) {
+      err.message = err.response.data?.error || 'The requested resource was not found.';
+    } else if (err.response.status >= 500) {
+      err.message = err.response.data?.error || 'A server error occurred. Please try again.';
+    } else if (err.response.data?.error) {
+      err.message = err.response.data.error;
     }
 
     return Promise.reject(err);

@@ -8,6 +8,8 @@ router.get('/lookup/:mobile', auth, role(['admin']), ctrl.lookupByMobile);
 router.post('/manual-registration', auth, role(['admin']), ctrl.createManual);
 router.get('/manual-registration/list', auth, role(['admin']), ctrl.listManual);
 router.get('/:id', auth, role(['admin']), ctrl.getDetail);
+router.put('/:id', auth, role(['admin']), ctrl.updateCustomer);
+router.post('/:id/packages', auth, role(['admin']), ctrl.assignPackage);
 router.get('/:id/package-history/export', auth, role(['admin']), require('../controllers/reportsController').customerPackageHistoryReport);
 router.post('/:id/notes', auth, role(['admin']), ctrl.addNote);
 router.delete('/:id', auth, role(['admin']), ctrl.softDelete);

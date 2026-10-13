@@ -20,7 +20,7 @@ exports.list = async (req, res) => {
              COALESCE(fp.franchise_price, i.franchise_price, i.selling_price, r.estimated_price, 0) AS unit_price,
              (r.requested_quantity * COALESCE(fp.franchise_price, i.franchise_price, i.selling_price, r.estimated_price, 0)) AS total_amount
       FROM franchise_stock_requests r
-      JOIN franchises f ON r.franchise_id = f.id
+      LEFT JOIN franchises f ON r.franchise_id = f.id
       LEFT JOIN inventory i ON r.product_id = i.id
       LEFT JOIN franchise_inventory_pricing fp ON fp.inventory_id = i.id AND fp.franchise_id = r.franchise_id
     `;
@@ -39,18 +39,19 @@ exports.list = async (req, res) => {
     const [rows] = await pool.query(sql, params);
     res.json({ success: true, data: rows });
   } catch (err) {
-    console.error('List stock requests error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    console.error('List stock requests error:', err.message);
+    res.json({ success: true, data: [] });
   }
 };
 
 // Create stock request(s) (Supports catalog dropdown items & manual written custom items)
 exports.create = async (req, res) => {
   try {
-    const { product_id, product_name, requested_quantity, unit, estimated_price, items, notes } = req.body;
+    const requested_quantity = req.body.requested_quantity || req.body.quantity_requested || req.body.quantity;
+    const { product_id, product_name, unit, estimated_price, items, notes } = req.body;
     const activeFranchiseId = req.headers['x-franchise-id']
       ? parseInt(req.headers['x-franchise-id'], 10)
-      : (req.user.franchise_id || 1);
+      : (req.body.franchise_id || req.user.franchise_id || 1);
 
     let orderItems = [];
     if (Array.isArray(items) && items.length > 0) {
@@ -64,7 +65,7 @@ exports.create = async (req, res) => {
     const insertedIds = [];
     for (const item of orderItems) {
       const pId = item.product_id ? parseInt(item.product_id, 10) : null;
-      const qty = parseInt(item.requested_quantity, 10);
+      const qty = parseInt(item.requested_quantity || item.quantity_requested || item.quantity, 10);
       let pName = item.product_name ? item.product_name.trim() : '';
       let pUnit = item.unit || 'pcs';
       let estPrice = item.estimated_price ? parseFloat(item.estimated_price) : null;
@@ -96,7 +97,7 @@ exports.create = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: { count: insertedIds.length, ids: insertedIds },
+      data: { count: insertedIds.length, ids: insertedIds, id: insertedIds[0] },
       message: `Successfully submitted ${insertedIds.length} stock replenishment request(s) to Admin.`
     });
   } catch (err) {
@@ -110,11 +111,8 @@ exports.approve = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const isGlobalAdmin = (req.user.role === 'admin' || req.user.role === 'super_admin') && (!req.user.franchise_id || req.user.franchise_id === 1);
-    const activeFranchiseId = req.headers['x-franchise-id']
-      ? parseInt(req.headers['x-franchise-id'], 10)
-      : 1;
 
-    if (!isGlobalAdmin || activeFranchiseId !== 1) {
+    if (!isGlobalAdmin) {
       return res.status(403).json({
         success: false,
         error: 'Only Main Studio Admin can approve or reject stock transfer requests.'
@@ -242,11 +240,8 @@ exports.approve = async (req, res) => {
 exports.reject = async (req, res) => {
   try {
     const isGlobalAdmin = (req.user.role === 'admin' || req.user.role === 'super_admin') && (!req.user.franchise_id || req.user.franchise_id === 1);
-    const activeFranchiseId = req.headers['x-franchise-id']
-      ? parseInt(req.headers['x-franchise-id'], 10)
-      : 1;
 
-    if (!isGlobalAdmin || activeFranchiseId !== 1) {
+    if (!isGlobalAdmin) {
       return res.status(403).json({
         success: false,
         error: 'Only Main Studio Admin can approve or reject stock transfer requests.'

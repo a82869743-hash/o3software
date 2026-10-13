@@ -29,7 +29,7 @@ exports.initCronJobs = () => {
           await messagingService.sendWhatsApp(
             `91${vehicle.mobile}`, 
             'service_reminder', 
-            { body: `Hi ${vehicle.name}, your ${vehicle.brand} ${vehicle.model} (${vehicle.registration_no}) is due for service! Visit O3 Car Spa.` }
+            { body: `Hi ${vehicle.name}, your ${vehicle.brand} ${vehicle.model} (${vehicle.registration_no}) is due for service! Visit O3 Car Spaa.` }
           ).catch(() => {});
         }
       }
@@ -86,11 +86,9 @@ exports.initCronJobs = () => {
             [booking.id]
           );
 
-          // Restore slot count
-          await conn.query(
-            'UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?',
-            [booking.slot_id]
-          );
+          // Restore slot count (including multi-hour consecutive slots)
+          const { restoreBookingSlots } = require('../controllers/bookingsController');
+          await restoreBookingSlots(conn, booking.id, booking.slot_id);
 
           // Restore free wash if applicable
           if (booking.is_free_wash) {
@@ -110,9 +108,8 @@ exports.initCronJobs = () => {
         }
       }
     } catch (err) {
-      // Only log if it's an actual error, not "table doesn't exist yet"
-      if (err.code !== 'ER_BAD_FIELD_ERROR' && err.code !== 'ER_NO_SUCH_TABLE') {
-        console.error('[CRON] Error in booking expiry task:', err);
+      if (err.code !== 'ER_BAD_FIELD_ERROR' && err.code !== 'ER_NO_SUCH_TABLE' && err.code !== 'ECONNREFUSED') {
+        console.error('[CRON] Error in booking expiry task:', err.message);
       }
     }
   });
@@ -153,7 +150,7 @@ exports.initCronJobs = () => {
           await messagingService.sendWhatsApp(
             `91${payment.mobile}`, 
             'payment_reminder', 
-            { body: `Hi ${payment.name}, gentle reminder for your pending payment of Rs.${payment.balance_due} due tomorrow (${payment.due_date}). Thank you! - O3 Car Spa` }
+            { body: `Hi ${payment.name}, gentle reminder for your pending payment of Rs.${payment.balance_due} due tomorrow (${payment.due_date}). Thank you! - O3 Car Spaa` }
           ).catch(() => {});
         }
       }
@@ -188,7 +185,7 @@ exports.initCronJobs = () => {
       for (const pkg of expiringPackages) {
         if (pkg.mobile) {
           const timingText = pkg.days_left === 30 ? 'in 1 month' : pkg.days_left === 7 ? 'in 1 week' : 'tomorrow';
-          const msg = `Hi ${pkg.name}, your package "${pkg.package_name}" is about to expire ${timingText} on ${new Date(pkg.end_date).toLocaleDateString('en-IN')}. Kindly visit O3 Car Spa to enjoy your services or renew. Thank you!`;
+          const msg = `Hi ${pkg.name}, your package "${pkg.package_name}" is about to expire ${timingText} on ${new Date(pkg.end_date).toLocaleDateString('en-IN')}. Kindly visit O3 Car Spaa to enjoy your services or renew. Thank you!`;
           await messagingService.sendWhatsApp(`91${pkg.mobile}`, null, { body: msg }).catch(() => {});
         }
       }
@@ -209,7 +206,7 @@ exports.initCronJobs = () => {
       for (const item of schedItems) {
         if (item.mobile) {
           const timingText = item.days_left === 30 ? 'in 1 month' : item.days_left === 7 ? 'in 1 week' : 'tomorrow';
-          const msg = `Hi ${item.name}, gentle reminder: your scheduled service "${item.service_name}" (Service #${item.instance_number}) is due ${timingText} (${new Date(item.scheduled_date).toLocaleDateString('en-IN')}). Kindly visit O3 Car Spa!`;
+          const msg = `Hi ${item.name}, gentle reminder: your scheduled service "${item.service_name}" (Service #${item.instance_number}) is due ${timingText} (${new Date(item.scheduled_date).toLocaleDateString('en-IN')}). Kindly visit O3 Car Spaa!`;
           await messagingService.sendWhatsApp(`91${item.mobile}`, null, { body: msg }).catch(() => {});
         }
       }
@@ -251,6 +248,17 @@ exports.initCronJobs = () => {
       }
     } catch (err) {
       console.error('[CRON] Error in failed notification retry task:', err);
+    }
+  });
+
+  // 8. BOOKING REMINDERS — 24h & 2h WhatsApp reminders (Phase 5)
+  // Runs every 10 minutes
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      const notificationService = require('./notificationService');
+      await notificationService.checkBookingReminders();
+    } catch (err) {
+      console.error('[CRON] Error in booking reminders task:', err);
     }
   });
   

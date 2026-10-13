@@ -69,7 +69,7 @@ export default function ServiceDetailsModal({ isOpen, onClose, service }: Servic
           <div className="relative z-10 space-y-2">
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-0.5 bg-blue-600/90 text-white text-[10px] font-black uppercase tracking-wider rounded-md">
-                {service.category_name || 'O3 Car Spa Service'}
+                {service.category_name || 'O3 Car Spaaa Service'}
               </span>
               {service.is_premium && (
                 <span className="px-2.5 py-0.5 bg-amber-500/90 text-black text-[10px] font-black uppercase tracking-wider rounded-md flex items-center gap-1">

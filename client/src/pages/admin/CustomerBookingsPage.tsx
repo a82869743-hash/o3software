@@ -896,7 +896,7 @@ export default function CustomerBookingsPage() {
           <Button
             onClick={handleCreateManualBookingSubmit}
             loading={createManualBooking.isPending}
-            disabled={!manualForm.customer_id || !manualForm.slot_id || !manualForm.service_id}
+            disabled={!manualForm.customer_id || !manualForm.slot_id || !manualForm.service_id || createManualBooking.isPending}
           >
             Create & Confirm
           </Button>

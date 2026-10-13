@@ -9,8 +9,9 @@ router.post('/check-in',      auth, role(['staff']), ctrl.checkIn);
 router.post('/check-out',     auth, role(['staff']), ctrl.checkOut);
 router.get('/my-attendance',  auth, role(['staff']), ctrl.getMyAttendance);
 
-router.get('/all-attendance', auth, role(['admin']), ctrl.getAllAttendanceSummary);
-router.get('/',               auth, role(['admin']), ctrl.list);
+router.get('/all-attendance',    auth, role(['admin']), ctrl.getAllAttendanceSummary);
+router.get('/attendance/summary', auth, role(['admin']), ctrl.getAllAttendanceSummary);
+router.get('/',                  auth, role(['admin']), ctrl.list);
 router.get('/:id',            auth, role(['admin']), ctrl.getOne);
 router.post('/',              auth, role(['admin']), ctrl.create);
 router.put('/:id',            auth, role(['admin']), ctrl.update);

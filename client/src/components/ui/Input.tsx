@@ -12,10 +12,17 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
     const inputId = id || label?.toLowerCase().replace(/\s+/g, '-');
     const autoListId = listOptions ? `${inputId}-list` : list;
 
-    const isPhoneInput = props.type === 'tel' || 
-                         (label && /mobile|phone/i.test(label) && !/registration|reg|vehicle|invoice|visit|account/i.test(label)) ||
-                         (props.name && /mobile|phone/i.test(props.name)) ||
-                         (props.placeholder && /mobile|phone/i.test(props.placeholder) && !/registration|reg/i.test(props.placeholder));
+    const isSearchOrQuery = props.type === 'search' ||
+                            /search|query|filter|find/i.test(props.name || '') ||
+                            /search|query|filter|find/i.test(props.placeholder || '') ||
+                            /search|query|filter|find/i.test(label || '') ||
+                            /search|query|filter|find/i.test(className || '');
+
+    const isPhoneInput = !isSearchOrQuery && (
+      props.type === 'tel' || 
+      (label && /^(customer\s*)?(mobile|phone|contact)(\s*number)?$/i.test(label.trim())) ||
+      (props.name && /^(mobile|phone|contact|customer_mobile)$/i.test(props.name.trim()))
+    );
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       if (isPhoneInput) {

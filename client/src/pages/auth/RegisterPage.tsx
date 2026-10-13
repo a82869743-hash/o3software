@@ -74,7 +74,7 @@ export default function RegisterPage() {
       {
         onSuccess: (result) => {
           login(result.token, result.user);
-          toast.success(`Welcome to O3 Car Spa, ${result.user.name}!`);
+          toast.success(`Welcome to O3 Car Spaaa, ${result.user.name}!`);
           navigate('/customer/services');
         },
         onError: (err: any) => {
@@ -96,7 +96,7 @@ export default function RegisterPage() {
           </div>
           <div className="w-16 h-1 bg-gradient-to-r from-[#0284C7] to-[#38BDF8] mt-6 mb-6 rounded-full" />
           <p className="text-slate-300 text-sm leading-relaxed font-medium">
-            Join O3 Car Spa for a premium car care experience. Track your ceramic coating,
+            Join O3 Car Spaaa for a premium car care experience. Track your ceramic coating,
             earn loyalty rewards, and book service slots with ease.
           </p>
           <div className="mt-10 space-y-3">
@@ -366,7 +366,7 @@ export default function RegisterPage() {
           {/* Footer */}
           <div className="mt-8 text-center">
             <p className="text-[10px] text-slate-400 font-medium">
-              O3 Car Spa v2.0 · Anand, Gujarat (388121)
+              O3 Car Spaaa v2.0 · Anand, Gujarat (388121)
             </p>
           </div>
         </div>

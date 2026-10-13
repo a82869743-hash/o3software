@@ -586,11 +586,18 @@ export default function VendorsPage() {
             </RippleButton>
             <RippleButton
               type="button"
-              className="py-2 px-4 bg-blue-600 text-white hover:bg-blue-700 rounded-xl text-xs font-bold shadow-sm"
+              className="py-2 px-4 bg-red-600 text-white hover:bg-red-700 rounded-xl text-xs font-bold shadow-sm"
               onClick={handleDeleteConfirm}
               disabled={deleteMutation.isPending}
             >
-              Delete Vendor
+              {deleteMutation.isPending ? (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Deleting...</span>
+                </div>
+              ) : (
+                'Delete Vendor'
+              )}
             </RippleButton>
           </div>
         </div>

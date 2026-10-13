@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Users, Phone, Mail, Car, MessageCircle, ArrowRight, Search, Plus, Filter } from 'lucide-react';
+import { Users, Phone, Mail, Car, MessageCircle, ArrowRight, Search, Plus, Filter, Loader2 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { useUIStore } from '../../store/uiStore';
 import Modal from '../../components/ui/Modal';
 import Input from '../../components/ui/Input';
@@ -82,6 +83,24 @@ export default function LeadManagementPage() {
   const [newService, setNewService] = useState('');
   const [newSource, setNewSource] = useState('facebook');
   const [submitting, setSubmitting] = useState(false);
+  const [convertingLeadId, setConvertingLeadId] = useState<number | null>(null);
+  const [sendingLeadId, setSendingLeadId] = useState<number | null>(null);
+  const sendWhatsApp = useSendWhatsApp();
+
+  const handleSendLeadWhatsApp = (lead: Inquiry) => {
+    if (!lead.mobile) return;
+    const msg = `Hi ${lead.name}, thank you for reaching out to O3 Car Spaa! How can we assist you with your vehicle detailing today? 🚗✨`;
+    setSendingLeadId(lead.id);
+    sendWhatsApp.mutate(
+      {
+        phone: lead.mobile,
+        message: msg
+      },
+      {
+        onSettled: () => setSendingLeadId(null)
+      }
+    );
+  };
 
   const fetchLeads = async () => {
     setLoading(true);
@@ -93,7 +112,9 @@ export default function LeadManagementPage() {
       setLeads(listRes.data.data || []);
       setStats(statsRes.data.data || null);
     } catch (err) {
-      toast('error', 'Failed to load lead management data');
+      console.warn('Initial load lead management data notice:', err);
+      setLeads([]);
+      setStats(null);
     } finally {
       setLoading(false);
     }
@@ -131,11 +152,14 @@ export default function LeadManagementPage() {
 
   const handleConvertLead = async (leadId: number) => {
     try {
+      setConvertingLeadId(leadId);
       const res = await api.post(`/inquiries/${leadId}/convert`, { lead_source: undefined });
       toast('success', 'Inquiry converted to Lead');
       navigate('/admin/job-carts/new', { state: { prefill: res.data.data } });
     } catch (err: any) {
       toast('error', err?.response?.data?.error || 'Failed to convert lead');
+    } finally {
+      setConvertingLeadId(null);
     }
   };
 
@@ -327,20 +351,35 @@ export default function LeadManagementPage() {
               </div>
 
               <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <a
-                  href={`https://wa.me/91${lead.mobile}?text=${encodeURIComponent(`Hi ${lead.name}, thank you for reaching out to O3 Car Spa! How can we assist you today?`)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-1 text-xs font-bold text-emerald-600 hover:text-emerald-700"
+                <button
+                  type="button"
+                  disabled={sendingLeadId === lead.id}
+                  onClick={() => handleSendLeadWhatsApp(lead)}
+                  className="flex items-center gap-1 text-xs font-bold text-emerald-600 hover:text-emerald-700 disabled:opacity-50 transition-colors cursor-pointer"
+                  title="1-Click WhatsApp Follow-up"
                 >
-                  <MessageCircle size={14} /> WhatsApp
-                </a>
+                  {sendingLeadId === lead.id ? (
+                    <Loader2 size={14} className="animate-spin text-emerald-600" />
+                  ) : (
+                    <MessageCircle size={14} />
+                  )}
+                  <span>{sendingLeadId === lead.id ? 'Sending...' : 'WhatsApp'}</span>
+                </button>
                 {lead.status !== 'converted' ? (
                   <button
                     onClick={() => handleConvertLead(lead.id)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs"
+                    disabled={convertingLeadId === lead.id}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Convert to Job Card <ArrowRight size={12} />
+                    {convertingLeadId === lead.id ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" /> Converting...
+                      </>
+                    ) : (
+                      <>
+                        Convert to Job Card <ArrowRight size={12} />
+                      </>
+                    )}
                   </button>
                 ) : (
                   <span className="text-xs font-bold text-emerald-600 flex items-center gap-1">

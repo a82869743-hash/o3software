@@ -33,10 +33,10 @@ export default function QrPaymentModal({
     upi_name: string;
     upi_qr_url: string | null;
   }>({
-    studio_name: 'O3 Car Spa',
+    studio_name: 'O3 Car Spaaa',
     upi_id: '7225030303@paytm',
     upi_number: '7225030303',
-    upi_name: 'O3 Car Spa',
+    upi_name: 'O3 Car Spaaa',
     upi_qr_url: null,
   });
 
@@ -128,7 +128,7 @@ export default function QrPaymentModal({
         <div className="bg-sky-50 border border-sky-100 rounded-xl p-3.5 w-full flex items-center justify-between">
           <div className="text-left">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Payee Name</p>
-            <p className="text-sm font-extrabold text-slate-900">{currentQr.upi_name || settings.upi_name || settings.studio_name || 'O3 Car Spa'}</p>
+            <p className="text-sm font-extrabold text-slate-900">{currentQr.upi_name || settings.upi_name || settings.studio_name || 'O3 Car Spaaa'}</p>
           </div>
           <div className="text-right">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">UPI ID / Number</p>
@@ -154,7 +154,7 @@ export default function QrPaymentModal({
           ) : (
             <div className="flex flex-col items-center justify-center w-full h-full p-4 bg-sky-50/50 rounded-xl border border-sky-100">
               <QrCode size={64} className="text-[#0284C7] mb-2" />
-              <p className="text-xs font-bold text-slate-800">{currentQr.upi_name || settings.upi_name || 'O3 Car Spa'}</p>
+              <p className="text-xs font-bold text-slate-800">{currentQr.upi_name || settings.upi_name || 'O3 Car Spaaa'}</p>
               <p className="text-[11px] font-semibold text-[#0284C7] mt-0.5">{currentQr.upi_id || settings.upi_id || '7225030303@paytm'}</p>
               <span className="mt-2 px-2.5 py-1 bg-white text-[10px] text-slate-500 font-medium rounded-md shadow-xs border border-slate-200">
                 Scan with GPay, PhonePe, Paytm or UPI App

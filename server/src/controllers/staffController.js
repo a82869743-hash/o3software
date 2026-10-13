@@ -318,7 +318,7 @@ exports.checkIn = async (req, res) => {
     const [franRows] = await pool.query('SELECT name, latitude, longitude FROM franchises WHERE id = ?', [activeFranchiseId]);
     const studioLat = (franRows.length && franRows[0].latitude) ? parseFloat(franRows[0].latitude) : 22.5645;
     const studioLng = (franRows.length && franRows[0].longitude) ? parseFloat(franRows[0].longitude) : 72.9289;
-    const studioName = franRows.length ? franRows[0].name : 'O3 Car Spa Anand';
+    const studioName = franRows.length ? franRows[0].name : 'O3 Car Spaa Anand';
     let isValidLocation = true;
 
     if (latitude && longitude) {

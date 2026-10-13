@@ -358,7 +358,7 @@ export default function BuyPackagesPage() {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
         amount: orderData.amount,
         currency: orderData.currency,
-        name: 'O3 Car Spa',
+        name: 'O3 Car Spaa',
         description: `Car Care Package: ${confirmPkg.name}`,
         order_id: orderData.id,
         prefill: {

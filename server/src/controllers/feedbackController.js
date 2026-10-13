@@ -239,7 +239,7 @@ exports.requestFeedbackManual = async (req, res) => {
     // Construct Redirect URL for manual send
     const domain = process.env.CLIENT_URL || 'http://localhost:5173';
     const feedbackUrl = `${domain}/feedback/${token}`;
-    const message = `Dear ${cart.customer_name || 'Customer'}, thank you for choosing O3 Car Spa! We would love to hear your feedback. Please rate your experience here: ${feedbackUrl}`;    // Log Click-to-Chat notification
+    const message = `Dear ${cart.customer_name || 'Customer'}, thank you for choosing O3 Car Spaa! We would love to hear your feedback. Please rate your experience here: ${feedbackUrl}`;    // Log Click-to-Chat notification
     await pool.query(
       `INSERT INTO v2_notification_logs (customer_id, template_name, channel, mobile, message_body, status, response_data)
        VALUES (?, 'FEEDBACK_REQUEST', 'whatsapp', ?, ?, 'pending', ?)`,

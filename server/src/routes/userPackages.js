@@ -17,6 +17,7 @@ const ctrl = require('../controllers/userPackagesController');
 
 // Get active package — customers see their own, admin can query any user
 router.get('/active', protect, ctrl.getActivePackage);
+router.get('/my',     protect, ctrl.getActivePackage);
 
 // Package subscription history
 router.get('/history', protect, ctrl.listUserPackages);

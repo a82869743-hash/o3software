@@ -21,14 +21,14 @@ exports.getPublicSettings = async (req, res) => {
     res.json({
       success: true,
       data: {
-        studio_name: settingsMap.studio_name || 'O3 Car Spa',
+        studio_name: settingsMap.studio_name || 'O3 Car Spaa',
         tagline: settingsMap.tagline || 'Premium Car Detailing Studio',
         mobile: settingsMap.mobile || '7225030303',
         email: settingsMap.email || 'o3carspavvn@gmail.com',
         address: settingsMap.address || 'Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Vitthal Udyognagar, Anand, Gujarat (388121)',
         upi_id: activeQr ? activeQr.upi_id : (settingsMap.upi_id || '7225030303@paytm'),
         upi_number: activeQr ? activeQr.upi_number : (settingsMap.upi_number || '7225030303'),
-        upi_name: activeQr ? activeQr.upi_name : (settingsMap.upi_name || 'O3 Car Spa'),
+        upi_name: activeQr ? activeQr.upi_name : (settingsMap.upi_name || 'O3 Car Spaa'),
         upi_qr_url: activeQr ? activeQr.qr_image_url : (settingsMap.upi_qr_url || null),
         active_qr: activeQr,
         all_qrs: allQrs,
@@ -39,14 +39,14 @@ exports.getPublicSettings = async (req, res) => {
     res.json({
       success: true,
       data: {
-        studio_name: 'O3 Car Spa',
+        studio_name: 'O3 Car Spaa',
         tagline: 'Premium Car Detailing Studio',
         mobile: '7225030303',
         email: 'o3carspavvn@gmail.com',
         address: 'Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Vitthal Udyognagar, Anand, Gujarat (388121)',
         upi_id: '7225030303@paytm',
         upi_number: '7225030303',
-        upi_name: 'O3 Car Spa',
+        upi_name: 'O3 Car Spaa',
         upi_qr_url: null,
         all_qrs: [],
       }
@@ -83,7 +83,7 @@ exports.createPaymentQr = async (req, res) => {
 
     const [result] = await conn.query(
       'INSERT INTO payment_qrs (title, upi_id, upi_name, upi_number, qr_image_url, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-      [title, upi_id, upi_name || 'O3 Car Spa', upi_number || '7225030303', qr_image_url || null, makeActive]
+      [title, upi_id, upi_name || 'O3 Car Spaa', upi_number || '7225030303', qr_image_url || null, makeActive]
     );
 
     await conn.commit();

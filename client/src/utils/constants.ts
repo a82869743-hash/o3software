@@ -1,4 +1,5 @@
-export const APP_NAME = 'O3 Car Spa';
+export const APP_NAME = 'O3 Car Spaaa';
+
 export const APP_VERSION = '2.0.0';
 
 export const BRAND_COLORS = {

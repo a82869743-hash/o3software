@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Check, Calendar, Clock, Car, Sparkles, Loader2, ArrowLeft, CreditCard, QrCode, Gift } from 'lucide-react';
-import { useSlots } from '../../api/hooks/useSlots';
+import { useSlots, useSlotClosures } from '../../api/hooks/useSlots';
 import { useCreateBooking } from '../../api/hooks/useBookings';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -82,6 +82,8 @@ export default function BookingPage() {
 
   // Step 4: Time
   const { data: slotsData, isLoading: slotsLoading } = useSlots({ date: selectedDate || undefined });
+  const { data: closuresRes } = useSlotClosures();
+  const closuresList = useMemo(() => closuresRes?.data || [], [closuresRes]);
 
   // Step 5: Confirm
   const [selectedSlot, setSelectedSlot] = useState<any>(null);
@@ -245,6 +247,37 @@ export default function BookingPage() {
     return days;
   }, [calMonth]);
 
+  const getDayClosureInfo = (d: Date) => {
+    const dateStr = formatLocalDate(d);
+    const dayOfWeek = d.getDay();
+    const month = d.getMonth() + 1;
+    const dayNum = d.getDate();
+
+    return closuresList.find((c: any) => {
+      if (c.is_recurring) {
+        if (c.recurrence_type === 'weekly') {
+          return dayOfWeek === parseInt(c.recurrence_day, 10);
+        }
+        if (c.recurrence_type === 'yearly' && c.start_date) {
+          const [cy, cm, cd] = c.start_date.split('-').map(Number);
+          return month === cm && dayNum === cd;
+        }
+      } else {
+        if (!c.slot_time) {
+          return dateStr >= c.start_date && dateStr <= c.end_date;
+        }
+      }
+      return false;
+    });
+  };
+
+  const selectedDateClosure = useMemo(() => {
+    if (!selectedDate) return null;
+    const parts = selectedDate.split('-').map(Number);
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return getDayClosureInfo(d);
+  }, [selectedDate, closuresList]);
+
   const totalBookingDuration = useMemo(() => {
     if (isPackageBooking) {
       let sum = 0;
@@ -366,7 +399,7 @@ export default function BookingPage() {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
         amount: orderData.amount,
         currency: orderData.currency,
-        name: 'O3 Car Spa',
+        name: 'O3 Car Spaa',
         description: `Booking Advance Payment (Booking #${bookingId})`,
         order_id: orderData.id,
         prefill: {
@@ -973,6 +1006,27 @@ export default function BookingPage() {
             </button>
           </div>
 
+          {selectedDateClosure && (
+            <div className="mb-4 p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-3">
+              <div className="p-2 bg-amber-100 rounded-lg text-amber-700 shrink-0 mt-0.5">
+                <Calendar size={18} />
+              </div>
+              <div className="text-left">
+                <p className="font-extrabold text-[11px] uppercase tracking-wider text-amber-800">
+                  Studio Closure / Holiday
+                </p>
+                <p className="text-sm font-bold text-amber-950 mt-0.5">
+                  {selectedDateClosure.title || 'Studio Closed'}
+                </p>
+                {selectedDateClosure.reason && (
+                  <p className="text-xs text-amber-800 mt-0.5">
+                    Reason: {selectedDateClosure.reason}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-7 gap-1 mb-2">
             {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
               <div key={d} className="text-center text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] py-2">{d}</div>
@@ -985,23 +1039,48 @@ export default function BookingPage() {
               const isPast = d < today;
               const isSelected = dateStr === selectedDate;
               const isToday = dateStr === todayStr;
+              const dayClosure = getDayClosureInfo(d);
+              const isClosedDay = !!dayClosure;
 
               return (
                 <button
                   key={i}
                   disabled={isPast}
                   onClick={() => { setSelectedDate(dateStr); setSelectedSlot(null); }}
-                  className={`p-2 rounded-lg text-sm font-medium text-center transition-all ${
+                  className={`p-2 rounded-xl text-center transition-all relative flex flex-col items-center justify-center min-h-[52px] ${
                     isPast ? 'text-gray-300 cursor-not-allowed' :
-                    isSelected ? 'bg-[#2563EB] text-white font-bold' :
-                    isToday ? 'bg-blue-50 text-[#2563EB] font-bold' :
+                    isSelected ? 'bg-[#2563EB] text-white font-bold shadow-sm' :
+                    isClosedDay ? 'bg-rose-50 text-rose-700 font-bold border border-rose-200 hover:bg-rose-100' :
+                    isToday ? 'bg-blue-50 text-[#2563EB] font-bold border border-blue-200' :
                     'hover:bg-[#f6f3f2] text-[#0F172A]'
                   }`}
                 >
-                  {d.getDate()}
+                  <span className="text-sm font-bold">{d.getDate()}</span>
+                  {isClosedDay && !isPast && (
+                    <span className={`text-[8px] font-black truncate max-w-full px-1 rounded mt-0.5 ${
+                      isSelected ? 'text-white/90 bg-white/20' : 'text-rose-700 bg-rose-100'
+                    }`} title={dayClosure.title || dayClosure.reason || 'Closed'}>
+                      {dayClosure.title || 'Closed'}
+                    </span>
+                  )}
                 </button>
               );
             })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-4 mt-4 pt-3 border-t border-gray-100 text-[11px] text-[#5f5e5e]">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-blue-50 border border-blue-200"></div>
+              <span>Today</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-[#2563EB]"></div>
+              <span>Selected</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-rose-100 border border-rose-300"></div>
+              <span>Closed / Holiday</span>
+            </div>
           </div>
         </div>
       )}
@@ -1009,52 +1088,165 @@ export default function BookingPage() {
       {/* ═══ Step 2: Select Time Slot ═══ */}
       {step === 2 && (
         <div className="bg-white rounded-lg p-6 shadow-sm">
-          <p className="text-xs text-[#5f5e5e] mb-4">
-            Available slots for <span className="font-bold text-[#0F172A]">{new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+            <p className="text-xs text-[#5f5e5e]">
+              Available slots for <span className="font-bold text-[#0F172A]">{new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+            </p>
+            {totalBookingDuration > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#2563EB] bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100 w-fit">
+                <Clock size={13} />
+                Duration: {totalBookingDuration} min ({Math.max(1, Math.ceil(totalBookingDuration / 60))} hr slot{Math.ceil(totalBookingDuration / 60) > 1 ? 's' : ''})
+              </span>
+            )}
+          </div>
+
+          {selectedDateClosure && (
+            <div className="mb-4 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 flex items-start gap-3">
+              <div className="p-2 bg-rose-100 rounded-lg text-rose-700 shrink-0 mt-0.5">
+                <Calendar size={18} />
+              </div>
+              <div className="text-left">
+                <p className="font-extrabold text-[11px] uppercase tracking-wider text-rose-800">
+                  Studio Closed on This Date
+                </p>
+                <p className="text-sm font-bold text-rose-950 mt-0.5">
+                  {selectedDateClosure.title || 'Studio Holiday'}
+                </p>
+                <p className="text-xs text-rose-700 mt-0.5">
+                  {selectedDateClosure.reason || 'No bookings can be scheduled on this day. Please select another date.'}
+                </p>
+              </div>
+            </div>
+          )}
 
           {slotsLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="animate-spin text-[#2563EB]" /></div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {(slotsData?.data || []).filter((s: any) => !s.is_blocked).map((slot: any) => {
-                let isFull = slot.booked_count >= slot.max_capacity;
-                const isSelected = selectedSlot?.id === slot.id;
-                
-                // Filter out past slots for today
-                const isToday = selectedDate === todayStr;
-                if (isToday) {
-                  const [hour, minute] = slot.start_time.split(':').map(Number);
-                  const now = new Date();
-                  if (hour < now.getHours() || (hour === now.getHours() && minute <= now.getMinutes())) {
-                    isFull = true; // Mark as disabled
-                  }
-                }
+            (() => {
+              const rawSlots = (slotsData?.data || []).slice().sort((a: any, b: any) => a.start_time.localeCompare(b.start_time));
+              const requiredSlotCount = Math.max(1, Math.ceil(totalBookingDuration / 60));
 
+              if (rawSlots.length === 0) {
                 return (
-                  <button
-                    key={slot.id}
-                    disabled={isFull}
-                    onClick={() => setSelectedSlot(slot)}
-                    className={`p-3 rounded-lg text-center transition-all border-2 ${
-                      isSelected ? 'bg-[#2563EB] text-white border-[#2563EB]' :
-                      isFull ? 'bg-gray-100 text-gray-400 border-gray-100 cursor-not-allowed' :
-                      'bg-white border-gray-100 hover:border-[#2563EB] text-[#0F172A]'
-                    }`}
-                  >
-                    <p className={`text-sm font-bold ${isSelected ? 'text-white' : ''}`}>
-                      {formatTime(slot.start_time)}
-                    </p>
-                    <p className={`text-[10px] mt-0.5 ${isSelected ? 'text-white/80' : 'text-[#5f5e5e]'}`}>
-                      {isFull ? 'Fully Booked' : `${slot.max_capacity - slot.booked_count} spots left`}
-                    </p>
-                  </button>
+                  <div className="text-center py-12 bg-gray-50 rounded-xl border border-gray-100">
+                    <Calendar size={36} className="text-gray-300 mx-auto mb-2" />
+                    <p className="font-bold text-[#0F172A]">No slots scheduled for this date</p>
+                    <p className="text-xs text-[#5f5e5e] mt-1">Please pick another date or check back later.</p>
+                  </div>
                 );
-              })}
-              {(slotsData?.data || []).filter((s: any) => !s.is_blocked).length === 0 && (
-                <p className="col-span-full text-center py-8 text-[#5f5e5e]">No slots available on this date</p>
-              )}
-            </div>
+              }
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {rawSlots.map((slot: any, idx: number) => {
+                    const isSelected = selectedSlot?.id === slot.id;
+                    const isBlocked = !!slot.is_blocked;
+                    let isFull = slot.booked_count >= slot.max_capacity;
+
+                    // Filter out past slots for today
+                    const isToday = selectedDate === todayStr;
+                    if (isToday) {
+                      const [hour, minute] = slot.start_time.split(':').map(Number);
+                      const now = new Date();
+                      if (hour < now.getHours() || (hour === now.getHours() && minute <= now.getMinutes())) {
+                        isFull = true;
+                      }
+                    }
+
+                    // Multi-hour consecutive slot validation
+                    let hasConsecutive = true;
+                    let durationErrorReason = '';
+                    if (!isBlocked && !isFull && requiredSlotCount > 1) {
+                      if (idx + requiredSlotCount > rawSlots.length) {
+                        hasConsecutive = false;
+                        durationErrorReason = `Exceeds studio closing hours (${requiredSlotCount}h needed)`;
+                      } else {
+                        for (let offset = 0; offset < requiredSlotCount; offset++) {
+                          const checkSlot = rawSlots[idx + offset];
+                          if (offset > 0) {
+                            const prevSlot = rawSlots[idx + offset - 1];
+                            if (checkSlot.start_time !== prevSlot.end_time) {
+                              hasConsecutive = false;
+                              durationErrorReason = `Gap in schedule (${requiredSlotCount} consecutive hrs needed)`;
+                              break;
+                            }
+                          }
+                          if (checkSlot.is_blocked) {
+                            hasConsecutive = false;
+                            durationErrorReason = `Next slot (${formatTime(checkSlot.start_time)}) is closed`;
+                            break;
+                          }
+                          if (checkSlot.booked_count >= checkSlot.max_capacity) {
+                            hasConsecutive = false;
+                            durationErrorReason = `Next slot (${formatTime(checkSlot.start_time)}) is fully booked`;
+                            break;
+                          }
+                        }
+                      }
+                    }
+
+                    const isDisabled = isBlocked || isFull || !hasConsecutive;
+
+                    return (
+                      <button
+                        key={slot.id}
+                        disabled={isDisabled}
+                        onClick={() => setSelectedSlot(slot)}
+                        className={`p-3.5 rounded-xl text-left transition-all border-2 relative flex flex-col justify-between min-h-[76px] ${
+                          isSelected
+                            ? 'bg-[#2563EB] text-white border-[#2563EB] shadow-md ring-2 ring-[#2563EB]/30'
+                            : isBlocked
+                            ? 'bg-rose-50/70 border-rose-200 text-rose-900 cursor-not-allowed opacity-90'
+                            : isFull
+                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                            : !hasConsecutive
+                            ? 'bg-amber-50/70 border-amber-200 text-amber-900 cursor-not-allowed opacity-90'
+                            : 'bg-white border-gray-200 hover:border-[#2563EB] text-[#0F172A] hover:shadow-sm'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <p className={`text-sm font-extrabold ${isSelected ? 'text-white' : ''}`}>
+                            {formatTime(slot.start_time)}
+                            {requiredSlotCount > 1 && !isDisabled && (
+                              <span className="font-normal text-xs ml-1 opacity-90">
+                                – {formatTime(rawSlots[idx + requiredSlotCount - 1]?.end_time || slot.end_time)}
+                              </span>
+                            )}
+                          </p>
+                          {requiredSlotCount > 1 && !isDisabled && (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                              isSelected ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {requiredSlotCount} hrs
+                            </span>
+                          )}
+                        </div>
+
+                        <p className={`text-[11px] mt-1 leading-tight ${
+                          isSelected
+                            ? 'text-white/90'
+                            : isBlocked
+                            ? 'text-rose-700 font-bold'
+                            : isFull
+                            ? 'text-gray-400 font-medium'
+                            : !hasConsecutive
+                            ? 'text-amber-800 font-medium'
+                            : 'text-emerald-700 font-bold'
+                        }`}>
+                          {isBlocked
+                            ? (slot.blocked_reason ? `Closed: ${slot.blocked_reason}` : 'Closed / Blocked')
+                            : isFull
+                            ? 'Fully Booked'
+                            : !hasConsecutive
+                            ? durationErrorReason
+                            : `${slot.max_capacity - slot.booked_count} spots left`}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()
           )}
         </div>
       )}
@@ -1369,7 +1561,7 @@ export default function BookingPage() {
             className="w-full" 
             onClick={handleBook} 
             loading={createMut.isPending || submittingOnline}
-            disabled={pickupOption !== 'none' && !pickupAddress.trim()}
+            disabled={(pickupOption !== 'none' && !pickupAddress.trim()) || createMut.isPending || submittingOnline}
           >
             {requiredAdvance > 0 ? `Pay Advance (₹${requiredAdvance})` : 'Confirm Booking'}
           </Button>

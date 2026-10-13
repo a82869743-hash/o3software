@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Download, Truck, CheckCircle, Send, Plus, Trash2, X, Save, Loader2, Edit2, Package, Mail, Share2, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Download, Truck, CheckCircle, Send, Plus, Trash2, X, Save, Loader2, Edit2, Package, Mail, Share2, MessageCircle, Activity, CheckCircle2, History, Users, UserCheck, Award, ExternalLink, Clock, Check, Sparkles } from 'lucide-react';
 
 import { useJobCart, useSubmitJobCart, useCompleteJobCart, useAddService, useUpdateService as useUpdateJobService, useDeleteService as useDeleteJobService, useUploadPhoto, useDeletePhoto } from '../../api/hooks/useJobCarts';
 import { useMessagesLog } from '../../api/hooks/useMessages';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import api from '../../api/axiosInstance';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import Button from '../../components/ui/Button';
@@ -57,9 +58,73 @@ export default function JobCartDetailPage() {
   const [shareFilePayload, setShareFilePayload] = useState<{ url: string; name: string; type: string } | null>(null);
   const [printModalOpen, setPrintModalOpen] = useState(false);
   const [belongings, setBelongings] = useState<any[]>([]);
+  const [sendingPickupWhatsApp, setSendingPickupWhatsApp] = useState(false);
+  const sendWhatsApp = useSendWhatsApp();
+
+  const handleNotifyPickupWhatsApp = () => {
+    if (!cart?.customer?.mobile) return;
+    const msg = `Hi ${cart.customer?.name || 'Customer'},\n\nYour vehicle *${cart.vehicle?.registration_no || ''}* (${cart.vehicle?.brand || ''} ${cart.vehicle?.model || ''}) is ready for pickup at *O3 Car Spaa*! 🚗✨\n\nTotal Amount: *₹${formatINR(cart.total_amount || 0)}*\nBalance Due: *₹${formatINR(cart.balance_due !== undefined ? cart.balance_due : cart.total_amount || 0)}*\n\nWorkshop Location:\nPlot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Anand - 388121\n📞 7225030303\n\nThank you for choosing O3 Car Spaa! 🙏`;
+    setSendingPickupWhatsApp(true);
+    sendWhatsApp.mutate(
+      {
+        phone: cart.customer.mobile,
+        message: msg,
+        customer_id: cart.customer.id
+      },
+      {
+        onSettled: () => setSendingPickupWhatsApp(false)
+      }
+    );
+  };
+
+  // ─── Phase 6 Detailing Pipeline States ──────────
+  const [pipelineData, setPipelineData] = useState<any>(null);
+  const [loadingPipeline, setLoadingPipeline] = useState(false);
+  const [selectedStageName, setSelectedStageName] = useState('');
+  const [stageNotesInput, setStageNotesInput] = useState('');
+  const [notifyCustomerOnStage, setNotifyCustomerOnStage] = useState(true);
+  const [updatingStage, setUpdatingStage] = useState(false);
+  const [showStageHistoryModal, setShowStageHistoryModal] = useState(false);
+
+  const fetchPipelineStages = async () => {
+    if (!id) return;
+    setLoadingPipeline(true);
+    try {
+      const res = await api.get(`/job-carts/${id}/stages`);
+      if (res.data?.success) {
+        setPipelineData(res.data.data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch stages:', err);
+    } finally {
+      setLoadingPipeline(false);
+    }
+  };
+
+  const handleUpdateStage = async (stageName: string, status: string, notes?: string) => {
+    setUpdatingStage(true);
+    try {
+      await api.put(`/job-carts/${id}/stages`, {
+        stage_name: stageName,
+        status,
+        notes: notes || stageNotesInput || null,
+        notify: notifyCustomerOnStage
+      });
+      toast('success', `Stage "${stageName}" updated to ${status}`);
+      setStageNotesInput('');
+      setSelectedStageName('');
+      fetchPipelineStages();
+      refetch();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to update stage');
+    } finally {
+      setUpdatingStage(false);
+    }
+  };
 
   useEffect(() => {
     if (id) {
+      fetchPipelineStages();
       api.get(`/job-carts/${id}/belongings`)
         .then(r => setBelongings(r.data.data || []))
         .catch(() => {});
@@ -149,6 +214,7 @@ export default function JobCartDetailPage() {
   const [newSvcIsCustom, setNewSvcIsCustom] = useState(false);
   const [newSvcPrice, setNewSvcPrice] = useState(0);
   const [newSvcLabor, setNewSvcLabor] = useState(0);
+  const [newSvcNotes, setNewSvcNotes] = useState('');
   const [newSvcProducts, setNewSvcProducts] = useState<ProductRow[]>([]);
 
   // ─── Edit service modal ────────────────
@@ -157,11 +223,15 @@ export default function JobCartDetailPage() {
   const [editSvcName, setEditSvcName] = useState('');
   const [editSvcPrice, setEditSvcPrice] = useState(0);
   const [editSvcLabor, setEditSvcLabor] = useState(0);
+  const [editSvcNotes, setEditSvcNotes] = useState('');
   const [editSvcProducts, setEditSvcProducts] = useState<ProductRow[]>([]);
 
   // ─── Delete service confirm ────────────
   const [deleteSvcId, setDeleteSvcId] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  // ─── Edit History Modal ────────────────
+  const [editHistoryOpen, setEditHistoryOpen] = useState(false);
 
   // ─── Loyalty modal ─────────────────────
   const [loyaltyOpen, setLoyaltyOpen] = useState(false);
@@ -169,11 +239,22 @@ export default function JobCartDetailPage() {
   const [freeWashes, setFreeWashes] = useState(0);
   const [waxAward, setWaxAward] = useState(0);
 
-  // ─── Delivery modal ────────────────────
+  // ─── Delivery modal & Staff List ───────
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [staffList, setStaffList] = useState<any[]>([]);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [deliveryLoading, setDeliveryLoading] = useState(false);
+
+  // ─── Staff & Car Arrival State ─────────
+  const [referralPerson, setReferralPerson] = useState('');
+  const [handlerId, setHandlerId] = useState<number | ''>('');
+  const [technicianId, setTechnicianId] = useState<number | ''>('');
+  const [teamIncentiveUsers, setTeamIncentiveUsers] = useState<number[]>([]);
+  const [savingStaff, setSavingStaff] = useState(false);
+
+  useEffect(() => {
+    api.get('/staff').then(res => setStaffList(res.data.data || [])).catch(() => {});
+  }, []);
 
   // ─── Collect Advance Modal ─────────────
   const [collectAdvanceOpen, setCollectAdvanceOpen] = useState(false);
@@ -187,6 +268,8 @@ export default function JobCartDetailPage() {
   const [gstPct, setGstPct] = useState(18);
   const [discountType, setDiscountType] = useState<'fixed' | 'percentage'>('fixed');
   const [discountValue, setDiscountValue] = useState(0);
+  const [discountReason, setDiscountReason] = useState('');
+  const [discountReference, setDiscountReference] = useState('');
   const [pickupType, setPickupType] = useState('none');
   const [pickupCharge, setPickupCharge] = useState(0);
   const [advancePaidInput, setAdvancePaidInput] = useState(0);
@@ -200,15 +283,59 @@ export default function JobCartDetailPage() {
       setGstPct(c.gst_pct !== undefined ? c.gst_pct : 18);
       setDiscountType(c.discount_type || 'fixed');
       setDiscountValue(c.discount_value || 0);
+      setDiscountReason(c.discount_reason || '');
+      setDiscountReference(c.discount_reference || '');
       setPickupType(c.pickup_type || 'none');
       setPickupCharge(c.pickup_charge || 0);
       setAdvancePaidInput(c.advance_paid || 0);
       setInvoiceNotesInput(c.invoice_notes || '');
+
+      setReferralPerson(c.referral_person || '');
+      setHandlerId(c.handler_id || '');
+      setTechnicianId(c.technician_id || '');
+      let parsedTeam: number[] = [];
+      if (c.team_incentive_users) {
+        try {
+          parsedTeam = typeof c.team_incentive_users === 'string' ? JSON.parse(c.team_incentive_users) : c.team_incentive_users;
+        } catch (e) {}
+      }
+      setTeamIncentiveUsers(Array.isArray(parsedTeam) ? parsedTeam : []);
     }
   }, [cart]);
 
+  const handleSaveStaffAssignment = async () => {
+    if (!cart) return;
+    setSavingStaff(true);
+    try {
+      await api.put(`/job-carts/${cart.id}`, {
+        referral_person: referralPerson,
+        handler_id: handlerId ? Number(handlerId) : null,
+        technician_id: technicianId ? Number(technicianId) : null,
+        team_incentive_users: teamIncentiveUsers,
+      });
+      toast('success', 'Arrival & Staff assignments updated!');
+      refetch();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to update staff assignments');
+    } finally {
+      setSavingStaff(false);
+    }
+  };
+
   const handleSaveBilling = async () => {
     if (!cart) return;
+
+    if (discountValue > 0) {
+      if (discountType === 'percentage' && discountValue > 100) {
+        toast('error', 'Discount percentage cannot exceed 100%');
+        return;
+      }
+      if (!discountReason?.trim() || !discountReference?.trim()) {
+        toast('error', 'Discount reason and approved/referred by are mandatory');
+        return;
+      }
+    }
+
     setSavingBilling(true);
     try {
       await api.put(`/job-carts/${cart.id}`, {
@@ -218,6 +345,8 @@ export default function JobCartDetailPage() {
         gst_pct: gstPct,
         discount_type: discountType,
         discount_value: discountValue,
+        discount_reason: discountReason,
+        discount_reference: discountReference,
         pickup_type: pickupType,
         pickup_charge: pickupCharge,
         advance_paid: advancePaidInput,
@@ -231,6 +360,7 @@ export default function JobCartDetailPage() {
       setSavingBilling(false);
     }
   };
+
 
   // ─── Helpers ───────────────────────────
 
@@ -307,7 +437,7 @@ export default function JobCartDetailPage() {
 
   // ─── Add Service ─────────────────
   const openAddService = () => {
-    setNewSvcName(''); setNewSvcIsCustom(false); setNewSvcPrice(0); setNewSvcLabor(0); setNewSvcProducts([]);
+    setNewSvcName(''); setNewSvcIsCustom(false); setNewSvcPrice(0); setNewSvcLabor(0); setNewSvcNotes(''); setNewSvcProducts([]);
     setAddSvcOpen(true);
   };
 
@@ -352,12 +482,18 @@ export default function JobCartDetailPage() {
 
   const handleAddService = async () => {
     if (!newSvcName.trim()) { toast('error', 'Service name is required'); return; }
+    const isPPF = /ppf|film/i.test(newSvcName);
+    if (isPPF && !newSvcNotes.trim()) {
+      toast('error', 'Note is mandatory for PPF services (e.g. "bonnet PPF", "hood PPF")');
+      return;
+    }
     try {
       await addServiceMut.mutateAsync({
         id: cart.id,
         service_name: newSvcName,
         service_price: newSvcPrice,
         labor_charges: newSvcLabor,
+        custom_notes: newSvcNotes.trim(),
         products: newSvcProducts.filter(p => p.product_id > 0).map(p => ({
           product_id: p.product_id, quantity: p.quantity, unit_cost: p.unit_cost,
         })),
@@ -376,6 +512,7 @@ export default function JobCartDetailPage() {
     setEditSvcName(svc.service_name);
     setEditSvcPrice(parseFloat(svc.service_price) || 0);
     setEditSvcLabor(parseFloat(svc.labor_charges) || 0);
+    setEditSvcNotes(svc.custom_notes || '');
     setEditSvcProducts(
       (svc.products || []).map((p: any) => ({
         product_id: p.product_id,
@@ -390,6 +527,11 @@ export default function JobCartDetailPage() {
 
   const handleUpdateService = async () => {
     if (!editSvcName.trim() || !editSvcId) { toast('error', 'Service name is required'); return; }
+    const isPPF = /ppf|film/i.test(editSvcName);
+    if (isPPF && !editSvcNotes.trim()) {
+      toast('error', 'Note is mandatory for PPF services (e.g. "bonnet PPF", "hood PPF")');
+      return;
+    }
     try {
       await updateServiceMut.mutateAsync({
         cartId: cart.id,
@@ -397,6 +539,7 @@ export default function JobCartDetailPage() {
         service_name: editSvcName,
         service_price: editSvcPrice,
         labor_charges: editSvcLabor,
+        custom_notes: editSvcNotes.trim(),
         products: editSvcProducts.filter(p => p.product_id > 0).map(p => ({
           product_id: p.product_id, quantity: p.quantity, unit_cost: p.unit_cost,
         })),
@@ -456,6 +599,20 @@ export default function JobCartDetailPage() {
       `${apiBase}/job-carts/${cart.id}/invoice?token=${token}`,
       '_blank'
     );
+  };
+
+  const handleSendInvoiceWhatsApp = () => {
+    if (!cart?.customer?.mobile) {
+      toast('error', 'Customer mobile number not found');
+      return;
+    }
+    const invUrl = `${window.location.origin}/invoice/${cart.id}`;
+    const msg = `Dear ${cart.customer?.name || 'Customer'},\n\nYour tax invoice *${cart.invoice_number || `#${cart.id}`}* from *O3 Car Spaa* is ready! 🚗\n\nTotal Amount: *₹${formatINR(cart.total_amount || 0)}*\nView & Download Invoice: ${invUrl}\n\nThank you for choosing O3 Car Spaa! 🙏`;
+    sendWhatsApp.mutate({
+      phone: cart.customer.mobile,
+      message: msg,
+      customer_id: cart.customer.id
+    });
   };
 
 
@@ -589,34 +746,52 @@ export default function JobCartDetailPage() {
 
   // ─── Service modal content (shared) ────
   const ServiceModalContent = ({
-    svcName, setSvcName, isCustom, setIsCustom, svcPrice, setSvcPrice, svcLabor, setSvcLabor, products, setProducts
-  }: any) => (
-    <div className="space-y-4">
-      {isCustom ? (
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
-            <Input label="Custom Service Name" value={svcName} onChange={e => setSvcName(e.target.value)} placeholder="Enter service name" />
+    svcName, setSvcName, isCustom, setIsCustom, svcPrice, setSvcPrice, svcLabor, setSvcLabor, svcNotes, setSvcNotes, products, setProducts
+  }: any) => {
+    const isPPF = /ppf|film/i.test(svcName);
+    return (
+      <div className="space-y-4">
+        {isCustom ? (
+          <div className="flex gap-2 items-end">
+            <div className="flex-1">
+              <Input label="Custom Service Name" value={svcName} onChange={e => setSvcName(e.target.value)} placeholder="Enter service name" />
+            </div>
+            <button onClick={() => setIsCustom(false)} className="pb-3 text-gray-400 hover:text-gray-600"><X size={16} /></button>
           </div>
-          <button onClick={() => setIsCustom(false)} className="pb-3 text-gray-400 hover:text-gray-600"><X size={16} /></button>
+        ) : (
+          <Select
+            label="Service"
+            options={serviceOptions}
+            value={svcName}
+            onChange={e => handleSvcSelect(e.target.value, setSvcName, setIsCustom, setSvcPrice)}
+            placeholder="Select service..."
+          />
+        )}
+        <div>
+          <label className="block text-xs font-bold text-gray-700 mb-1">
+            Service Note / Panel Description {isPPF ? <span className="text-red-600 font-extrabold">* (MANDATORY for Partial PPF)</span> : <span className="text-gray-400 font-normal">(Optional)</span>}
+          </label>
+          <Input
+            placeholder={isPPF ? 'e.g. Bonnet PPF, Hood PPF, Left Fender PPF' : 'Additional service notes...'}
+            value={svcNotes}
+            onChange={e => setSvcNotes(e.target.value)}
+          />
+          {isPPF && (
+            <p className="text-[11px] text-amber-700 mt-1 font-semibold">
+              ⚠️ Note required: For Partial PPF services, specify panel or custom work description. This note will appear on invoices, job card, and customer view.
+            </p>
+          )}
         </div>
-      ) : (
-        <Select
-          label="Service"
-          options={serviceOptions}
-          value={svcName}
-          onChange={e => handleSvcSelect(e.target.value, setSvcName, setIsCustom, setSvcPrice)}
-          placeholder="Select service..."
-        />
-      )}
-      {!isStaff && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Input label="Service Price (₹)" type="number" value={svcPrice || ''} onChange={e => setSvcPrice(parseFloat(e.target.value) || 0)} />
-          <Input label="Labor Charges (₹)" type="number" value={svcLabor || ''} onChange={e => setSvcLabor(parseFloat(e.target.value) || 0)} />
-        </div>
-      )}
-      <ProductEditor products={products} setProducts={setProducts} />
-    </div>
-  );
+        {!isStaff && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input label="Service Price (₹)" type="number" value={svcPrice || ''} onChange={e => setSvcPrice(parseFloat(e.target.value) || 0)} />
+            <Input label="Labor Charges (₹)" type="number" value={svcLabor || ''} onChange={e => setSvcLabor(parseFloat(e.target.value) || 0)} />
+          </div>
+        )}
+        <ProductEditor products={products} setProducts={setProducts} />
+      </div>
+    );
+  };
 
   return (
     <>
@@ -630,16 +805,16 @@ export default function JobCartDetailPage() {
         actions={
           <div className="flex gap-2 flex-wrap">
             {cart.customer?.mobile && (
-              <a
-                href={`https://wa.me/91${cart.customer.mobile}?text=${encodeURIComponent(
-                  `Hi ${cart.customer?.name || 'Customer'},\n\nYour vehicle *${cart.vehicle?.registration_no || ''}* (${cart.vehicle?.brand || ''} ${cart.vehicle?.model || ''}) is ready for pickup at *O3 Car Spa*! 🚗✨\n\nTotal Amount: *₹${formatINR(cart.total_amount || 0)}*\nBalance Due: *₹${formatINR(cart.balance_due !== undefined ? cart.balance_due : cart.total_amount || 0)}*\n\nWorkshop Location:\nPlot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Anand - 388121\n📞 7225030303\n\nThank you for choosing O3 Car Spa! 🙏`
-                )}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={sendingPickupWhatsApp}
+                onClick={handleNotifyPickupWhatsApp}
+                className="bg-green-600 hover:bg-green-700 text-white"
+                icon={sendingPickupWhatsApp ? <Loader2 size={14} className="animate-spin" /> : <MessageCircle size={14} />}
               >
-                <MessageCircle size={14} /> Notify Pickup (WhatsApp)
-              </a>
+                {sendingPickupWhatsApp ? 'Sending...' : 'Notify Pickup (WhatsApp)'}
+              </Button>
             )}
 
             <Button variant="secondary" size="sm" onClick={() => setPrintModalOpen(true)} icon={<Printer size={14} />}>
@@ -698,7 +873,25 @@ export default function JobCartDetailPage() {
                   {cart.vehicle && (
                     <p><span className="font-semibold">Vehicle:</span> {cart.vehicle.brand} {cart.vehicle.model}{cart.vehicle.car_year || cart.vehicle.manufacture_year ? ' (' + (cart.vehicle.car_year || cart.vehicle.manufacture_year) + ')' : ''}</p>
                   )}
-                  <p><span className="font-semibold">Date:</span> {formatDate(cart.visit_date)} · <span className="font-semibold">Visit:</span> #{cart.visit_number}</p>
+                  <div className="flex items-center gap-2 flex-wrap mt-1">
+                    <p className="text-xs text-gray-500">
+                      <span className="font-semibold text-gray-700">Created:</span> {new Date((cart as any).created_at || cart.visit_date).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    {(cart as any).updated_at && (new Date((cart as any).updated_at).getTime() - new Date((cart as any).created_at || cart.visit_date).getTime() > 1000) && (
+                      <p className="text-xs text-amber-700 font-bold flex items-center gap-1">
+                        · <span>Edited:</span> {new Date((cart as any).updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditHistoryOpen(true)}
+                      className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors shadow-2xs border border-slate-200"
+                      title="View all edits on this job card"
+                    >
+                      <History size={13} /> Edit History ({cart.edit_logs?.length || 0})
+                    </button>
+                  </div>
+
                   {cart.notes && <p><span className="font-semibold">Notes:</span> {cart.notes}</p>}
                   {cart.invoice_number && <p><span className="font-semibold">Invoice:</span> {cart.invoice_number}</p>}
                   <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-200 text-blue-900 rounded-lg text-xs font-extrabold shadow-2xs">
@@ -752,7 +945,334 @@ export default function JobCartDetailPage() {
           </div>
         </div>
 
+        {/* ─── Phase 6: Vehicle Detailing Pipeline & Live Stages ─── */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center font-bold">
+                <Activity size={20} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider">
+                    Customer Detailing Pipeline
+                  </h3>
+                  <span className="px-2 py-0.5 bg-blue-100 text-[#2563EB] text-[10px] font-black rounded-full uppercase">
+                    Stage {pipelineData?.stages?.findIndex((s: any) => s.stage_name === pipelineData.current_stage) + 1 || 1} of {pipelineData?.stages?.length || 7}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 font-medium mt-0.5">
+                  Update stages to broadcast live tracking to customer and trigger WhatsApp alerts
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${window.location.origin}/job/${cart.id}`;
+                  navigator.clipboard.writeText(url);
+                  toast('success', 'Customer live tracking URL copied to clipboard!');
+                }}
+                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 transition-colors flex items-center gap-1.5"
+                title="Copy customer tracking link"
+              >
+                <Share2 size={13} /> Copy Link
+              </button>
+              <a
+                href={`/job/${cart.id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#2563EB] text-xs font-bold rounded-xl border border-blue-200 transition-colors flex items-center gap-1.5"
+              >
+                <ExternalLink size={13} /> Live Customer View
+              </a>
+            </div>
+          </div>
+
+          {/* Stepper Grid */}
+          {loadingPipeline && !pipelineData ? (
+            <div className="h-20 bg-slate-100 rounded-xl animate-pulse" />
+          ) : pipelineData?.stages ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                {pipelineData.stages.map((stage: any, idx: number) => {
+                  const isDone = stage.status === 'completed';
+                  const isCurrent = stage.stage_name === pipelineData.current_stage;
+                  const isSelected = selectedStageName === stage.stage_name;
+
+                  return (
+                    <button
+                      key={stage.stage_name}
+                      type="button"
+                      onClick={() => {
+                        setSelectedStageName(stage.stage_name);
+                        setStageNotesInput(stage.notes || '');
+                      }}
+                      className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between ${
+                        isSelected
+                          ? 'border-[#2563EB] ring-2 ring-blue-100 bg-blue-50/50'
+                          : isDone
+                          ? 'border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50/70'
+                          : isCurrent
+                          ? 'border-blue-300 bg-blue-50/30 hover:bg-blue-50/50'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${
+                          isDone 
+                            ? 'bg-emerald-100 text-emerald-800' 
+                            : isCurrent 
+                            ? 'bg-blue-100 text-[#2563EB]' 
+                            : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          #{idx + 1}
+                        </span>
+                        {isDone ? (
+                          <CheckCircle2 size={15} className="text-emerald-600" />
+                        ) : isCurrent ? (
+                          <span className="w-2 h-2 rounded-full bg-[#2563EB] animate-ping" />
+                        ) : null}
+                      </div>
+                      <div>
+                        <p className={`text-xs font-extrabold truncate ${
+                          isDone ? 'text-slate-800' : isCurrent ? 'text-[#2563EB]' : 'text-slate-600'
+                        }`}>
+                          {stage.stage_name}
+                        </p>
+                        <p className="text-[10px] font-semibold text-slate-400 capitalize mt-0.5">
+                          {stage.status === 'completed' ? 'Done' : stage.status === 'in_progress' ? 'In Progress' : 'Pending'}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Stage Action & Note Bar */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex-1 w-full space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-slate-700">
+                      Target Stage: <strong className="text-[#2563EB]">{selectedStageName || pipelineData.current_stage}</strong>
+                    </span>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 ml-auto cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={notifyCustomerOnStage}
+                        onChange={(e) => setNotifyCustomerOnStage(e.target.checked)}
+                        className="rounded text-[#2563EB] focus:ring-blue-500"
+                      />
+                      <span>WhatsApp Notify Customer</span>
+                    </label>
+                  </div>
+                  <input
+                    type="text"
+                    value={stageNotesInput}
+                    onChange={(e) => setStageNotesInput(e.target.value)}
+                    placeholder="Inspection remarks or milestone notes for this stage..."
+                    className="w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-400"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={updatingStage}
+                    onClick={() => handleUpdateStage(selectedStageName || pipelineData.current_stage, 'in_progress')}
+                  >
+                    In Progress
+                  </Button>
+                  <Button
+                    size="sm"
+                    loading={updatingStage}
+                    icon={<CheckCircle size={14} />}
+                    onClick={() => handleUpdateStage(selectedStageName || pipelineData.current_stage, 'completed')}
+                  >
+                    Mark Done & Advance
+                  </Button>
+                </div>
+              </div>
+
+              {/* Transition Audit Log link */}
+              {pipelineData.history && pipelineData.history.length > 0 && (
+                <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+                  <span>Last Transition: {new Date(pipelineData.history[pipelineData.history.length - 1].created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })} by {pipelineData.history[pipelineData.history.length - 1].updated_by_name || 'Admin'}</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowStageHistoryModal(true)}
+                    className="text-[#2563EB] font-bold hover:underline flex items-center gap-1"
+                  >
+                    <History size={13} /> View Audit Log ({pipelineData.history.length})
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {/* ─── Vehicle Arrival Capture & Staff Assignment Card ─── */}
+        <div className="bg-white rounded-lg p-5 shadow-sm border border-gray-100 space-y-4">
+          <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] flex items-center gap-2">
+              <Users size={15} className="text-[#2563EB]" />
+              Vehicle Arrival Capture & Staff Assignment
+            </h3>
+            {canEdit && (
+              <Button size="sm" onClick={handleSaveStaffAssignment} loading={savingStaff} icon={<Save size={14} />}>
+                Save Staff Assignments
+              </Button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Referral Person / Source</label>
+              <Input
+                placeholder="e.g. Ramesh Bhai (Referral) or Direct"
+                value={referralPerson}
+                onChange={e => setReferralPerson(e.target.value)}
+                disabled={!canEdit}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Handling Manager</label>
+              <Select
+                options={[
+                  { value: '', label: 'Select Manager...' },
+                  ...staffList.map(s => ({ value: s.id, label: s.name }))
+                ]}
+                value={handlerId}
+                onChange={e => setHandlerId(e.target.value ? Number(e.target.value) : '')}
+                disabled={!canEdit}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Lead Assigned Technician</label>
+              <Select
+                options={[
+                  { value: '', label: 'Select Lead Technician...' },
+                  ...staffList.map(s => ({ value: s.id, label: s.name }))
+                ]}
+                value={technicianId}
+                onChange={e => setTechnicianId(e.target.value ? Number(e.target.value) : '')}
+                disabled={!canEdit}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1.5">
+              Team Incentive Pool Members (Staff Sharing Team Pool)
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              {staffList.map(s => {
+                const isSelected = teamIncentiveUsers.includes(Number(s.id));
+                return (
+                  <label key={s.id} className={`flex items-center gap-2 text-xs font-bold p-2 rounded-lg cursor-pointer transition-colors ${isSelected ? 'bg-blue-100 text-blue-900 border border-blue-300' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'}`}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={!canEdit}
+                      onChange={() => {
+                        if (isSelected) {
+                          setTeamIncentiveUsers(prev => prev.filter(x => x !== Number(s.id)));
+                        } else {
+                          setTeamIncentiveUsers(prev => [...prev, Number(s.id)]);
+                        }
+                      }}
+                      className="rounded text-blue-600"
+                    />
+                    <span>{s.name}</span>
+                  </label>
+                );
+              })}
+              {staffList.length === 0 && <span className="text-xs text-gray-400 italic">No staff found</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* ─── Staff Incentive Distribution Breakdown Card ───────── */}
+        {cart.incentive_splits && cart.incentive_splits.length > 0 && (
+          <div className="bg-white rounded-lg p-5 shadow-sm border border-emerald-100 space-y-3">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+              <h3 className="text-xs font-extrabold uppercase tracking-widest text-emerald-800 flex items-center gap-2">
+                <Award size={15} className="text-emerald-600" />
+                Staff Incentive Distribution Breakdown
+              </h3>
+              <span className="text-xs font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                Total Incentive: {formatINR(cart.incentive_amount || 0)}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {cart.incentive_splits.map((split: any, sIdx: number) => (
+                <div key={split.id || sIdx} className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-200/60 flex flex-col justify-between">
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded">
+                      {split.role ? split.role.replace('_', ' ') : 'Split'}
+                    </span>
+                    <span className="text-xs font-black text-emerald-700">
+                      {formatINR(split.amount)}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs font-bold text-gray-800">
+                    {split.employee_name || `Staff #${split.user_id}`}
+                  </div>
+                  <div className="text-[10px] text-gray-500 capitalize mt-0.5">
+                    Status: <span className="font-semibold text-emerald-600">{split.status || 'pending'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Live Detailing Progress Stepper ───────────── */}
+        <div className="bg-white rounded-lg p-5 shadow-sm border border-gray-100 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] flex items-center gap-2">
+              <Activity size={15} className="text-[#2563EB]" />
+              Live Detailing Progress Pipeline (Customer Visible)
+            </h3>
+            <span className="text-[10px] font-bold text-slate-400">1-Click Status Update</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+            {[
+              { key: 'Pre-Inspection', label: '1. Pre-Inspection' },
+              { key: 'Washing', label: '2. Washing & Prep' },
+              { key: 'Stage 1 Polishing', label: '3. Polishing & Paint' },
+              { key: 'PPF Application', label: '4. PPF / Ceramic' },
+              { key: 'Quality Check', label: '5. Quality Check' },
+              { key: 'Ready for Delivery', label: '6. Ready for Pickup' },
+              { key: 'Delivered', label: '7. Vehicle Delivered' },
+            ].map((stg) => (
+              <button
+                key={stg.key}
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.put(`/job-carts/${cart.id}/stages`, { stage_name: stg.key, status: 'completed' });
+                    toast('success', `Updated stage: ${stg.label}`);
+                    refetch();
+                  } catch {
+                    toast('error', 'Failed to update stage');
+                  }
+                }}
+                className="px-3 py-2 bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-lg text-xs font-bold text-slate-700 hover:text-blue-700 transition-all text-left flex items-center justify-between"
+              >
+                <span>{stg.label}</span>
+                <CheckCircle2 size={13} className="text-blue-600 shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* ─── Customer Belongings ────────────────── */}
+
         <BelongingsSection
           jobCartId={id}
           initialBelongings={belongings}
@@ -776,9 +1296,14 @@ export default function JobCartDetailPage() {
               {cart.services.map((svc: any, idx: number) => (
                 <div key={svc.id || idx} className="px-6 py-4 group hover:bg-gray-50/50 transition-colors">
                   <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-bold text-[#0F172A]">{svc.service_name}</p>
+                        {svc.custom_notes && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200 shadow-2xs">
+                            📝 {svc.custom_notes}
+                          </span>
+                        )}
                         {canEdit && (
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
@@ -895,6 +1420,26 @@ export default function JobCartDetailPage() {
                 disabled={!canEdit}
               />
             </div>
+
+            {discountValue > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-amber-50/80 border border-amber-200/80 rounded-lg">
+                <Input
+                  label="Discount Reason *"
+                  placeholder="e.g. Regular Customer / Festive Offer"
+                  value={discountReason}
+                  onChange={(e) => setDiscountReason(e.target.value)}
+                  disabled={!canEdit}
+                />
+                <Input
+                  label="Approved / Referred By *"
+                  placeholder="e.g. Approved by Sodhi Sir / Reference"
+                  value={discountReference}
+                  onChange={(e) => setDiscountReference(e.target.value)}
+                  disabled={!canEdit}
+                />
+              </div>
+            )}
+
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
               <Select
@@ -1044,6 +1589,14 @@ export default function JobCartDetailPage() {
                 <Button onClick={handleDownloadInvoice} icon={<Download size={14} />}>
                   Download Invoice
                 </Button>
+                <Button
+                  onClick={handleSendInvoiceWhatsApp}
+                  disabled={sendWhatsApp.isPending}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  icon={<MessageCircle size={14} />}
+                >
+                  {sendWhatsApp.isPending ? 'Sending...' : 'Send WhatsApp Invoice'}
+                </Button>
                 <Button variant="secondary" onClick={() => handleShareFile(`/api/job-carts/${cart.id}/invoice`, `Invoice - Job #${cart.invoice_number || cart.id}`, 'pdf')} icon={<Share2 size={14} />}>
                   Share Invoice
                 </Button>
@@ -1075,14 +1628,13 @@ export default function JobCartDetailPage() {
             </div>
             <div className="divide-y divide-gray-100 max-h-60 overflow-y-auto">
               {messages.map((log: any) => {
-                const waLink = log.response_data?.wa_link;
                 return (
                   <div key={log.id} className="py-3 flex items-center justify-between">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                           log.status === 'sent' ? 'bg-green-100 text-green-700' : 
-                          log.status === 'failed' ? 'bg-blue-100 text-blue-700' : 
+                          log.status === 'failed' ? 'bg-rose-100 text-rose-700' : 
                           log.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
                         }`}>
                           {log.status}
@@ -1097,15 +1649,23 @@ export default function JobCartDetailPage() {
                         )}
                       </div>
                       <p className="text-xs text-[#5f5e5e]">{log.message_body}</p>
-                      {log.channel === 'whatsapp' && waLink && (
-                        <a 
-                          href={waLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 mt-1.5 text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 transition-colors"
+                      {log.channel === 'whatsapp' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (cart.customer?.mobile) {
+                              sendWhatsApp.mutate({
+                                phone: cart.customer.mobile,
+                                message: log.message_body,
+                                customer_id: cart.customer?.id
+                              });
+                            }
+                          }}
+                          disabled={sendWhatsApp.isPending || !cart.customer?.mobile}
+                          className="inline-flex items-center gap-1.5 mt-1.5 text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 transition-colors cursor-pointer"
                         >
-                          💬 Click to send via WhatsApp Web
-                        </a>
+                          <Send size={11} /> 1-Click Resend via Server Engine
+                        </button>
                       )}
                     </div>
                     <div className="text-right text-[10px] text-gray-400 ml-4">
@@ -1137,6 +1697,7 @@ export default function JobCartDetailPage() {
           isCustom={newSvcIsCustom} setIsCustom={setNewSvcIsCustom}
           svcPrice={newSvcPrice} setSvcPrice={setNewSvcPrice}
           svcLabor={newSvcLabor} setSvcLabor={setNewSvcLabor}
+          svcNotes={newSvcNotes} setSvcNotes={setNewSvcNotes}
           products={newSvcProducts} setProducts={setNewSvcProducts}
         />
       </Modal>
@@ -1159,6 +1720,7 @@ export default function JobCartDetailPage() {
           isCustom={false} setIsCustom={() => {}}
           svcPrice={editSvcPrice} setSvcPrice={setEditSvcPrice}
           svcLabor={editSvcLabor} setSvcLabor={setEditSvcLabor}
+          svcNotes={editSvcNotes} setSvcNotes={setEditSvcNotes}
           products={editSvcProducts} setProducts={setEditSvcProducts}
         />
       </Modal>
@@ -1340,6 +1902,89 @@ export default function JobCartDetailPage() {
                 </a>
               </div>
             </>
+          )}
+        </div>
+      </Modal>
+
+      {/* ─── Edit History Modal ─────────────────── */}
+      <Modal
+        open={editHistoryOpen}
+        onClose={() => setEditHistoryOpen(false)}
+        title="Job Card Edit History & Audit Log"
+        size="lg"
+        footer={<Button variant="ghost" onClick={() => setEditHistoryOpen(false)}>Close</Button>}
+      >
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+          {cart.edit_logs && cart.edit_logs.length > 0 ? (
+            <div className="space-y-3">
+              {cart.edit_logs.map((log: any, lIdx: number) => (
+                <div key={log.id || lIdx} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 uppercase">
+                      {log.action ? log.action.replace('_', ' ') : 'Update'}
+                    </span>
+                    <span className="text-gray-500 font-medium">
+                      {new Date(log.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div className="text-xs font-bold text-gray-900">
+                    By: <span className="text-gray-700">{log.editor_name || log.created_by || 'Staff/Admin'}</span>
+                  </div>
+                  {log.details && (
+                    <div className="text-xs text-gray-600 bg-white p-2.5 rounded-lg border border-gray-100 font-mono whitespace-pre-wrap">
+                      {typeof log.details === 'object' ? JSON.stringify(log.details, null, 2) : log.details}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-400 italic">
+              No previous edit logs found for this job card.
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* ─── Pipeline Stage History Modal ─────────────── */}
+      <Modal
+        open={showStageHistoryModal}
+        onClose={() => setShowStageHistoryModal(false)}
+        title="Detailing Pipeline Transition Audit History"
+        size="lg"
+        footer={<Button variant="ghost" onClick={() => setShowStageHistoryModal(false)}>Close</Button>}
+      >
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {pipelineData?.history && pipelineData.history.length > 0 ? (
+            <div className="divide-y divide-slate-100">
+              {pipelineData.history.map((log: any) => (
+                <div key={log.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-extrabold text-sm text-slate-900">{log.stage_name}</span>
+                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        log.status === 'completed' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'
+                      }`}>
+                        {log.status}
+                      </span>
+                    </div>
+                    {log.notes && (
+                      <p className="text-xs text-slate-600 mt-1 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                        {log.notes}
+                      </p>
+                    )}
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Updated by: <strong className="text-slate-700">{log.updated_by_name || 'Admin'}</strong>
+                    </p>
+                  </div>
+                  <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
+                    {new Date(log.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400 italic text-center py-6">No stage history logged yet.</p>
           )}
         </div>
       </Modal>

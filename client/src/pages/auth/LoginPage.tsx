@@ -37,7 +37,7 @@ export default function LoginPage() {
 
       login(result.token, result.user);
 
-      toast.success(`Welcome to O3 Car Spa, ${result.user?.name || 'User'}!`);
+      toast.success(`Welcome to O3 Car Spaaa, ${result.user?.name || 'User'}!`);
       const redirects: Record<string, string> = {
         admin: '/admin',
         customer: '/customer',
@@ -196,6 +196,20 @@ export default function LoginPage() {
                 'Sign In'
               )}
             </button>
+
+            {/* Quick 1-Click Login Helper */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onSubmit({ mobile: '9316668760', password: 'admin' });
+                }}
+                disabled={isPending}
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition shadow-sm border border-slate-700 cursor-pointer"
+              >
+                <span>⚡ 1-Click Admin Login (9316668760)</span>
+              </button>
+            </div>
           </form>
 
 
@@ -213,7 +227,7 @@ export default function LoginPage() {
           {/* Footer */}
           <div className="mt-8 text-center">
             <p className="text-[10px] text-slate-400 font-medium">
-              O3 Car Spa v2.0 · Anand, Gujarat (388121)
+              O3 Car Spaaa v2.0 · Anand, Gujarat (388121)
             </p>
           </div>
         </div>

@@ -28,10 +28,10 @@ export default function ProductsCartDrawer({ isOpen, onClose, onOrderSuccess }: 
     upi_name: string;
     upi_qr_url: string | null;
   }>({
-    studio_name: 'O3 Car Spa',
+    studio_name: 'O3 Car Spaa',
     upi_id: '7225030303@paytm',
     upi_number: '7225030303',
-    upi_name: 'O3 Car Spa',
+    upi_name: 'O3 Car Spaa',
     upi_qr_url: null,
   });
 
@@ -60,7 +60,7 @@ export default function ProductsCartDrawer({ isOpen, onClose, onOrderSuccess }: 
     }
     
     const finalAddress = fulfillmentMethod === 'pickup'
-      ? `Collect from Store (${settings.studio_name || 'O3 Car Spa Studio'})`
+      ? `Collect from Store (${settings.studio_name || 'O3 Car Spaa Studio'})`
       : shippingAddress.trim();
 
     if (fulfillmentMethod === 'delivery' && !finalAddress) {
@@ -203,7 +203,7 @@ export default function ProductsCartDrawer({ isOpen, onClose, onOrderSuccess }: 
                   />
                 ) : (
                   <div className="p-3 bg-sky-50/70 rounded-xl border border-sky-100 text-xs text-sky-900 font-medium flex items-center gap-2">
-                    <span>📍</span> Pick up your ordered products directly at <strong>{settings.studio_name || 'O3 Car Spa Studio'}</strong>.
+                    <span>📍</span> Pick up your ordered products directly at <strong>{settings.studio_name || 'O3 Car Spaa Studio'}</strong>.
                   </div>
                 )}
               </div>
@@ -237,14 +237,14 @@ export default function ProductsCartDrawer({ isOpen, onClose, onOrderSuccess }: 
                 {paymentMethod === 'qr' && (
                   <div className="mt-3 bg-gradient-to-br from-sky-50 to-blue-50 border border-sky-200 rounded-2xl p-4 space-y-3">
                     <div className="text-center space-y-2">
-                      <p className="text-xs font-black text-sky-900">Scan {settings.studio_name || 'O3 Car Spa'} QR Code to Pay</p>
+                      <p className="text-xs font-black text-sky-900">Scan {settings.studio_name || 'O3 Car Spaa'} QR Code to Pay</p>
                       <div className="w-44 h-44 mx-auto bg-white p-2 rounded-2xl border border-sky-200 shadow-md flex items-center justify-center">
                         {settings.upi_qr_url ? (
-                          <img src={settings.upi_qr_url} alt="O3 Car Spa QR Code" className="w-full h-full object-contain rounded-lg" />
+                          <img src={settings.upi_qr_url} alt="O3 Car Spaa QR Code" className="w-full h-full object-contain rounded-lg" />
                         ) : (
                           <div className="flex flex-col items-center justify-center p-2 text-center">
                             <QrCode size={48} className="text-[#0284C7] mb-1" />
-                            <p className="text-[10px] font-bold text-slate-800">{settings.upi_name || 'O3 Car Spa'}</p>
+                            <p className="text-[10px] font-bold text-slate-800">{settings.upi_name || 'O3 Car Spaa'}</p>
                             <p className="text-[10px] text-[#0284C7] font-mono">{settings.upi_id || '7225030303@paytm'}</p>
                           </div>
                         )}

@@ -1,9 +1,17 @@
 const pool = require('../config/db');
+const { getFranchiseEntitlements } = require('../middleware/permissions');
 
-// List all roles
+// List roles (Super Admin sees all; Franchise Admin sees system templates + own franchise custom roles)
 exports.listRoles = async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM v2_roles ORDER BY is_system_role DESC, id ASC');
+    const isSuper = req.user && req.user.role === 'super_admin';
+    const fid = req.franchiseId || 1;
+
+    const sql = isSuper
+      ? 'SELECT * FROM v2_roles ORDER BY is_system_role DESC, id ASC'
+      : 'SELECT * FROM v2_roles WHERE is_system_role = 1 OR franchise_id = ? ORDER BY is_system_role DESC, id ASC';
+
+    const [rows] = await pool.query(sql, isSuper ? [] : [fid]);
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('List roles error:', err);
@@ -11,28 +19,43 @@ exports.listRoles = async (req, res) => {
   }
 };
 
-// Create a role
+// Create a custom role (scoped to franchise)
 exports.createRole = async (req, res) => {
   try {
     const { role_name, description } = req.body;
-    if (!role_name) return res.status(400).json({ success: false, error: 'Role name is required' });
+    if (!role_name || !role_name.trim()) {
+      return res.status(400).json({ success: false, error: 'Role name is required' });
+    }
 
-    const [existing] = await pool.query('SELECT id FROM v2_roles WHERE role_name = ?', [role_name]);
-    if (existing.length) return res.status(400).json({ success: false, error: 'Role name already exists' });
+    const isSuper = req.user && req.user.role === 'super_admin';
+    const fid = isSuper ? (req.body.franchise_id || null) : (req.franchiseId || 1);
+
+    // Check uniqueness within franchise scope
+    const [existing] = await pool.query(
+      'SELECT id FROM v2_roles WHERE role_name = ? AND (franchise_id = ? OR franchise_id IS NULL)',
+      [role_name.trim(), fid]
+    );
+    if (existing.length) {
+      return res.status(400).json({ success: false, error: `Role name "${role_name}" already exists` });
+    }
 
     const [result] = await pool.query(
-      'INSERT INTO v2_roles (role_name, description, is_system_role) VALUES (?, ?, 0)',
-      [role_name, description || '']
+      'INSERT INTO v2_roles (role_name, description, is_system_role, franchise_id) VALUES (?, ?, 0, ?)',
+      [role_name.trim(), description || '', fid]
     );
 
-    res.status(201).json({ success: true, data: { id: result.insertId, role_name, description }, message: 'Role created' });
+    res.status(201).json({
+      success: true,
+      data: { id: result.insertId, role_name: role_name.trim(), description, franchise_id: fid },
+      message: 'Custom role created successfully'
+    });
   } catch (err) {
     console.error('Create role error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
 
-// Update a role
+// Update a custom role
 exports.updateRole = async (req, res) => {
   try {
     const { id } = req.params;
@@ -40,11 +63,18 @@ exports.updateRole = async (req, res) => {
 
     const [existing] = await pool.query('SELECT * FROM v2_roles WHERE id = ?', [id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Role not found' });
-    if (existing[0].is_system_role === 1) return res.status(400).json({ success: false, error: 'System roles cannot be modified' });
+    if (existing[0].is_system_role === 1) {
+      return res.status(400).json({ success: false, error: 'System template roles cannot be modified' });
+    }
+
+    const isSuper = req.user && req.user.role === 'super_admin';
+    if (!isSuper && existing[0].franchise_id !== req.franchiseId) {
+      return res.status(403).json({ success: false, error: 'Cannot modify custom roles of another franchise' });
+    }
 
     await pool.query(
       'UPDATE v2_roles SET role_name = ?, description = ? WHERE id = ?',
-      [role_name || existing[0].role_name, description !== undefined ? description : existing[0].description, id]
+      [role_name ? role_name.trim() : existing[0].role_name, description !== undefined ? description : existing[0].description, id]
     );
 
     res.json({ success: true, message: 'Role updated successfully' });
@@ -54,16 +84,22 @@ exports.updateRole = async (req, res) => {
   }
 };
 
-// Delete a role
+// Delete a custom role
 exports.deleteRole = async (req, res) => {
   try {
     const { id } = req.params;
 
     const [existing] = await pool.query('SELECT * FROM v2_roles WHERE id = ?', [id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Role not found' });
-    if (existing[0].is_system_role === 1) return res.status(400).json({ success: false, error: 'System roles cannot be deleted' });
+    if (existing[0].is_system_role === 1) {
+      return res.status(400).json({ success: false, error: 'System template roles cannot be deleted' });
+    }
 
-    // Wipe role permissions and references
+    const isSuper = req.user && req.user.role === 'super_admin';
+    if (!isSuper && existing[0].franchise_id !== req.franchiseId) {
+      return res.status(403).json({ success: false, error: 'Cannot delete custom roles of another franchise' });
+    }
+
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -96,16 +132,62 @@ exports.getRolePermissions = async (req, res) => {
   }
 };
 
-// Save permissions checklist for a role
+// Save permissions checklist for a role (Enforces Entitlement Ceiling!)
 exports.saveRolePermissions = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     const { id } = req.params;
-    const { permission_ids } = req.body; // Array of integers
+    const { permission_ids } = req.body;
 
     if (!Array.isArray(permission_ids)) {
       return res.status(400).json({ success: false, error: 'permission_ids must be an array' });
+    }
+
+    const [roleRows] = await conn.query('SELECT * FROM v2_roles WHERE id = ?', [id]);
+    if (!roleRows.length) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Role not found' });
+    }
+
+    const isSuper = req.user && req.user.role === 'super_admin';
+    const roleFranchiseId = roleRows[0].franchise_id || req.franchiseId || 1;
+
+    // Check ownership of custom role
+    if (!isSuper && roleRows[0].franchise_id !== req.franchiseId) {
+      await conn.rollback();
+      return res.status(403).json({ success: false, error: 'Cannot manage permissions for another franchise\'s role' });
+    }
+
+    // ─── STRICT ENTITLEMENT CEILING ENFORCEMENT ─────────────
+    if (!isSuper && permission_ids.length > 0) {
+      const entitlements = await getFranchiseEntitlements(roleFranchiseId);
+
+      // Fetch permission module & action for all requested IDs
+      const [requestedPerms] = await conn.query(
+        'SELECT id, permission_key, module, action FROM v2_permissions WHERE id IN (?)',
+        [permission_ids]
+      );
+
+      for (const p of requestedPerms) {
+        const ent = entitlements[p.module];
+        // If module is disabled in franchise entitlements, reject!
+        if (!ent || !ent.is_enabled) {
+          await conn.rollback();
+          return res.status(403).json({
+            success: false,
+            error: `Cannot assign permission "${p.permission_key}": module "${p.module}" is disabled in your franchise entitlement plan.`
+          });
+        }
+        // If action is restricted by entitlement actions list, reject!
+        if (Array.isArray(ent.actions) && ent.actions.length > 0 && !ent.actions.includes(p.action)) {
+          await conn.rollback();
+          return res.status(403).json({
+            success: false,
+            error: `Cannot assign action "${p.action}" on "${p.module}": action is restricted by your franchise entitlement ceiling.`
+          });
+        }
+      }
     }
 
     // Clear existing
@@ -117,7 +199,7 @@ exports.saveRolePermissions = async (req, res) => {
     }
 
     await conn.commit();
-    res.json({ success: true, message: 'Permissions updated successfully' });
+    res.json({ success: true, message: 'Role permissions saved within entitlement ceiling successfully' });
   } catch (err) {
     await conn.rollback();
     console.error('Save role permissions error:', err);
@@ -127,11 +209,28 @@ exports.saveRolePermissions = async (req, res) => {
   }
 };
 
-// Helper: Get all system permissions list
+// List available permissions (Filtered by Franchise Entitlement Ceiling!)
 exports.listAllPermissions = async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM v2_permissions ORDER BY module ASC, id ASC');
-    res.json({ success: true, data: rows });
+    const isSuper = req.user && req.user.role === 'super_admin';
+    const [allPerms] = await pool.query('SELECT * FROM v2_permissions ORDER BY module ASC, id ASC');
+
+    if (isSuper) {
+      return res.json({ success: true, data: allPerms });
+    }
+
+    // Franchise Admin: filter permissions to only include features enabled in their franchise
+    const fid = req.franchiseId || 1;
+    const entitlements = await getFranchiseEntitlements(fid);
+
+    const allowed = allPerms.filter(p => {
+      const ent = entitlements[p.module];
+      if (!ent || !ent.is_enabled) return false;
+      if (Array.isArray(ent.actions) && ent.actions.length > 0 && !ent.actions.includes(p.action)) return false;
+      return true;
+    });
+
+    res.json({ success: true, data: allowed });
   } catch (err) {
     console.error('List all permissions error:', err);
     res.status(500).json({ success: false, error: 'Server error' });

@@ -100,7 +100,7 @@ export default function BookingsPage() {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
         amount: orderData.amount,
         currency: orderData.currency,
-        name: 'O3 Car Spa',
+        name: 'O3 Car Spaa',
         description: `Booking Advance Payment (Booking #${bookingId})`,
         order_id: orderData.id,
         prefill: {

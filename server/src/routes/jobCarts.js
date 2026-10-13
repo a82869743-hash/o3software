@@ -14,7 +14,8 @@ router.get('/vehicles/lookup/:regNo', auth, role(['admin']), ctrl.lookup);
 router.get('/',         auth, role(['admin', 'customer', 'staff']), ctrl.list);
 router.post('/',        auth, role(['admin', 'staff']), ctrl.create);
 router.get('/:id',      auth, role(['admin', 'customer', 'staff']), ctrl.getOne);
-router.put('/:id',      auth, role(['admin', 'staff']), ctrl.update);
+router.put('/:id',          auth, role(['admin', 'staff']), ctrl.update);
+router.put('/:id/billing',  auth, role(['admin', 'staff']), ctrl.update);
 
 // Status transitions
 router.patch('/:id/submit',   auth, role(['admin', 'staff']), ctrl.submit);
@@ -32,7 +33,13 @@ router.delete('/:id/photos/:pid', auth, role(['admin', 'staff']), ctrl.deletePho
 router.get('/:id/photos/download', auth, role(['admin', 'staff', 'customer']), ctrl.downloadAllPhotos);
 
 
+// Job Card Live Pipeline Stages (Customer Timeline & Admin Pipeline)
+router.get('/:id/stages', auth.optionalAuth || auth, ctrl.getStages);
+router.put('/:id/stages', auth, role(['admin', 'staff']), ctrl.updateStage);
+router.post('/:id/stages', auth, role(['admin', 'staff']), ctrl.updateStage);
+
 // Job Card PDF & Invoice PDF
+
 router.get('/:id/pdf', auth, role(['admin', 'customer']), ctrl.getJobCardPDF);
 router.get('/:id/invoice', auth, role(['admin', 'customer']), ctrl.getInvoice);
 

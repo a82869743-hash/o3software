@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { HelpCircle, Phone, Mail, Car, MessageCircle, ArrowRight, Plus, Search, Filter, Share2, Users, Globe, Smartphone } from 'lucide-react';
+import { HelpCircle, Phone, Mail, Car, MessageCircle, ArrowRight, Plus, Search, Filter, Share2, Users, Globe, Smartphone, Loader2 } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { useUIStore } from '../../store/uiStore';
 import Modal from '../../components/ui/Modal';
 import Input from '../../components/ui/Input';
@@ -480,6 +481,24 @@ export default function InquiriesPage() {
 // ── Component: Inquiry Card with Subsection Badges ──────────
 function InquiryCard({ inquiry, onStatusChange, onConvert }: { inquiry: Inquiry; onStatusChange: (id: number, s: string) => void; onConvert: (i: Inquiry) => void }) {
   const cfg = SOURCE_CONFIG[inquiry.source || 'website'] || SOURCE_CONFIG.website;
+  const sendWhatsApp = useSendWhatsApp();
+  const [sending, setSending] = useState(false);
+
+  const handleSendWhatsApp = () => {
+    if (!inquiry.mobile) return;
+    const msg = `Hi ${inquiry.name}, thank you for inquiring with O3 Car Spaa regarding ${inquiry.services_interested || 'detailing services'}! Our team is excited to assist you. How can we help today? 🚗✨`;
+    setSending(true);
+    sendWhatsApp.mutate(
+      {
+        phone: inquiry.mobile,
+        message: msg
+      },
+      {
+        onSettled: () => setSending(false)
+      }
+    );
+  };
+
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-5 hover:shadow-md transition-all flex flex-col justify-between group hover:border-blue-300">
       <div>
@@ -515,14 +534,16 @@ function InquiryCard({ inquiry, onStatusChange, onConvert }: { inquiry: Inquiry;
       </div>
 
       <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-        <a
-          href={`https://wa.me/91${inquiry.mobile}?text=${encodeURIComponent(`Hi ${inquiry.name}, thank you for inquiring with O3 Car Spa regarding ${inquiry.services_interested || 'detailing services'}!`)}`}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1 text-xs font-extrabold text-emerald-600 hover:text-emerald-700"
+        <button
+          type="button"
+          disabled={sending}
+          onClick={handleSendWhatsApp}
+          className="flex items-center gap-1 text-xs font-extrabold text-emerald-600 hover:text-emerald-700 disabled:opacity-50 transition-colors cursor-pointer"
+          title="1-Click WhatsApp Welcome & Intake Message"
         >
-          <MessageCircle size={15} /> WhatsApp
-        </a>
+          {sending ? <Loader2 size={15} className="animate-spin text-emerald-600" /> : <MessageCircle size={15} />}
+          <span>{sending ? 'Sending...' : 'WhatsApp'}</span>
+        </button>
         {inquiry.status !== 'converted' ? (
           <button
             onClick={() => onConvert(inquiry)}

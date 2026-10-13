@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Plus, Trash2, Search, CheckCircle, Loader2, X, Camera, PackageOpen } from 'lucide-react';
+import { Plus, Trash2, Search, CheckCircle, Loader2, X, Camera, PackageOpen, UserCheck, Users, Tag } from 'lucide-react';
 import { useCreateJobCart, useVehicleLookup, useAddService, useUploadPhoto } from '../../api/hooks/useJobCarts';
 import { useBrands, useModels, useVariants } from '../../api/hooks/useVehicles';
 import api from '../../api/axiosInstance';
@@ -29,6 +29,7 @@ interface ServiceBlock {
   is_custom: boolean;
   service_price: number;
   labor_charges: number;
+  custom_notes?: string;
   products: ProductRow[];
 }
 
@@ -42,6 +43,7 @@ const emptyService = (): ServiceBlock => ({
   is_custom: false,
   service_price: 0,
   labor_charges: 0,
+  custom_notes: '',
   products: [],
 });
 
@@ -79,6 +81,23 @@ export default function JobCartCreatePage() {
   const [belongingPhotos, setBelongingPhotos] = useState<File[]>([]);
   const [belongingPreviews, setBelongingPreviews] = useState<string[]>([]);
   const belongingsFileRef = useRef<HTMLInputElement>(null);
+
+  // Staff arrival capture & Incentive Engine state
+  const [referralPerson, setReferralPerson] = useState('');
+  const [handlerId, setHandlerId] = useState<number | ''>('');
+  const [technicianId, setTechnicianId] = useState<number | ''>('');
+  const [teamIncentiveUsers, setTeamIncentiveUsers] = useState<number[]>([]);
+  const [staffList, setStaffList] = useState<any[]>([]);
+
+  // Discount state
+  const [discountType, setDiscountType] = useState<'fixed' | 'percentage'>('fixed');
+  const [discountValue, setDiscountValue] = useState(0);
+  const [discountReason, setDiscountReason] = useState('');
+  const [discountReference, setDiscountReference] = useState('');
+
+  useEffect(() => {
+    api.get('/staff').then(r => setStaffList(r.data.data || [])).catch(() => {});
+  }, []);
 
   const handleBelongingsPhotoAdd = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -224,6 +243,16 @@ export default function JobCartCreatePage() {
 
       setIsReturning(true);
       setNextVisit(lookupData.next_visit_number || 1);
+
+      // Auto-populate customer discount if set in CRM profile
+      const cust = lookupData.customer as any;
+      if (cust?.custom_discount_value && cust?.custom_discount_type && cust?.custom_discount_type !== 'none') {
+        setDiscountType(cust.custom_discount_type);
+        setDiscountValue(Number(cust.custom_discount_value));
+        setDiscountReason('Customer CRM Profile Discount');
+        setDiscountReference(cust.name || 'CRM System');
+        toast('info', `Applied ${cust.custom_discount_type === 'percentage' ? cust.custom_discount_value + '%' : '₹' + cust.custom_discount_value} CRM discount for ${cust.name}`);
+      }
     }
   }, [lookupData]);
 
@@ -295,6 +324,12 @@ export default function JobCartCreatePage() {
   };
 
   const grandTotal = serviceBlocks.reduce((sum, b) => sum + calcBlockSubtotal(b), 0);
+  const discountAmount = discountValue > 0
+    ? (discountType === 'percentage'
+        ? (grandTotal * discountValue) / 100
+        : Math.min(grandTotal, discountValue))
+    : 0;
+  const netTotal = Math.max(0, grandTotal - discountAmount);
 
   // ─── Submit ─────────────────────────────
   const [submitting, setSubmitting] = useState(false);
@@ -308,6 +343,20 @@ export default function JobCartCreatePage() {
     if (!finalBrand || !finalModel) { toast('error', 'Brand and model are required'); return; }
     if (!customerName && !customerId) { toast('error', 'Customer name is required'); return; }
     if (!customerMobile && !customerId) { toast('error', 'Customer mobile is required'); return; }
+
+    if (discountValue > 0) {
+      if (!discountReason?.trim() || !discountReference?.trim()) {
+        toast('error', 'Discount reason and approved/referred by are mandatory');
+        return;
+      }
+    }
+
+    for (const block of serviceBlocks) {
+      if (block.service_name && /ppf|film/i.test(block.service_name) && !block.custom_notes?.trim()) {
+        toast('error', `Note is mandatory for Partial PPF service "${block.service_name}" (e.g. "bonnet PPF")`);
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
@@ -326,6 +375,14 @@ export default function JobCartCreatePage() {
         pre_inspector_name: preInspectorName,
         personal_items_notes: personalItemsNotes,
         booking_id: bookingId,
+        referral_person: referralPerson,
+        handler_id: handlerId ? Number(handlerId) : null,
+        technician_id: technicianId ? Number(technicianId) : null,
+        team_incentive_users: teamIncentiveUsers,
+        discount_type: discountType,
+        discount_value: discountValue,
+        discount_reason: discountReason,
+        discount_reference: discountReference,
       });
       const cartId = cart.id;
 
@@ -337,6 +394,7 @@ export default function JobCartCreatePage() {
           service_name: block.service_name,
           service_price: block.service_price,
           labor_charges: block.labor_charges,
+          custom_notes: block.custom_notes?.trim(),
           products: block.products.filter(p => p.product_id > 0).map(p => ({
             product_id: p.product_id,
             quantity: p.quantity,
@@ -626,6 +684,85 @@ export default function JobCartCreatePage() {
           </div>
         </section>
 
+        {/* ─── SECTION B.2: Vehicle Arrival & Staff Assignment ────────── */}
+        <section className="bg-white rounded-lg p-6 shadow-sm border-l-4 border-l-indigo-500">
+          <div className="flex items-center gap-2 mb-2">
+            <UserCheck size={18} className="text-indigo-600" />
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#0F172A]">Car Arrival & Staff Incentive Assignment</h3>
+          </div>
+          <p className="text-xs text-gray-500 mb-4">
+            Capture staff and referral sources for automated commission and incentive distribution upon job completion.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            <Input
+              label="Referral Person / Source"
+              placeholder="e.g. Rahul Sharma / Instagram / Friend"
+              value={referralPerson}
+              onChange={e => setReferralPerson(e.target.value)}
+            />
+            <Select
+              label="Handling Manager (10% Split)"
+              options={[
+                { value: '', label: 'Select Manager...' },
+                ...staffList.map(s => ({ value: s.id.toString(), label: `${s.name} (${s.role || 'Manager'})` }))
+              ]}
+              value={handlerId ? handlerId.toString() : ''}
+              onChange={e => setHandlerId(e.target.value ? Number(e.target.value) : '')}
+            />
+            <Select
+              label="Lead Technician (50% Split)"
+              options={[
+                { value: '', label: 'Select Lead Technician...' },
+                ...staffList.map(s => ({ value: s.id.toString(), label: `${s.name} (${s.role || 'Tech'})` }))
+              ]}
+              value={technicianId ? technicianId.toString() : ''}
+              onChange={e => setTechnicianId(e.target.value ? Number(e.target.value) : '')}
+            />
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <div className="flex items-center gap-2 mb-2">
+              <Users size={16} className="text-indigo-600" />
+              <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Team Incentive Members (40% Pool Shared Equally)
+              </label>
+            </div>
+            {staffList.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">No staff members found.</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                {staffList.map(st => {
+                  const isChecked = teamIncentiveUsers.includes(st.id);
+                  return (
+                    <label
+                      key={st.id}
+                      className={`flex items-center gap-2 p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                        isChecked
+                          ? 'bg-indigo-50 border-indigo-400 font-bold text-indigo-950 shadow-2xs'
+                          : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setTeamIncentiveUsers(prev => [...prev, st.id]);
+                          } else {
+                            setTeamIncentiveUsers(prev => prev.filter(id => id !== st.id));
+                          }
+                        }}
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="truncate">{st.name} <span className="text-[10px] text-gray-400 font-normal">({st.role})</span></span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
         {/* ─── SECTION C: Services ─────────────────── */}
         <section className="bg-white rounded-lg p-6 shadow-sm">
           <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-5">Services</h3>
@@ -680,6 +817,32 @@ export default function JobCartCreatePage() {
                     />
                   </>
                 )}
+              </div>
+
+              {/* Partial PPF / Service Custom Note */}
+              <div className="mt-3">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-bold text-gray-700 flex items-center gap-1.5">
+                    <span>Service Specific Note / Area:</span>
+                    {/ppf|film/i.test(block.service_name) && (
+                      <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded border border-amber-300">
+                        ⚠️ Mandatory for Partial PPF
+                      </span>
+                    )}
+                  </label>
+                  <span className="text-[10px] text-gray-400">e.g. "Bonnet PPF", "Front Bumper", "Left Door", "Bumper PPF"</span>
+                </div>
+                <input
+                  type="text"
+                  className={`w-full px-3 py-2 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                    /ppf|film/i.test(block.service_name) && !block.custom_notes?.trim()
+                      ? 'border-amber-400 bg-amber-50/30'
+                      : 'border-gray-200 bg-white'
+                  }`}
+                  placeholder={/ppf|film/i.test(block.service_name) ? 'Enter specific PPF coverage area (REQUIRED, e.g. Bonnet PPF)...' : 'Optional notes for this service...'}
+                  value={block.custom_notes || ''}
+                  onChange={e => updateService(block.key, 'custom_notes', e.target.value)}
+                />
               </div>
 
               {/* Products */}
@@ -768,13 +931,86 @@ export default function JobCartCreatePage() {
           </div>
         </section>
 
+        {/* ─── SECTION E.1: Discount & Adjustments ─── */}
+        {!isStaff && (
+          <section className="bg-white rounded-lg p-6 shadow-sm border-l-4 border-l-amber-500">
+            <div className="flex items-center gap-2 mb-3">
+              <Tag size={18} className="text-amber-600" />
+              <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#0F172A]">Job Card Discount</h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="Discount Type"
+                options={[
+                  { value: 'fixed', label: 'Fixed Amount (₹)' },
+                  { value: 'percentage', label: 'Percentage (%)' }
+                ]}
+                value={discountType}
+                onChange={e => setDiscountType(e.target.value as any)}
+              />
+              <Input
+                label={discountType === 'percentage' ? 'Discount Percentage (%)' : 'Discount Amount (₹)'}
+                type="number"
+                min="0"
+                max={discountType === 'percentage' ? '100' : undefined}
+                value={discountValue || ''}
+                onChange={e => setDiscountValue(parseFloat(e.target.value) || 0)}
+              />
+            </div>
+
+            {discountValue > 0 && (
+              <div className="mt-4 pt-4 border-t border-amber-100 bg-amber-50/50 p-4 rounded-xl space-y-4">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900 uppercase">
+                  <span>Mandatory Compliance: Reason & Reference</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Input
+                    label="Reason for Discount *"
+                    placeholder="e.g. Festival offer, Corporate tie-up, Loyal customer..."
+                    value={discountReason}
+                    onChange={e => setDiscountReason(e.target.value)}
+                    required
+                  />
+                  <Input
+                    label="Approved By / Reference *"
+                    placeholder="e.g. Branch Manager Rahul, MD Approval, Promo Code..."
+                    value={discountReference}
+                    onChange={e => setDiscountReference(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* ─── SECTION E: Grand Total ──────────────── */}
         {!isStaff && (
-          <div className="bg-[#0F172A] rounded-lg p-6 flex items-center justify-between">
-            <span className="text-white text-sm font-bold uppercase tracking-widest">Grand Total</span>
-            <span className="text-3xl font-black text-white tracking-tight">
-              ₹{grandTotal.toLocaleString('en-IN')}
-            </span>
+          <div className="bg-[#0F172A] rounded-lg p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <span className="text-xs text-gray-400 font-bold uppercase tracking-widest">Pricing Summary</span>
+              <div className="flex items-center gap-4 mt-1">
+                <span className="text-sm text-gray-300">
+                  Subtotal: <strong className="text-white">₹{grandTotal.toLocaleString('en-IN')}</strong>
+                </span>
+                {discountValue > 0 && (
+                  <span className="text-sm text-amber-400 font-semibold">
+                    Discount ({discountType === 'percentage' ? `${discountValue}%` : `₹${discountValue}`}): -₹{discountAmount.toLocaleString('en-IN')}
+                  </span>
+                )}
+              </div>
+              {discountValue > 0 && discountReason && (
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Reason: <span className="text-amber-200 font-medium">{discountReason}</span> (Ref: {discountReference || 'N/A'})
+                </p>
+              )}
+            </div>
+            <div className="text-right">
+              <span className="text-white text-xs font-bold uppercase tracking-widest block">Net Payable</span>
+              <span className="text-3xl font-black text-white tracking-tight">
+                ₹{netTotal.toLocaleString('en-IN')}
+              </span>
+            </div>
           </div>
         )}
 

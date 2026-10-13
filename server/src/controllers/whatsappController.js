@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const notificationQueue = require('../services/notificationQueue');
 
 // ─── WhatsApp Configuration ──────────────────────────────
 const WHATSAPP_API_URL = process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v18.0';
@@ -67,33 +68,92 @@ async function sendWhatsAppMessage(phone, templateName, params = [], messageBody
   }
 }
 
-// ─── SEND MANUAL MESSAGE ────────────────────────────────
+// ─── SEND MANUAL MESSAGE (via notification queue → Baileys) ─────────────────
 exports.sendManual = async (req, res) => {
   try {
-    const { phone, message, customer_id } = req.body;
+    const { phone, message, customer_id, customer_name } = req.body;
     if (!phone || !message) return res.status(400).json({ success: false, error: 'Phone and message required' });
 
-    const result = await sendWhatsAppMessage(phone, null, [], message);
-    if (customer_id) {
-      try {
-        await pool.query(`UPDATE whatsapp_messages SET customer_id = ? WHERE id = ?`, [customer_id, result.id]);
-      } catch (dbErr) {}
-    }
-    res.json({ success: true, data: result });
+    const humanizer = require('../utils/humanizer');
+    const humanizedBody = humanizer.humanizeManualMessage(message, customer_name);
+
+    // Route through the notification queue so it's tracked + retried
+    const result = await notificationQueue.enqueueNotification({
+      idempotency_key: `manual_wa_${Date.now()}_${phone.replace(/\D/g, '')}`,
+      channel:         'whatsapp',
+      customer_id:     customer_id || null,
+      mobile:          phone,
+      template_name:   'MANUAL',
+      message_body:    humanizedBody,
+    });
+
+    res.json({ success: true, data: result, humanized: true });
   } catch (err) {
     console.error('WhatsApp sendManual error:', err);
     res.status(500).json({ success: false, error: 'Failed to send message' });
   }
 };
 
+// ─── PREVIEW / GENERATE DYNAMIC HUMANIZED VARIATIONS ───────────
+exports.previewHumanized = async (req, res) => {
+  try {
+    const { eventTrigger = 'PIPELINE_STATUS_UPDATE', variables = {}, customText = '' } = req.body;
+    const humanizer = require('../utils/humanizer');
+    const crypto = require('crypto');
+
+    const variations = [];
+    for (let i = 0; i < 3; i++) {
+      let text = '';
+      if (customText) {
+        text = humanizer.humanizeManualMessage(customText, variables.customer_name);
+      } else {
+        text = humanizer.humanizeNotification(eventTrigger, variables);
+      }
+      const hash = crypto.createHash('sha256').update(text).digest('hex');
+      variations.push({
+        id: i + 1,
+        text,
+        sha256: hash.substring(0, 16) + '...',
+        byteLength: Buffer.byteLength(text, 'utf8')
+      });
+    }
+
+    res.json({
+      success: true,
+      eventTrigger,
+      antiBanProtected: true,
+      variations
+    });
+  } catch (err) {
+    console.error('previewHumanized error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ─── SEND INVOICE VIA WHATSAPP ──────────────────────────
 exports.sendInvoice = async (req, res) => {
   try {
-    const { phone, invoice_id, customer_name, amount } = req.body;
+    const { phone, invoice_id, customer_name, amount, invoice_url } = req.body;
     if (!phone) return res.status(400).json({ success: false, error: 'Phone required' });
 
-    const message = `🧾 *O3 Car Spa Invoice*\n\nDear ${customer_name || 'Customer'},\nYour invoice #${invoice_id} for ₹${Number(amount).toLocaleString('en-IN')} is ready.\n\nThank you for choosing O3 Car Spa! 🚗✨`;
-    const result = await sendWhatsAppMessage(phone, null, [], message);
+    const humanizer = require('../utils/humanizer');
+    const message = humanizer.humanizeNotification('INVOICE_GENERATED', {
+      customer_name: customer_name || 'Valued Customer',
+      invoice_number: invoice_id,
+      amount: Number(amount || 0).toLocaleString('en-IN'),
+      invoice_url: invoice_url || `${process.env.APP_BASE_URL || 'http://localhost:5000'}/invoices/${invoice_id}`
+    });
+
+    const result = await notificationQueue.enqueueNotification({
+      idempotency_key: `inv_wa_${invoice_id}_${Date.now()}`,
+      channel: 'whatsapp',
+      mobile: phone,
+      template_name: 'INVOICE_GENERATED',
+      message_body: message,
+      reference_type: 'invoice',
+      reference_id: invoice_id
+    });
+
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('WhatsApp sendInvoice error:', err);
@@ -103,26 +163,74 @@ exports.sendInvoice = async (req, res) => {
 
 // ─── AUTO: BOOKING CONFIRMATION ─────────────────────────
 exports.sendBookingConfirmation = async (phone, customerName, date, time, serviceName) => {
-  const message = `✅ *Booking Confirmed*\n\nHi ${customerName},\nYour booking for *${serviceName}* is confirmed.\n📅 ${date}\n⏰ ${time}\n\nSee you at O3 Car Spa! 🚗`;
-  return sendWhatsAppMessage(phone, null, [], message);
+  const humanizer = require('../utils/humanizer');
+  const message = humanizer.humanizeNotification('BOOKING_CONFIRMED', {
+    customer_name: customerName,
+    booking_date: date,
+    slot_time: time,
+    service_name: serviceName,
+    booking_id: Math.floor(Math.random() * 9000 + 1000)
+  });
+  return notificationQueue.enqueueNotification({
+    idempotency_key: `booking_conf_${phone.replace(/\D/g, '')}_${Date.now()}`,
+    channel: 'whatsapp',
+    mobile: phone,
+    template_name: 'BOOKING_CONFIRMED',
+    message_body: message
+  });
 };
 
 // ─── AUTO: SERVICE COMPLETE ─────────────────────────────
 exports.sendServiceComplete = async (phone, customerName, vehicleReg) => {
-  const message = `🎉 *Service Complete!*\n\nHi ${customerName},\nYour vehicle (${vehicleReg}) service is complete and ready for pickup!\n\nThank you for choosing O3 Car Spa! ⭐`;
-  return sendWhatsAppMessage(phone, null, [], message);
+  const humanizer = require('../utils/humanizer');
+  const message = humanizer.humanizeNotification('SERVICE_COMPLETED', {
+    customer_name: customerName,
+    vehicle_number: vehicleReg,
+    job_cart_id: 'JC-COMPLETED'
+  });
+  return notificationQueue.enqueueNotification({
+    idempotency_key: `svc_complete_${phone.replace(/\D/g, '')}_${Date.now()}`,
+    channel: 'whatsapp',
+    mobile: phone,
+    template_name: 'SERVICE_COMPLETED',
+    message_body: message
+  });
 };
 
 // ─── AUTO: PAYMENT REMINDER ─────────────────────────────
 exports.sendPaymentReminder = async (phone, customerName, amount, dueDate) => {
-  const message = `💳 *Payment Reminder*\n\nHi ${customerName},\nYou have a pending payment of ₹${Number(amount).toLocaleString('en-IN')}.\nDue: ${dueDate}\n\nPay online or visit O3 Car Spa. 🚗`;
-  return sendWhatsAppMessage(phone, null, [], message);
+  const humanizer = require('../utils/humanizer');
+  const message = humanizer.humanizeNotification('PAYMENT_REMINDER', {
+    customer_name: customerName,
+    amount_due: Number(amount).toLocaleString('en-IN'),
+    invoice_number: 'PENDING',
+    due_date: dueDate
+  });
+  return notificationQueue.enqueueNotification({
+    idempotency_key: `pay_remind_${phone.replace(/\D/g, '')}_${Date.now()}`,
+    channel: 'whatsapp',
+    mobile: phone,
+    template_name: 'PAYMENT_REMINDER',
+    message_body: message
+  });
 };
 
 // ─── AUTO: PACKAGE EXPIRY REMINDER ──────────────────────
 exports.sendPackageExpiryReminder = async (phone, customerName, packageName, expiryDate) => {
-  const message = `⚠️ *Package Expiring Soon*\n\nHi ${customerName},\nYour *${packageName}* package expires on ${expiryDate}.\n\nRenew now to continue enjoying premium services! 💎`;
-  return sendWhatsAppMessage(phone, null, [], message);
+  const humanizer = require('../utils/humanizer');
+  const message = humanizer.humanizeNotification('PACKAGE_EXPIRY_REMINDER', {
+    customer_name: customerName,
+    package_name: packageName,
+    expiry_date: expiryDate,
+    renewal_url: `${process.env.APP_BASE_URL || 'http://localhost:5000'}/packages`
+  });
+  return notificationQueue.enqueueNotification({
+    idempotency_key: `pkg_expiry_${phone.replace(/\D/g, '')}_${Date.now()}`,
+    channel: 'whatsapp',
+    mobile: phone,
+    template_name: 'PACKAGE_EXPIRY_REMINDER',
+    message_body: message
+  });
 };
 
 // ─── LIST MESSAGE HISTORY ───────────────────────────────
@@ -172,5 +280,68 @@ exports.stats = async (req, res, next) => {
   }
 };
 
+// ─── BAILEYS SESSION MANAGEMENT ─────────────────────────────────────────────
+
+/** GET /api/whatsapp/baileys/status — returns connection state + phone */
+exports.baileysStatus = async (req, res) => {
+  try {
+    const baileys = require('../services/whatsappBaileys');
+    res.json({ success: true, data: baileys.getStatus() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/baileys/connect — triggers (re)connect + QR generation */
+exports.baileysConnect = async (req, res) => {
+  try {
+    const baileys = require('../services/whatsappBaileys');
+    // Non-blocking: client listens for whatsapp:qr via Socket.io
+    baileys.connect().catch(err => console.error('[Baileys] connect error:', err.message));
+    res.json({ success: true, message: 'WhatsApp connection initiated. Scan the QR code in the admin panel.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/baileys/disconnect — logout and clear session */
+exports.baileysDisconnect = async (req, res) => {
+  try {
+    const baileys = require('../services/whatsappBaileys');
+    await baileys.logout();
+    res.json({ success: true, message: 'WhatsApp session disconnected and cleared.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/baileys/send-test — send a test message to verify connection */
+exports.baileysSendTest = async (req, res) => {
+  try {
+    const { mobile, message } = req.body;
+    if (!mobile) return res.status(400).json({ success: false, error: 'mobile is required' });
+
+    const baileys = require('../services/whatsappBaileys');
+    const text    = message || '🧪 Test message from O3 Car Spaa automation system. If you see this, WhatsApp is working! ✅';
+    const result  = await baileys.sendText(mobile, text);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/baileys/pairing-code — requests 8-digit pairing code */
+exports.baileysRequestPairingCode = async (req, res) => {
+  try {
+    const phone = req.body.phone || process.env.ADMIN_WHATSAPP_NUMBER || '9316668760';
+    const baileys = require('../services/whatsappBaileys');
+    const code = await baileys.requestPairingCode(phone);
+    res.json({ success: true, pairingCode: code });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // Export helper for use in other controllers
 exports._sendWhatsAppMessage = sendWhatsAppMessage;
+

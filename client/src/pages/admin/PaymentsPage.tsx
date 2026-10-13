@@ -78,7 +78,7 @@ export default function PaymentsPage() {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123', // Fallback for dev
         amount: orderRes.data.amount,
         currency: orderRes.data.currency,
-        name: 'O3 Car Spa',
+        name: 'O3 Car Spaa',
         description: 'Payment for Services',
         order_id: orderRes.data.id,
         handler: async function (response: any) {

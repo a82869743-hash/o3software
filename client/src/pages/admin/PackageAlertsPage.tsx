@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Bell, Calendar, MessageCircle, Clock, Search, Phone, RefreshCw } from 'lucide-react';
+import { Bell, Calendar, MessageCircle, Clock, Search, Phone, RefreshCw, Loader2 } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import api from '../../api/axiosInstance';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { formatDate } from '../../utils/formatters';
 
 interface AlertItem {
@@ -29,6 +30,8 @@ export default function PackageAlertsPage() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [sendingId, setSendingId] = useState<number | null>(null);
+  const sendWhatsApp = useSendWhatsApp();
 
   const fetchAlerts = () => {
     setLoading(true);
@@ -45,11 +48,23 @@ export default function PackageAlertsPage() {
     return !q || a.customer_name?.toLowerCase().includes(q) || a.customer_mobile?.includes(q) || a.registration_no?.toLowerCase().includes(q) || a.package_name?.toLowerCase().includes(q);
   });
 
-  const buildWhatsAppMsg = (a: any) => {
+  const handleSendAlert = (a: AlertItem) => {
+    if (!a.customer_mobile) return;
     const expiryDate = formatDate(a.end_date);
     const vehicleStr = a.registration_no ? `${a.registration_no} (${a.brand || ''} ${a.model || ''})` : 'your vehicle';
-    const msg = `Hi ${a.customer_name},\n\nYour *${a.package_name}* package for *${vehicleStr}* is about to expire next month (*${expiryDate}*).\n\nDays Remaining: ${a.days_remaining} day(s)\n\nKindly visit O3 Car Spa to redeem your remaining service sessions!\n📍 O3 Car Spa, GIDC, Anand\n📞 7225030303`;
-    return a.whatsapp_url || `https://wa.me/91${a.customer_mobile}?text=${encodeURIComponent(msg)}`;
+    const msg = `Hi ${a.customer_name},\n\nYour *${a.package_name}* package for *${vehicleStr}* is about to expire (*${expiryDate}*).\n\nDays Remaining: ${a.days_remaining} day(s)\n\nKindly visit O3 Car Spaa to redeem your remaining service sessions!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
+
+    setSendingId(a.user_package_id);
+    sendWhatsApp.mutate(
+      {
+        phone: a.customer_mobile,
+        message: msg,
+        customer_id: a.user_id
+      },
+      {
+        onSettled: () => setSendingId(null)
+      }
+    );
   };
 
   return (
@@ -147,15 +162,20 @@ export default function PackageAlertsPage() {
                   </div>
 
                   {/* WhatsApp */}
-                  <a
-                    href={buildWhatsAppMsg(a)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1.5 px-3 py-2 bg-green-500 text-white rounded-xl text-xs font-bold hover:bg-green-600 transition-colors shrink-0"
+                  <button
+                    type="button"
+                    disabled={sendingId === a.user_package_id}
+                    onClick={() => handleSendAlert(a)}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors shrink-0 cursor-pointer"
+                    title="Send WhatsApp Reminder"
                   >
-                    <MessageCircle size={13} />
-                    Remind
-                  </a>
+                    {sendingId === a.user_package_id ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <MessageCircle size={13} />
+                    )}
+                    <span>{sendingId === a.user_package_id ? 'Sending...' : 'Remind'}</span>
+                  </button>
                 </div>
               </div>
             );

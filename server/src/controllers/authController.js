@@ -8,9 +8,16 @@ const generateToken = (user) => {
     throw new Error('FATAL ERROR: JWT_SECRET environment variable is missing. Cannot generate tokens.');
   }
   return jwt.sign(
-    { id: user.id, role: user.role, name: user.name, mobile: user.mobile, franchise_id: user.franchise_id || 1 },
+    {
+      id: user.id,
+      role: user.role,
+      name: user.name,
+      mobile: user.mobile,
+      franchise_id: user.franchise_id || 1,
+      token_version: user.token_version || 1
+    },
     process.env.JWT_SECRET,
-    { expiresIn: '1h' }
+    { expiresIn: '8h' }
   );
 };
 
@@ -194,6 +201,10 @@ exports.register = async (req, res) => {
  * POST /auth/login
  * Body: { mobile, password }
  */
+/**
+ * POST /auth/login
+ * Body: { mobile, password }
+ */
 exports.login = async (req, res) => {
   try {
     const { mobile, password } = req.body;
@@ -202,75 +213,76 @@ exports.login = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Mobile and password are required' });
     }
 
-    // Clean and normalize mobile number (strip non-digits and take last 10 digits)
     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
 
-    let user = null;
-
-    const isProd = process.env.NODE_ENV === 'production';
-    const isAdminNumber = ['7225030303', '9316668760'].includes(cleanMobile);
-
-    try {
-      // Find user by mobile
-      const [users] = await pool.query('SELECT * FROM users WHERE mobile = ?', [cleanMobile]);
-      if (users.length > 0) {
-        const u = users[0];
-        let isMatch = false;
-        // Allow bcrypt match OR common admin passwords (admin123, 12345, Test1234, admin) for admin numbers
-        const isAdminPass = ['admin123', '12345', 'Test1234', 'admin'].includes(password);
-        
-        if (isMatch || isAdminPass || (!isProd && (isAdminNumber || u.password_hash === 'manual'))) {
-          user = {
-            id: u.id,
-            name: u.name,
-            mobile: u.mobile,
-            role: (isAdminNumber || u.role === 'admin') ? 'admin' : u.role,
-          };
-        } else if (isProd && !isMatch) {
-          return res.status(401).json({ success: false, error: 'Invalid credentials' });
-        }
-
-      }
-    } catch (dbErr) {
-      console.warn('[AUTH FALLBACK] Database query warning:', dbErr.message);
+    const [users] = await pool.query('SELECT * FROM users WHERE mobile = ? AND is_deleted = 0', [cleanMobile]);
+    if (!users.length) {
+      return res.status(401).json({ success: false, error: 'Invalid credentials: User not found' });
     }
 
-    // Fallback for initial setup / dev environment
-    if (!user) {
-      if (!isProd && isAdminNumber) {
-        user = {
-          id: 1,
-          name: 'Sharanpalsingh Sodhi',
-          mobile: cleanMobile,
-          role: 'admin',
-        };
-      } else if (!isProd && cleanMobile === '9000000002') {
-        user = {
-          id: 2,
-          name: 'Test Customer',
-          mobile: '9000000002',
-          role: 'customer',
-        };
-      } else if (!isProd && cleanMobile === '9000000003') {
-        user = {
-          id: 3,
-          name: 'Test Staff',
-          mobile: '9000000003',
-          role: 'staff',
-        };
+    const u = users[0];
+
+    // Check account active status
+    if (u.is_active === 0) {
+      return res.status(403).json({ success: false, error: 'Account has been disabled. Please contact your studio administrator.' });
+    }
+
+    // Check account lockout
+    if (u.locked_until && new Date(u.locked_until) > new Date()) {
+      const waitMinutes = Math.ceil((new Date(u.locked_until).getTime() - Date.now()) / 60000);
+      return res.status(403).json({
+        success: false,
+        error: `Account is temporarily locked due to multiple failed login attempts. Please try again in ${waitMinutes} minute(s).`
+      });
+    }
+
+    // Strict bcrypt password verification
+    const isMatch = await bcrypt.compare(password, u.password_hash);
+    if (!isMatch) {
+      const failed = (u.failed_login_attempts || 0) + 1;
+      if (failed >= 5) {
+        await pool.query('UPDATE users SET failed_login_attempts = ?, locked_until = DATE_ADD(NOW(), INTERVAL 15 MINUTE) WHERE id = ?', [failed, u.id]);
+        return res.status(403).json({
+          success: false,
+          error: 'Account locked for 15 minutes due to 5 consecutive failed login attempts.'
+        });
       } else {
-        return res.status(401).json({ success: false, error: 'Invalid credentials: User not found' });
+        await pool.query('UPDATE users SET failed_login_attempts = ? WHERE id = ?', [failed, u.id]);
+        return res.status(401).json({
+          success: false,
+          error: `Invalid credentials. (${5 - failed} attempt(s) remaining before temporary lockout)`
+        });
       }
     }
 
-    const token = generateToken(user);
+    // Reset failed login attempts on successful authentication
+    await pool.query('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?', [u.id]);
+
+    const userObj = {
+      id: u.id,
+      name: u.name,
+      mobile: u.mobile,
+      role: u.role,
+      franchise_id: u.franchise_id || 1,
+      token_version: u.token_version || 1,
+      must_change_password: u.must_change_password === 1
+    };
+
+    const token = generateToken(userObj);
+
+    // Audit log
+    try {
+      const { logAudit } = require('./auditController');
+      await logAudit(u.id, 'LOGIN_SUCCESS', 'user', u.id, { role: u.role, franchise_id: u.franchise_id }, req.ip);
+    } catch {}
 
     res.json({
       success: true,
-      data: { 
-        user,
-        token
-      },
+      data: {
+        user: userObj,
+        token,
+        must_change_password: u.must_change_password === 1
+      }
     });
   } catch (err) {
     console.error('Login SQL/Server error:', err);
@@ -406,37 +418,78 @@ exports.uploadProfilePicture = async (req, res) => {
 /**
  * POST /auth/change-password
  * Auth: Any
- * Body: { old_password, new_password }
+ * Body: { old_password, new_password, current_password }
  */
 exports.changePassword = async (req, res) => {
   try {
-    const { old_password, new_password } = req.body;
+    const oldPass = req.body.old_password || req.body.current_password;
+    const newPass = req.body.new_password;
 
-    if (!old_password || !new_password) {
-      return res.status(400).json({ success: false, error: 'Both old and new passwords are required' });
+    if (!oldPass || !newPass) {
+      return res.status(400).json({ success: false, error: 'Current password and new password are required' });
     }
 
-    if (new_password.length < 6) {
-      return res.status(400).json({ success: false, error: 'New password must be at least 6 characters' });
+    // Password policy: at least 8 characters, letters and numbers
+    if (newPass.length < 8 || !/\d/.test(newPass) || !/[a-zA-Z]/.test(newPass)) {
+      return res.status(400).json({
+        success: false,
+        error: 'New password must be at least 8 characters long and contain both letters and numbers.'
+      });
     }
 
-    const [users] = await pool.query('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
+    const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
     if (!users.length) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
+    const u = users[0];
 
-    const valid = await bcrypt.compare(old_password, users[0].password_hash);
+    const valid = await bcrypt.compare(oldPass, u.password_hash);
     if (!valid) {
       return res.status(401).json({ success: false, error: 'Current password is incorrect' });
     }
 
-    const newHash = await bcrypt.hash(new_password, 10);
-    await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, req.user.id]);
+    const newHash = await bcrypt.hash(newPass, 10);
+    const newVersion = (u.token_version || 1) + 1;
 
-    res.json({ success: true, message: 'Password changed successfully' });
+    await pool.query(
+      'UPDATE users SET password_hash = ?, must_change_password = 0, token_version = ? WHERE id = ?',
+      [newHash, newVersion, req.user.id]
+    );
+
+    const updatedUser = {
+      id: u.id,
+      name: u.name,
+      mobile: u.mobile,
+      role: u.role,
+      franchise_id: u.franchise_id || 1,
+      token_version: newVersion,
+      must_change_password: false
+    };
+    const newToken = generateToken(updatedUser);
+
+    res.json({
+      success: true,
+      data: { token: newToken, user: updatedUser },
+      message: 'Password changed successfully'
+    });
   } catch (err) {
     console.error('ChangePassword error:', err);
     res.status(500).json({ success: false, error: 'Password change failed' });
+  }
+};
+
+/**
+ * POST /auth/logout
+ * Invalides token version immediately in database
+ */
+exports.logout = async (req, res) => {
+  try {
+    if (req.user && req.user.id) {
+      await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id]);
+    }
+    res.json({ success: true, message: 'Logged out successfully. Session invalidated.' });
+  } catch (err) {
+    res.json({ success: true, message: 'Logged out' });
   }
 };
 

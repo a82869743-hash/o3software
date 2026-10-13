@@ -7,6 +7,8 @@ const ctrl = require('../controllers/stockRequestController');
 router.get('/', protect, ctrl.list);
 router.post('/', protect, role(['admin', 'staff', 'franchise']), ctrl.create);
 router.post('/:id/approve', protect, superAdmin, ctrl.approve);
-router.post('/:id/reject', protect, superAdmin, ctrl.reject);
+router.put('/:id/approve',  protect, superAdmin, ctrl.approve);
+router.post('/:id/reject',  protect, superAdmin, ctrl.reject);
+router.put('/:id/reject',   protect, superAdmin, ctrl.reject);
 
 module.exports = router;

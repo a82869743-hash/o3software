@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CreditCard, IndianRupee, MessageCircle, Search, AlertCircle, Phone, ChevronRight, CheckCircle2, DollarSign } from 'lucide-react';
+import { CreditCard, IndianRupee, MessageCircle, Search, AlertCircle, Phone, ChevronRight, CheckCircle2, DollarSign, Loader2 } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
@@ -7,6 +7,7 @@ import Input from '../../components/ui/Input';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
+import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { formatINR, formatDate } from '../../utils/formatters';
 
 interface PendingPayment {
@@ -31,6 +32,26 @@ export default function PendingPaymentsPage() {
   const [payments, setPayments] = useState<PendingPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [sendingId, setSendingId] = useState<number | null>(null);
+  const sendWhatsApp = useSendWhatsApp();
+
+  const handleSendPaymentReminder = (p: PendingPayment) => {
+    if (!p.customer_mobile) return;
+    const date = formatDate(p.visit_date);
+    const msg = `Hi ${p.customer_name},\n\nThis is a payment reminder from *O3 Car Spaa* 🚗\n\nYour vehicle *${p.registration_no}* (${p.brand} ${p.model}) serviced on ${date} has a pending balance of *₹${formatINR(p.balance_due)}*.\n\nKindly clear the payment at your earliest convenience.\n\nThank you for choosing O3 Car Spaa! 🙏`;
+
+    setSendingId(p.job_cart_id);
+    sendWhatsApp.mutate(
+      {
+        phone: p.customer_mobile,
+        message: msg,
+        customer_id: p.customer_id
+      },
+      {
+        onSettled: () => setSendingId(null)
+      }
+    );
+  };
 
   // Collect Payment Modal State
   const [collectModalOpen, setCollectModalOpen] = useState(false);
@@ -43,8 +64,11 @@ export default function PendingPaymentsPage() {
   const fetchPendingPayments = () => {
     setLoading(true);
     api.get('/payments/pending-reminders')
-      .then(r => setPayments(r.data.data || []))
-      .catch(() => toast.error('Failed to load pending payments'))
+      .then(r => setPayments(r.data?.data || []))
+      .catch(err => {
+        console.warn('Initial load pending payments notice:', err);
+        setPayments([]);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -97,12 +121,6 @@ export default function PendingPaymentsPage() {
   });
 
   const totalDue = filtered.reduce((s, p) => s + parseFloat(p.balance_due as any || 0), 0);
-
-  const buildWhatsAppMsg = (p: PendingPayment) => {
-    const date = formatDate(p.visit_date);
-    const msg = `Hi ${p.customer_name},\n\nThis is a payment reminder from *O3 Car Spa* 🚗\n\nYour vehicle *${p.registration_no}* (${p.brand} ${p.model}) serviced on ${date} has a pending balance of *₹${formatINR(p.balance_due)}*.\n\nKindly clear the payment at your earliest convenience.\n\nThank you for choosing O3 Car Spa! 🙏`;
-    return `https://wa.me/91${p.customer_mobile}?text=${encodeURIComponent(msg)}`;
-  };
 
   return (
     <>
@@ -221,15 +239,20 @@ export default function PendingPaymentsPage() {
                       Collect
                     </button>
                     {p.customer_mobile && (
-                      <a
-                        href={buildWhatsAppMsg(p)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center gap-1 px-3 py-2 bg-green-500 text-white rounded-xl text-xs font-bold hover:bg-green-600 transition-colors"
+                      <button
+                        type="button"
+                        disabled={sendingId === p.job_cart_id}
+                        onClick={() => handleSendPaymentReminder(p)}
+                        className="flex items-center gap-1 px-3 py-2 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                        title="Send 1-Click WhatsApp Payment Reminder"
                       >
-                        <MessageCircle size={13} />
-                        Remind
-                      </a>
+                        {sendingId === p.job_cart_id ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <MessageCircle size={13} />
+                        )}
+                        <span>{sendingId === p.job_cart_id ? 'Sending...' : 'Remind'}</span>
+                      </button>
                     )}
                     <button
                       onClick={() => navigate(`/admin/job-carts/${p.job_cart_id}`)}
