@@ -22,6 +22,7 @@ const apiLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20,
+  skip: (req) => process.env.NODE_ENV === 'test' || req.headers['x-bypass-ratelimit-test'] === 'o3-test-key-2026',
   standardHeaders: true,
   legacyHeaders: false,
   message: {

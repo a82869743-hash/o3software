@@ -74,19 +74,12 @@ const fs = require('fs');
 if (!fs.existsSync(uploadsPath)) fs.mkdirSync(uploadsPath, { recursive: true });
 app.use('/uploads', express.static(uploadsPath));
 
-// ─── Request logging (production-safe) ──────────────
-if (process.env.NODE_ENV !== 'production') {
-  app.use((req, _res, next) => {
-    if (req.url !== '/api/v1/health') {
-      const ts = new Date().toISOString().slice(11, 19);
-      process.stdout.write(`[${ts}] ${req.method} ${req.url}\n`);
-    }
-    next();
-  });
-}
+// ─── Request Logging & Structured Observability ─────
+const { requestLogger } = require('./middleware/requestLogger');
+app.use(requestLogger);
 
 // ─── Health check (Liveness / Readiness Probe) ──────
-app.get('/api/v1/health', async (req, res) => {
+const healthHandler = async (req, res) => {
   let dbStatus = 'disconnected';
   let dbLatencyMs = null;
   let healthy = false;
@@ -104,11 +97,13 @@ app.get('/api/v1/health', async (req, res) => {
   const mem = process.memoryUsage();
   const payload = {
     status: healthy ? 'healthy' : 'degraded',
-    message: 'O3 Car Spaaa API is running',
+    message: 'O3 Car Spaa API is running',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     environment: process.env.NODE_ENV || 'development',
     version: '2.4.0',
+    pm2_worker_id: process.env.NODE_APP_INSTANCE || process.env.pm_id || '0',
+    cluster_mode: Boolean(process.env.NODE_APP_INSTANCE !== undefined),
     database: {
       status: dbStatus,
       latencyMs: dbLatencyMs,
@@ -121,7 +116,10 @@ app.get('/api/v1/health', async (req, res) => {
   };
 
   res.status(healthy ? 200 : 503).json(payload);
-});
+};
+
+app.get('/api/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // ─── Rate Limiting ──────────────────────────────────
 const { apiLimiter, notificationLimiter } = require('./middleware/rateLimiter');

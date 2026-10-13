@@ -19,5 +19,7 @@ server/sessions/
 uploads/
 server/uploads/*
 !server/uploads/.gitkeep
+backups/
+*.sql
 
 

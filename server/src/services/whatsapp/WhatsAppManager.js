@@ -24,12 +24,20 @@ class WhatsAppManager {
     };
   }
 
+  setOverrideProvider(provider) {
+    this.overrideProvider = provider;
+  }
+
   /**
    * Determine the active provider for a given franchise
    * @param {number} franchiseId
    * @returns {Promise<IWhatsAppProvider>}
    */
   async getAdapter(franchiseId = 1) {
+    if (this.overrideProvider && this.adapters[this.overrideProvider]) {
+      return this.adapters[this.overrideProvider];
+    }
+
     let providerName = process.env.WHATSAPP_PROVIDER || 'meta_cloud';
 
     try {

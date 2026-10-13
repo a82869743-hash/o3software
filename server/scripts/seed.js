@@ -68,6 +68,7 @@ async function seed() {
       VALUES (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         name = VALUES(name),
+        mobile = VALUES(mobile),
         email = VALUES(email),
         role = VALUES(role),
         franchise_id = VALUES(franchise_id),

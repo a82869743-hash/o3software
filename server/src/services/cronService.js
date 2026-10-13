@@ -4,11 +4,21 @@ const messagingService = require('./messagingService');
 
 /**
  * Initializes all cron jobs for the application.
+ * In PM2 cluster mode, jobs run strictly under Worker #0 (Leader Election).
  */
 exports.initCronJobs = () => {
+  // PM2 Cluster Leader Election:
+  const instanceId = process.env.NODE_APP_INSTANCE;
+  if (instanceId !== undefined && instanceId !== '0') {
+    console.log(`[CRON] Worker #${instanceId}: Standby worker — skipping cron scheduler (coordinated by Worker #0)`);
+    return;
+  }
+  console.log(`[CRON] Leader coordinator active (Worker: ${instanceId || 'standalone'}). Registering scheduled jobs...`);
+
   // 1. Daily morning task: Send reminders for customers who haven't visited recently
   // Runs at 9:00 AM every day
   cron.schedule('0 9 * * *', async () => {
+    const startTime = Date.now();
     console.log('[CRON] Running daily morning task: Service Reminders');
     try {
       // Find customers whose last service visit was exactly 90 days ago
