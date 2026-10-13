@@ -366,30 +366,14 @@ class MetaCloudAdapter extends IWhatsAppProvider {
     try {
       const from = msg.from; // Customer phone (e.g. 919876543210)
       const text = msg.text?.body?.trim() || '';
+      if (!text) return;
 
-      // Check STOP / Opt-Out request
-      if (/^(stop|unsubscribe|cancel|optout|opt-out)$/i.test(text)) {
-        await pool.query(
-          'INSERT INTO whatsapp_opt_outs (phone, reason) VALUES (?, "STOP keyword") ON DUPLICATE KEY UPDATE opt_out_date = NOW()',
-          [from]
-        );
-        console.log(`[MetaCloudAdapter] 🛑 Phone ${from} registered opt-out (STOP).`);
-        return;
-      }
-
-      // Refresh 24-hour customer service window
-      await pool.query(`
-        INSERT INTO whatsapp_conversations (franchise_id, phone, last_customer_message_at, window_expires_at, last_message_text, status)
-        VALUES (1, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR), ?, 'active')
-        ON DUPLICATE KEY UPDATE
-          last_customer_message_at = NOW(),
-          window_expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR),
-          last_message_text = VALUES(last_message_text),
-          status = 'active',
-          updated_at = NOW()
-      `, [from, text]);
-
-      console.log(`[MetaCloudAdapter] 💬 Inbound message from +${from}: "${text}" (24h window refreshed)`);
+      const leadsAgentService = require('../ai/LeadsAgentService');
+      await leadsAgentService.processInboundMessage({
+        phone: from,
+        text,
+        franchiseId: 1
+      });
     } catch (err) {
       console.error('[MetaCloudAdapter] Inbound message handling error:', err.message);
     }

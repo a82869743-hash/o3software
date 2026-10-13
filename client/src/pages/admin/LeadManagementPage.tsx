@@ -1,6 +1,30 @@
 import { useState, useEffect } from 'react';
-import { Users, Phone, Mail, Car, MessageCircle, ArrowRight, Search, Plus, Filter, Loader2 } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import {
+  Users,
+  Phone,
+  Mail,
+  Car,
+  MessageCircle,
+  ArrowRight,
+  Search,
+  Plus,
+  Filter,
+  Loader2,
+  Bot,
+  ShieldCheck,
+  BookOpen,
+  Send,
+  RefreshCw,
+  Sliders,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  AlertTriangle,
+  Trash2,
+  Edit2,
+  Zap
+} from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
@@ -11,7 +35,7 @@ import Input from '../../components/ui/Input';
 
 interface Inquiry {
   id: number;
-  source: 'facebook' | 'instagram' | 'walk_in' | 'website' | 'staff' | string;
+  source: 'facebook' | 'instagram' | 'walk_in' | 'website' | 'staff' | 'whatsapp_inbound' | string;
   name: string;
   mobile: string;
   email?: string;
@@ -28,6 +52,7 @@ const SOURCE_COLORS: Record<string, string> = {
   walk_in: '#10B981',
   website: '#2563EB',
   staff: '#8B5CF6',
+  whatsapp_inbound: '#25D366',
   other: '#64748B',
 };
 
@@ -37,10 +62,10 @@ const SOURCE_LABELS: Record<string, string> = {
   walk_in: 'Walk-In',
   website: 'Website Intake',
   staff: 'Staff Lead',
+  whatsapp_inbound: 'WhatsApp Inbound',
   other: 'Other Sources',
 };
 
-// Social Icons SVGs
 const FacebookIcon = () => (
   <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
     <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
@@ -59,6 +84,7 @@ const getSourceIcon = (source: string) => {
     case 'instagram': return <InstagramIcon />;
     case 'walk_in': return <Users className="w-4 h-4" />;
     case 'website': return <Mail className="w-4 h-4" />;
+    case 'whatsapp_inbound': return <MessageCircle className="w-4 h-4 text-emerald-600" />;
     default: return <Users className="w-4 h-4" />;
   }
 };
@@ -67,6 +93,9 @@ export default function LeadManagementPage() {
   const navigate = useNavigate();
   const toast = useUIStore((s) => s.toast);
 
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'inbox' | 'kb' | 'settings'>('pipeline');
+
+  // Leads state
   const [leads, setLeads] = useState<Inquiry[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -74,7 +103,7 @@ export default function LeadManagementPage() {
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [addModalOpen, setAddModalOpen] = useState(false);
 
-  // New Lead Form
+  // New Lead Form state
   const [newName, setNewName] = useState('');
   const [newMobile, setNewMobile] = useState('');
   const [newEmail, setNewEmail] = useState('');
@@ -87,20 +116,26 @@ export default function LeadManagementPage() {
   const [sendingLeadId, setSendingLeadId] = useState<number | null>(null);
   const sendWhatsApp = useSendWhatsApp();
 
-  const handleSendLeadWhatsApp = (lead: Inquiry) => {
-    if (!lead.mobile) return;
-    const msg = `Hi ${lead.name}, thank you for reaching out to O3 Car Spaa! How can we assist you with your vehicle detailing today? 🚗✨`;
-    setSendingLeadId(lead.id);
-    sendWhatsApp.mutate(
-      {
-        phone: lead.mobile,
-        message: msg
-      },
-      {
-        onSettled: () => setSendingLeadId(null)
-      }
-    );
-  };
+  // Unified Inbox State
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [selectedConv, setSelectedConv] = useState<any | null>(null);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [replyText, setReplyText] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
+
+  // Knowledge Base State
+  const [kbArticles, setKbArticles] = useState<any[]>([]);
+  const [kbModalOpen, setKbModalOpen] = useState(false);
+  const [kbForm, setKbForm] = useState({ id: null, category: 'services', title: '', content: '', keywords: '' });
+
+  // AI Settings State
+  const [aiSettings, setAiSettings] = useState<any>({
+    is_enabled: 1,
+    sandbox_mode: 0,
+    model_name: 'gpt-4o-mini',
+    monthly_budget_cap_inr: 2000.00,
+    cost_spent_this_month_inr: 0.00
+  });
 
   const fetchLeads = async () => {
     setLoading(true);
@@ -112,7 +147,6 @@ export default function LeadManagementPage() {
       setLeads(listRes.data.data || []);
       setStats(statsRes.data.data || null);
     } catch (err) {
-      console.warn('Initial load lead management data notice:', err);
       setLeads([]);
       setStats(null);
     } finally {
@@ -120,7 +154,67 @@ export default function LeadManagementPage() {
     }
   };
 
-  useEffect(() => { fetchLeads(); }, []);
+  const fetchInbox = async () => {
+    try {
+      const { data } = await api.get('/leads/conversations');
+      setConversations(data.data || []);
+      if (!selectedConv && data.data?.length > 0) {
+        setSelectedConv(data.data[0]);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch conversations:', err);
+    }
+  };
+
+  const fetchMessages = async (convId: number) => {
+    try {
+      const { data } = await api.get(`/leads/conversations/${convId}/messages`);
+      setMessages(data.data || []);
+    } catch (err) {
+      console.warn('Failed to fetch messages:', err);
+    }
+  };
+
+  const fetchKB = async () => {
+    try {
+      const { data } = await api.get('/leads/knowledge-base');
+      setKbArticles(data.data || []);
+    } catch (err) {
+      console.warn('Failed to fetch KB:', err);
+    }
+  };
+
+  const fetchAISettings = async () => {
+    try {
+      const { data } = await api.get('/leads/ai-settings');
+      if (data.data) setAiSettings(data.data);
+    } catch (err) {
+      console.warn('Failed to fetch AI settings:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchLeads();
+    fetchInbox();
+    fetchKB();
+    fetchAISettings();
+  }, []);
+
+  useEffect(() => {
+    if (selectedConv?.id) {
+      fetchMessages(selectedConv.id);
+    }
+  }, [selectedConv]);
+
+  const handleSendLeadWhatsApp = (lead: Inquiry) => {
+    if (!lead.mobile) return;
+    const msg = `Hi ${lead.name}, thank you for reaching out to O3 Car Spaa! How can we assist you with your vehicle detailing today? 🚗✨`;
+    setSendingLeadId(lead.id);
+    sendWhatsApp.mutate(
+      { phone: lead.mobile, message: msg },
+      { onSettled: () => setSendingLeadId(null) }
+    );
+  };
 
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -163,6 +257,68 @@ export default function LeadManagementPage() {
     }
   };
 
+  const handleToggleAgentMode = async (convId: number, currentMode: string) => {
+    const newMode = currentMode === 'ai' ? 'human' : 'ai';
+    try {
+      await api.post(`/leads/conversations/${convId}/agent-mode`, { mode: newMode });
+      toast('success', `Takeover toggled to ${newMode === 'human' ? 'Staff Takeover' : 'AI Agent'}`);
+      fetchInbox();
+      if (selectedConv?.id === convId) {
+        setSelectedConv({ ...selectedConv, agent_mode: newMode });
+      }
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to toggle mode');
+    }
+  };
+
+  const handleSendStaffReply = async () => {
+    if (!selectedConv?.id || !replyText.trim()) return;
+    setSendingReply(true);
+    try {
+      await api.post(`/leads/conversations/${selectedConv.id}/reply`, { text: replyText.trim() });
+      setReplyText('');
+      fetchMessages(selectedConv.id);
+      toast('success', 'Staff reply sent via WhatsApp');
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to dispatch reply');
+    } finally {
+      setSendingReply(false);
+    }
+  };
+
+  const handleSaveKB = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await api.post('/leads/knowledge-base', kbForm);
+      toast('success', 'Knowledge article saved');
+      setKbModalOpen(false);
+      setKbForm({ id: null, category: 'services', title: '', content: '', keywords: '' });
+      fetchKB();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to save article');
+    }
+  };
+
+  const handleDeleteKB = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this article?')) return;
+    try {
+      await api.delete(`/leads/knowledge-base/${id}`);
+      toast('success', 'Article deleted');
+      fetchKB();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to delete');
+    }
+  };
+
+  const handleSaveAISettings = async () => {
+    try {
+      await api.post('/leads/ai-settings', aiSettings);
+      toast('success', 'AI settings updated successfully');
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Failed to update settings');
+    }
+  };
+
   const filteredLeads = leads.filter((l) => {
     const q = search.toLowerCase();
     const matchSearch = !q || l.name?.toLowerCase().includes(q) || l.mobile?.includes(q) || l.vehicle_brand?.toLowerCase().includes(q) || l.vehicle_model?.toLowerCase().includes(q);
@@ -170,7 +326,6 @@ export default function LeadManagementPage() {
     return matchSearch && matchSource;
   });
 
-  // Prepare chart data
   const pieData = stats?.by_source?.map((item: any) => ({
     name: SOURCE_LABELS[item.source] || item.source,
     value: parseInt(item.total, 10),
@@ -180,263 +335,543 @@ export default function LeadManagementPage() {
   return (
     <>
       <AdminTopBar
-        title="Lead Management"
-        subtitle="Track & convert incoming leads from Meta Ads, Walk-ins & Web"
+        title="Leads & AI Inbound Agent"
+        subtitle="Manage Meta Ads, WhatsApp Inquiries, AI Unified Inbox & Knowledge Base"
         actions={
-          <button
-            onClick={() => setAddModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-[#2563EB] text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition-colors shadow-sm"
-          >
-            <Plus size={16} /> Add New Lead
-          </button>
+          <div className="flex items-center gap-2">
+            {activeTab === 'pipeline' && (
+              <button
+                onClick={() => setAddModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition shadow-sm"
+              >
+                <Plus size={16} /> Add New Lead
+              </button>
+            )}
+            {activeTab === 'kb' && (
+              <button
+                onClick={() => {
+                  setKbForm({ id: null, category: 'services', title: '', content: '', keywords: '' });
+                  setKbModalOpen(true);
+                }}
+                className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700 transition shadow-sm"
+              >
+                <Plus size={16} /> Add Article
+              </button>
+            )}
+          </div>
         }
       />
 
-      {/* Top Source Stats & Pie Chart */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        {/* Source Cards */}
-        <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4">
-          {[
-            { key: 'facebook', label: 'Facebook Ads', icon: FacebookIcon, bg: 'bg-blue-50 border-blue-200 text-blue-700' },
-            { key: 'instagram', label: 'Instagram Ads', icon: InstagramIcon, bg: 'bg-pink-50 border-pink-200 text-pink-700' },
-            { key: 'walk_in', label: 'Walk-In Customer', icon: Users, bg: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-            { key: 'website', label: 'Website Intake', icon: Mail, bg: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
-            { key: 'staff', label: 'Staff Created', icon: Users, bg: 'bg-purple-50 border-purple-200 text-purple-700' },
-          ].map((s) => {
-            const count = stats?.by_source?.find((b: any) => b.source === s.key)?.total || 0;
-            const Icon = s.icon;
-            return (
-              <div
-                key={s.key}
-                onClick={() => setSelectedSource(selectedSource === s.key ? 'all' : s.key)}
-                className={`p-4 rounded-2xl border transition-all cursor-pointer ${s.bg} ${
-                  selectedSource === s.key ? 'ring-2 ring-offset-2 ring-blue-500 scale-[1.02]' : 'hover:shadow-sm'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="p-2 rounded-xl bg-white shadow-xs">
-                    <Icon />
+      {/* Primary Tab Switcher */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 mb-6">
+        <button
+          onClick={() => setActiveTab('pipeline')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition ${
+            activeTab === 'pipeline' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Users size={15} />
+          <span>Pipeline & Funnel</span>
+          <span className={`text-[11px] px-2 py-0.5 rounded-full ${activeTab === 'pipeline' ? 'bg-slate-800 text-slate-200' : 'bg-slate-200 text-slate-700'}`}>
+            {leads.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('inbox')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition ${
+            activeTab === 'inbox' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <MessageCircle size={15} />
+          <span>Unified WhatsApp Inbox</span>
+          <span className={`text-[11px] px-2 py-0.5 rounded-full ${activeTab === 'inbox' ? 'bg-emerald-700 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
+            {conversations.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('kb')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition ${
+            activeTab === 'kb' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <BookOpen size={15} />
+          <span>Franchise Knowledge Base</span>
+          <span className={`text-[11px] px-2 py-0.5 rounded-full ${activeTab === 'kb' ? 'bg-indigo-700 text-white' : 'bg-indigo-100 text-indigo-800'}`}>
+            {kbArticles.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('settings')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs transition ${
+            activeTab === 'settings' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Sliders size={15} />
+          <span>AI Agent Controls</span>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 uppercase">
+            {aiSettings.is_enabled ? 'Active' : 'Paused'}
+          </span>
+        </button>
+      </div>
+
+      {/* TAB 1: PIPELINE & FUNNEL */}
+      {activeTab === 'pipeline' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {[
+                { key: 'facebook', label: 'Facebook Ads', icon: FacebookIcon, bg: 'bg-blue-50 border-blue-200 text-blue-700' },
+                { key: 'instagram', label: 'Instagram Ads', icon: InstagramIcon, bg: 'bg-pink-50 border-pink-200 text-pink-700' },
+                { key: 'whatsapp_inbound', label: 'WhatsApp Inbound', icon: MessageCircle, bg: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+                { key: 'walk_in', label: 'Walk-In Customer', icon: Users, bg: 'bg-teal-50 border-teal-200 text-teal-700' },
+                { key: 'website', label: 'Website Intake', icon: Mail, bg: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+                { key: 'staff', label: 'Staff Created', icon: Users, bg: 'bg-purple-50 border-purple-200 text-purple-700' },
+              ].map((s) => {
+                const count = stats?.by_source?.find((b: any) => b.source === s.key)?.total || 0;
+                const Icon = s.icon;
+                return (
+                  <div
+                    key={s.key}
+                    onClick={() => setSelectedSource(selectedSource === s.key ? 'all' : s.key)}
+                    className={`p-4 rounded-2xl border transition-all cursor-pointer ${s.bg} ${
+                      selectedSource === s.key ? 'ring-2 ring-offset-2 ring-blue-500 scale-[1.02]' : 'hover:shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="p-2 rounded-xl bg-white shadow-xs">
+                        <Icon />
+                      </div>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/80">
+                        Source
+                      </span>
+                    </div>
+                    <p className="text-2xl font-black">{count}</p>
+                    <p className="text-xs font-bold mt-1 opacity-90">{s.label}</p>
                   </div>
-                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/80">
-                    Source
-                  </span>
-                </div>
-                <p className="text-2xl font-black">{count}</p>
-                <p className="text-xs font-bold mt-1 opacity-90">{s.label}</p>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Recharts Pie Chart */}
-        <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col justify-between">
-          <h3 className="font-extrabold text-slate-900 text-sm mb-2">Lead Source Distribution</h3>
-          {pieData.length > 0 ? (
-            <div className="h-44 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={45}
-                    outerRadius={70}
-                    paddingAngle={3}
-                    dataKey="value"
-                  >
-                    {pieData.map((entry: any, index: number) => (
-                      <Cell key={`cell-${index}`} fill={SOURCE_COLORS[entry.sourceKey] || '#64748B'} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(val) => [`${val} Leads`, 'Count']} />
-                  <Legend iconSize={8} wrapperStyle={{ fontSize: '11px', paddingTop: '4px' }} />
-                </PieChart>
-              </ResponsiveContainer>
+                );
+              })}
             </div>
-          ) : (
-            <div className="h-44 flex items-center justify-center text-slate-400 text-xs font-medium">
-              No lead distribution data yet
+
+            <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col justify-between">
+              <h3 className="font-extrabold text-slate-900 text-sm mb-2">Lead Source Distribution</h3>
+              {pieData.length > 0 ? (
+                <div className="h-44 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={45}
+                        outerRadius={70}
+                        paddingAngle={3}
+                        dataKey="value"
+                      >
+                        {pieData.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={SOURCE_COLORS[entry.sourceKey] || '#64748B'} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-44 flex items-center justify-center text-slate-400 text-xs">
+                  No source distribution data available
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      {/* Filter Tabs & Search */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-          <button
-            onClick={() => setSelectedSource('all')}
-            className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all ${
-              selectedSource === 'all' ? 'bg-[#2563EB] text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            All Leads ({leads.length})
-          </button>
-          {['facebook', 'instagram', 'walk_in', 'website'].map((src) => (
-            <button
-              key={src}
-              onClick={() => setSelectedSource(src)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all ${
-                selectedSource === src ? 'bg-[#2563EB] text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {getSourceIcon(src)}
-              {SOURCE_LABELS[src]}
-            </button>
-          ))}
-        </div>
-
-        <div className="relative w-full sm:w-72">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search leads..."
-            className="w-full pl-9 pr-4 py-2 bg-[#f6f3f2] border border-transparent rounded-xl text-sm font-medium text-slate-900 focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white placeholder:text-slate-400 transition-all"
-          />
-        </div>
-      </div>
-
-      {/* Lead Cards List */}
-      {loading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map(i => <div key={i} className="h-24 bg-slate-100 animate-pulse rounded-2xl" />)}
-        </div>
-      ) : filteredLeads.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center">
-          <Users size={40} className="text-slate-300 mx-auto mb-3" />
-          <p className="font-bold text-slate-600">No leads found</p>
-          <p className="text-xs text-slate-400 mt-1">Try selecting another filter or create a new lead</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredLeads.map((lead) => (
-            <div
-              key={lead.id}
-              className="bg-white border border-slate-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-md transition-all flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <span
-                    className="inline-flex items-center gap-1.5 text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase tracking-wider text-white"
-                    style={{ backgroundColor: SOURCE_COLORS[lead.source] || '#64748B' }}
-                  >
-                    {getSourceIcon(lead.source)}
-                    {SOURCE_LABELS[lead.source] || lead.source}
-                  </span>
-                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase ${
-                    lead.status === 'converted' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                  }`}>
-                    {lead.status}
-                  </span>
-                </div>
-
-                <h3 className="font-black text-slate-900 text-base">{lead.name}</h3>
-                <div className="space-y-1.5 mt-2">
-                  <p className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-                    <Phone size={13} className="text-slate-400" /> {lead.mobile}
-                  </p>
-                  {(lead.vehicle_brand || lead.vehicle_model) && (
-                    <p className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-                      <Car size={13} className="text-slate-400" /> {lead.vehicle_brand} {lead.vehicle_model}
-                    </p>
-                  )}
-                  {lead.services_interested && (
-                    <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-100 mt-2">
-                      Interested in: <strong className="text-slate-800">{lead.services_interested}</strong>
-                    </p>
-                  )}
-                </div>
+          <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden p-6">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
+              <div className="relative w-full sm:w-80">
+                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search leads by name, phone, car..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500/20"
+                />
               </div>
+            </div>
 
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <button
-                  type="button"
-                  disabled={sendingLeadId === lead.id}
-                  onClick={() => handleSendLeadWhatsApp(lead)}
-                  className="flex items-center gap-1 text-xs font-bold text-emerald-600 hover:text-emerald-700 disabled:opacity-50 transition-colors cursor-pointer"
-                  title="1-Click WhatsApp Follow-up"
-                >
-                  {sendingLeadId === lead.id ? (
-                    <Loader2 size={14} className="animate-spin text-emerald-600" />
-                  ) : (
-                    <MessageCircle size={14} />
-                  )}
-                  <span>{sendingLeadId === lead.id ? 'Sending...' : 'WhatsApp'}</span>
-                </button>
-                {lead.status !== 'converted' ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-600">
+                <thead>
+                  <tr className="border-b border-slate-100 text-[11px] font-black uppercase tracking-wider text-slate-400">
+                    <th className="py-3 px-4">Customer</th>
+                    <th className="py-3 px-4">Contact</th>
+                    <th className="py-3 px-4">Vehicle</th>
+                    <th className="py-3 px-4">Service</th>
+                    <th className="py-3 px-4">Source</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredLeads.map((lead) => (
+                    <tr key={lead.id} className="hover:bg-slate-50/60 transition">
+                      <td className="py-3 px-4 font-bold text-slate-900">{lead.name}</td>
+                      <td className="py-3 px-4 font-mono">+{lead.mobile}</td>
+                      <td className="py-3 px-4 font-medium">{lead.vehicle_brand} {lead.vehicle_model || '—'}</td>
+                      <td className="py-3 px-4">{lead.services_interested || 'General Detailing'}</td>
+                      <td className="py-3 px-4">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-extrabold capitalize bg-slate-100 text-slate-700">
+                          {getSourceIcon(lead.source)}
+                          <span>{SOURCE_LABELS[lead.source] || lead.source}</span>
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="font-bold uppercase text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                          {lead.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleSendLeadWhatsApp(lead)}
+                            className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition"
+                            title="Send WhatsApp Welcome"
+                          >
+                            <MessageCircle size={14} />
+                          </button>
+                          <button
+                            onClick={() => handleConvertLead(lead.id)}
+                            className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold text-[11px] transition"
+                          >
+                            Create Job
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: UNIFIED WHATSAPP INBOX */}
+      {activeTab === 'inbox' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm min-h-[600px]">
+          {/* Conversation List (Left 4 cols) */}
+          <div className="lg:col-span-4 border-r border-slate-100 flex flex-col">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="font-extrabold text-sm text-slate-900">Conversations</h3>
+              <button onClick={() => fetchInbox()} className="p-1.5 text-slate-400 hover:text-slate-900 rounded-lg transition">
+                <RefreshCw size={14} />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 divide-y divide-slate-50">
+              {conversations.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400">No active WhatsApp conversations yet.</div>
+              ) : (
+                conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    onClick={() => setSelectedConv(conv)}
+                    className={`p-4 transition cursor-pointer flex flex-col gap-1.5 ${
+                      selectedConv?.id === conv.id ? 'bg-slate-100/80 border-l-4 border-emerald-500' : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs text-slate-900 truncate">
+                        {conv.customer_name || `+${conv.phone}`}
+                      </span>
+                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider ${
+                        conv.agent_mode === 'human' ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                      }`}>
+                        {conv.agent_mode === 'human' ? 'Human Takeover' : 'AI Active'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 line-clamp-1">
+                      {conv.last_message_text || 'No message text'}
+                    </p>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1">
+                      <span>+{conv.phone}</span>
+                      <span>{new Date(conv.last_customer_message_at || conv.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Active Chat Stream (Right 8 cols) */}
+          <div className="lg:col-span-8 flex flex-col justify-between h-[600px]">
+            {selectedConv ? (
+              <>
+                {/* Chat Header */}
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold text-sm">
+                      {(selectedConv.customer_name || 'C')[0]}
+                    </div>
+                    <div>
+                      <h4 className="font-black text-sm text-slate-900">{selectedConv.customer_name || 'Valued Customer'}</h4>
+                      <p className="text-[11px] text-slate-500 font-mono">+{selectedConv.phone} · Care window: 24h active</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleToggleAgentMode(selectedConv.id, selectedConv.agent_mode)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                        selectedConv.agent_mode === 'human'
+                          ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                          : 'bg-slate-200 hover:bg-slate-300 text-slate-800'
+                      }`}
+                    >
+                      {selectedConv.agent_mode === 'human' ? (
+                        <>
+                          <Users size={13} />
+                          <span>Staff Mode (Switch to AI)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Bot size={13} />
+                          <span>AI Active (Take Over)</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Message Trail */}
+                <div className="p-5 overflow-y-auto flex-1 space-y-3 bg-slate-50/30">
+                  {messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`flex flex-col ${
+                        m.sender_type === 'customer' ? 'items-start' : 'items-end'
+                      }`}
+                    >
+                      <div className={`max-w-[75%] rounded-2xl p-3 text-xs leading-relaxed shadow-xs ${
+                        m.sender_type === 'customer'
+                          ? 'bg-white border border-slate-200 text-slate-900 rounded-tl-xs'
+                          : m.sender_type === 'ai_agent'
+                          ? 'bg-slate-900 text-white rounded-tr-xs'
+                          : 'bg-emerald-600 text-white rounded-tr-xs'
+                      }`}>
+                        <div className="text-[9px] font-bold opacity-60 mb-1">
+                          {m.sender_type === 'customer' ? 'Customer' : m.sender_type === 'ai_agent' ? '🤖 AI Leads Agent' : '👤 Studio Staff'}
+                        </div>
+                        <div className="whitespace-pre-wrap">{m.message_text}</div>
+                      </div>
+                      <span className="text-[9px] text-slate-400 mt-1 px-1">
+                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Staff Reply Bar */}
+                <div className="p-3 border-t border-slate-100 bg-white flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendStaffReply()}
+                    placeholder="Type reply to customer via WhatsApp..."
+                    className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-emerald-500/20"
+                  />
                   <button
-                    onClick={() => handleConvertLead(lead.id)}
-                    disabled={convertingLeadId === lead.id}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={handleSendStaffReply}
+                    disabled={sendingReply || !replyText.trim()}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition disabled:opacity-50"
                   >
-                    {convertingLeadId === lead.id ? (
-                      <>
-                        <Loader2 size={12} className="animate-spin" /> Converting...
-                      </>
-                    ) : (
-                      <>
-                        Convert to Job Card <ArrowRight size={12} />
-                      </>
-                    )}
+                    <Send size={13} />
+                    <span>Send</span>
                   </button>
-                ) : (
-                  <span className="text-xs font-bold text-emerald-600 flex items-center gap-1">
-                    ✓ Converted
-                  </span>
-                )}
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-full text-slate-400 text-xs">
+                Select a conversation on the left to view the messages
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: FRANCHISE KNOWLEDGE BASE */}
+      {activeTab === 'kb' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {['services', 'pricing', 'operating_hours', 'policies', 'faqs'].map((cat) => {
+              const count = kbArticles.filter((a) => a.category === cat).length;
+              return (
+                <div key={cat} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-black text-xs uppercase tracking-wider text-slate-400">{cat.replace('_', ' ')}</span>
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{count} Articles</span>
+                  </div>
+                  <p className="text-xs text-slate-500">Official ground-truth documentation for AI Leads Agent responses.</p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm overflow-hidden">
+            <h3 className="font-extrabold text-sm text-slate-900 mb-4">Knowledge Base Articles</h3>
+            <div className="divide-y divide-slate-100">
+              {kbArticles.map((art) => (
+                <div key={art.id} className="py-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-sm text-slate-900">{art.title}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase bg-indigo-50 text-indigo-700 border border-indigo-100">
+                        {art.category}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 max-w-3xl leading-relaxed">{art.content}</p>
+                    {art.keywords && (
+                      <p className="text-[10px] font-mono text-slate-400">Keywords: {art.keywords}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => {
+                        setKbForm({ id: art.id, category: art.category, title: art.title, content: art.content, keywords: art.keywords || '' });
+                        setKbModalOpen(true);
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-slate-900 rounded-lg transition"
+                    >
+                      <Edit2 size={14} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteKB(art.id)}
+                      className="p-1.5 text-rose-400 hover:text-rose-600 rounded-lg transition"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: AI AGENT CONTROLS & COST CAP */}
+      {activeTab === 'settings' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm max-w-2xl space-y-6">
+            <div className="border-b border-slate-100 pb-4">
+              <h3 className="font-extrabold text-base text-slate-900">AI Leads Agent Governance</h3>
+              <p className="text-xs text-slate-500 mt-1">Configure automated response safety limits, monthly budget caps, and model parameters.</p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200/60">
+                <div>
+                  <h4 className="font-bold text-xs text-slate-900">AI Agent Inbound Auto-Reply</h4>
+                  <p className="text-[11px] text-slate-500">Automatically reply to new inquiries using verified Knowledge Base.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={Boolean(aiSettings.is_enabled)}
+                  onChange={(e) => setAiSettings({ ...aiSettings, is_enabled: e.target.checked ? 1 : 0 })}
+                  className="w-5 h-5 rounded text-emerald-600 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1.5">Monthly AI Budget Cap (₹ INR)</label>
+                <input
+                  type="number"
+                  value={aiSettings.monthly_budget_cap_inr}
+                  onChange={(e) => setAiSettings({ ...aiSettings, monthly_budget_cap_inr: parseFloat(e.target.value) })}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-mono focus:ring-2 focus:ring-amber-500/20"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">If monthly spent reaches this limit, agent automatically switches all conversations to human takeover.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1.5">LLM Provider & Model</label>
+                <input
+                  type="text"
+                  value={aiSettings.model_name || 'gpt-4o-mini'}
+                  onChange={(e) => setAiSettings({ ...aiSettings, model_name: e.target.value })}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-mono focus:ring-2 focus:ring-amber-500/20"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end">
+                <button
+                  onClick={handleSaveAISettings}
+                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition shadow-xs"
+                >
+                  Save AI Settings
+                </button>
               </div>
             </div>
-          ))}
+          </div>
         </div>
       )}
 
       {/* Add Lead Modal */}
-      <Modal open={addModalOpen} onClose={() => setAddModalOpen(false)} title="Add New Lead">
-        <form onSubmit={handleCreateLead} className="space-y-4 pt-2">
+      <Modal open={addModalOpen} onClose={() => setAddModalOpen(false)} title="Add Inbound Lead">
+        <form onSubmit={handleCreateLead} className="space-y-4">
           <Input label="Customer Name *" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Rahul Sharma" required />
-          <Input label="Mobile Number *" value={newMobile} onChange={(e) => setNewMobile(e.target.value)} placeholder="10-digit phone number" required />
+          <Input label="Mobile Number *" value={newMobile} onChange={(e) => setNewMobile(e.target.value)} placeholder="e.g. 9876543210" required />
           <Input label="Email (Optional)" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="name@example.com" />
-          
           <div className="grid grid-cols-2 gap-3">
             <Input label="Car Brand" value={newBrand} onChange={(e) => setNewBrand(e.target.value)} placeholder="e.g. Hyundai" />
             <Input label="Car Model" value={newModel} onChange={(e) => setNewModel(e.target.value)} placeholder="e.g. Creta" />
           </div>
-
-          <Input label="Services Interested" value={newService} onChange={(e) => setNewService(e.target.value)} placeholder="e.g. Ceramic Coating, Full Detailing" />
-
-          <div>
-            <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-500 mb-2">
-              Lead Source *
-            </label>
-            <select
-              value={newSource}
-              onChange={(e) => setNewSource(e.target.value)}
-              className="w-full px-4 py-3 bg-[#f6f3f2] border border-transparent rounded-lg text-slate-900 font-medium text-sm focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white"
-            >
-              <option value="facebook">Meta Ads - Facebook</option>
-              <option value="instagram">Meta Ads - Instagram</option>
-              <option value="walk_in">Walk-In Customer</option>
-              <option value="website">Website Inquiry</option>
-              <option value="staff">Staff Reference</option>
-            </select>
-          </div>
-
+          <Input label="Services Interested" value={newService} onChange={(e) => setNewService(e.target.value)} placeholder="e.g. Ceramic Coating, PPF" />
           <div className="flex justify-end gap-2 pt-4">
-            <button
-              type="button"
-              onClick={() => setAddModalOpen(false)}
-              className="px-4 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs hover:bg-slate-200"
-            >
+            <button type="button" onClick={() => setAddModalOpen(false)} className="px-4 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs">
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-5 py-2.5 bg-[#2563EB] text-white rounded-xl font-bold text-xs hover:bg-blue-700 disabled:opacity-50"
-            >
+            <button type="submit" disabled={submitting} className="px-5 py-2.5 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700">
               {submitting ? 'Creating...' : 'Create Lead'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add/Edit Knowledge Base Article Modal */}
+      <Modal open={kbModalOpen} onClose={() => setKbModalOpen(false)} title={kbForm.id ? "Edit Knowledge Article" : "Add Knowledge Article"}>
+        <form onSubmit={handleSaveKB} className="space-y-4">
+          <div>
+            <label className="text-xs font-bold text-slate-700 block mb-1">Category</label>
+            <select
+              value={kbForm.category}
+              onChange={(e) => setKbForm({ ...kbForm, category: e.target.value })}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs"
+            >
+              <option value="services">Services</option>
+              <option value="pricing">Pricing</option>
+              <option value="operating_hours">Operating Hours & Location</option>
+              <option value="policies">Policies & Discounts</option>
+              <option value="faqs">FAQs</option>
+            </select>
+          </div>
+          <Input label="Article Title *" value={kbForm.title} onChange={(e) => setKbForm({ ...kbForm, title: e.target.value })} placeholder="e.g. Ceramic 9H Warranty Terms" required />
+          <div>
+            <label className="text-xs font-bold text-slate-700 block mb-1">Content / Facts *</label>
+            <textarea
+              value={kbForm.content}
+              onChange={(e) => setKbForm({ ...kbForm, content: e.target.value })}
+              rows={4}
+              className="w-full border border-slate-200 rounded-xl p-3 text-xs"
+              placeholder="Verified pricing, duration, and details the AI should rely on..."
+              required
+            />
+          </div>
+          <Input label="Search Keywords" value={kbForm.keywords} onChange={(e) => setKbForm({ ...kbForm, keywords: e.target.value })} placeholder="e.g. ceramic, 9h, glass, shine" />
+          <div className="flex justify-end gap-2 pt-4">
+            <button type="button" onClick={() => setKbModalOpen(false)} className="px-4 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs">
+              Cancel
+            </button>
+            <button type="submit" className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700">
+              Save Article
             </button>
           </div>
         </form>

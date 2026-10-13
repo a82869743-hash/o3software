@@ -171,6 +171,7 @@ app.use('/api/balance-sheet', require('./routes/balanceSheet'));
 app.use('/api/audit',         require('./routes/audit'));
 app.use('/api/staff-hr',      require('./routes/staffHR'));
 app.use('/api/whatsapp',      notificationLimiter, require('./routes/whatsapp'));
+app.use('/api/leads',         require('./routes/leads'));
 app.use('/api/admin/roles',   require('./routes/roles'));
 app.use('/api/roles',         require('./routes/roles'));
 app.use('/api/shared-files',  require('./routes/sharedFiles'));
