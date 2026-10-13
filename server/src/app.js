@@ -83,23 +83,47 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-// ─── Health check ───────────────────────────────────
+// ─── Health check (Liveness / Readiness Probe) ──────
 app.get('/api/v1/health', async (req, res) => {
   let dbStatus = 'disconnected';
-  try {
-    const conn = await pool.getConnection();
-    conn.release();
-    dbStatus = 'connected';
-  } catch { /* ignore */ }
+  let dbLatencyMs = null;
+  let healthy = false;
 
-  res.json({
-    success: true,
+  try {
+    const t0 = Date.now();
+    await pool.query('SELECT 1 AS ping');
+    dbLatencyMs = Date.now() - t0;
+    dbStatus = 'connected';
+    healthy = true;
+  } catch (err) {
+    dbStatus = `error: ${err.message}`;
+  }
+
+  const mem = process.memoryUsage();
+  const payload = {
+    status: healthy ? 'healthy' : 'degraded',
     message: 'O3 Car Spaaa API is running',
     timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
     environment: process.env.NODE_ENV || 'development',
-    database: dbStatus,
-  });
+    version: '2.4.0',
+    database: {
+      status: dbStatus,
+      latencyMs: dbLatencyMs,
+    },
+    memory: {
+      rssMB: Math.round(mem.rss / (1024 * 1024)),
+      heapUsedMB: Math.round(mem.heapUsed / (1024 * 1024)),
+      heapTotalMB: Math.round(mem.heapTotal / (1024 * 1024)),
+    },
+  };
+
+  res.status(healthy ? 200 : 503).json(payload);
 });
+
+// ─── Rate Limiting ──────────────────────────────────
+const { apiLimiter, notificationLimiter } = require('./middleware/rateLimiter');
+app.use('/api', apiLimiter);
 
 // ─── Routes ─────────────────────────────────────────
 const authRoutes = require('./routes/auth');
@@ -116,7 +140,7 @@ app.use('/api/loyalty',    require('./routes/loyalty'));
 app.use('/api/staff',      require('./routes/staff'));
 app.use('/api/accounts',   require('./routes/accounts'));
 app.use('/api/buy-sell',   require('./routes/buySell'));
-app.use('/api/messages',   require('./routes/messages'));
+app.use('/api/messages',   notificationLimiter, require('./routes/messages'));
 app.use('/api/inquiries',  require('./routes/inquiries'));
 app.use('/api/import',     require('./routes/import'));
 app.use('/api/deliveries', require('./routes/deliveries'));
@@ -146,7 +170,7 @@ app.use('/api/feedback',      require('./routes/feedback'));
 app.use('/api/balance-sheet', require('./routes/balanceSheet'));
 app.use('/api/audit',         require('./routes/audit'));
 app.use('/api/staff-hr',      require('./routes/staffHR'));
-app.use('/api/whatsapp',      require('./routes/whatsapp'));
+app.use('/api/whatsapp',      notificationLimiter, require('./routes/whatsapp'));
 app.use('/api/admin/roles',   require('./routes/roles'));
 app.use('/api/roles',         require('./routes/roles'));
 app.use('/api/shared-files',  require('./routes/sharedFiles'));

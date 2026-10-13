@@ -6,15 +6,16 @@ const uploadMiddleware = require('../middleware/upload');
 
 // ─── Forgot Password Controller (OTP-based reset) ──────────
 const forgotPasswordController = require('../controllers/forgotPasswordController');
+const { authLimiter } = require('../middleware/rateLimiter');
 
-// Public routes
-router.post('/register', authController.register);
-router.post('/login', authController.login);
+// Public routes (Protected against brute-force attacks)
+router.post('/register', authLimiter, authController.register);
+router.post('/login', authLimiter, authController.login);
 
-// Forgot Password routes (public — no auth required)
-router.post('/forgot-password', forgotPasswordController.forgotPassword);
-router.post('/verify-otp', forgotPasswordController.verifyOtp);
-router.post('/reset-password', forgotPasswordController.resetPassword);
+// Forgot Password routes (public — no auth required, rate-limited)
+router.post('/forgot-password', authLimiter, forgotPasswordController.forgotPassword);
+router.post('/verify-otp', authLimiter, forgotPasswordController.verifyOtp);
+router.post('/reset-password', authLimiter, forgotPasswordController.resetPassword);
 
 // Protected routes
 router.get('/me', authMiddleware, authController.getMe);

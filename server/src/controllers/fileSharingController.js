@@ -4,6 +4,53 @@ const path = require('path');
 const crypto = require('crypto');
 const { generateInvoicePDF } = require('../services/invoiceService');
 
+// ─── SECURITY HELPERS ──────────────────────────────
+const PUBLIC_ROOT = path.resolve(__dirname, '../../public');
+const UPLOADS_ROOT = path.resolve(__dirname, '../../uploads');
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function isSafeUrl(url) {
+  if (!url) return false;
+  const trimmed = String(url).trim().toLowerCase();
+  if (trimmed.startsWith('javascript:') || trimmed.startsWith('data:') || trimmed.startsWith('vbscript:')) {
+    return false;
+  }
+  return trimmed.startsWith('/') || trimmed.startsWith('http://') || trimmed.startsWith('https://');
+}
+
+function resolveSafeLocalPath(rawRelativePath) {
+  if (!rawRelativePath || typeof rawRelativePath !== 'string') return null;
+  if (rawRelativePath.includes('\0')) return null;
+
+  const normalized = path.normalize(rawRelativePath).replace(/^[\\\/]+/, '');
+
+  // Check public root first
+  const resolvedPublic = path.resolve(PUBLIC_ROOT, normalized);
+  if (resolvedPublic.startsWith(PUBLIC_ROOT) && fs.existsSync(resolvedPublic)) {
+    return resolvedPublic;
+  }
+
+  // Check uploads root
+  const uploadsRelative = normalized.startsWith('uploads')
+    ? normalized.replace(/^uploads[\\\/]+/, '')
+    : normalized;
+  const resolvedUploads = path.resolve(UPLOADS_ROOT, uploadsRelative);
+  if (resolvedUploads.startsWith(UPLOADS_ROOT) && fs.existsSync(resolvedUploads)) {
+    return resolvedUploads;
+  }
+
+  return null;
+}
+
 // ─── LIST SHARED FILES ──────────────────────────────
 exports.list = async (req, res) => {
   try {
@@ -67,9 +114,9 @@ exports.delete = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Access denied — Cannot delete a file uploaded by another user' });
     }
 
-    const filePath = path.join(__dirname, '../../public', existing[0].file_path);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    const safePath = resolveSafeLocalPath(existing[0].file_path);
+    if (safePath && fs.existsSync(safePath)) {
+      fs.unlinkSync(safePath);
     }
 
     await pool.query('DELETE FROM shared_files WHERE id = ?', [req.params.id]);
@@ -89,11 +136,11 @@ exports.downloadByToken = async (req, res) => {
     if (!rows.length) return res.status(404).send('File not found or access denied');
     
     const file = rows[0];
-    const filePath = path.join(__dirname, '../../public', file.file_path);
+    const safePath = resolveSafeLocalPath(file.file_path);
     
-    if (!fs.existsSync(filePath)) return res.status(404).send('File missing on server');
+    if (!safePath) return res.status(404).send('File missing on server or invalid path');
     
-    res.download(filePath, file.file_name);
+    res.download(safePath, path.basename(file.file_name || 'download'));
   } catch (err) {
     console.error('File download error:', err);
     res.status(500).send('Server error');
@@ -174,21 +221,23 @@ exports.getSharedFile = async (req, res) => {
     const isImage = file.file_type === 'image' || ['jpg', 'jpeg', 'png', 'webp', 'gif'].some(ext => file.file_url.toLowerCase().endsWith('.' + ext));
 
     if (isPdf) {
-      if (file.file_url.startsWith('http')) {
+      if (file.file_url.startsWith('http://') || file.file_url.startsWith('https://')) {
         return res.redirect(file.file_url);
       }
-      const filePath = path.join(__dirname, '../../public', file.file_url);
-      if (fs.existsSync(filePath)) {
+      const safePath = resolveSafeLocalPath(file.file_url);
+      if (safePath) {
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${file.file_name}"`);
-        return res.sendFile(filePath);
+        res.setHeader('Content-Disposition', `inline; filename="${escapeHtml(path.basename(file.file_name))}"`);
+        return res.sendFile(safePath);
       }
       return res.status(404).send('File not found on server.');
     } else if (isImage) {
+      const safeUrl = isSafeUrl(file.file_url) ? escapeHtml(file.file_url) : '#';
+      const safeName = escapeHtml(file.file_name || 'Shared Image');
       return res.send(`
         <html>
         <head>
-          <title>${file.file_name} - Shared via O3 Car Spaa</title>
+          <title>${safeName} - Shared via O3 Car Spaa</title>
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <style>
             body {
@@ -255,16 +304,19 @@ exports.getSharedFile = async (req, res) => {
         </head>
         <body>
           <div class="preview-container">
-            <img src="${file.file_url}" alt="${file.file_name}" />
-            <div class="title">${file.file_name}</div>
+            <img src="${safeUrl}" alt="${safeName}" />
+            <div class="title">${safeName}</div>
             <div class="subtitle">Shared from O3 Car Spaa Studio</div>
-            <a href="${file.file_url}" download="${file.file_name}" class="btn">Download Original Image</a>
+            <a href="${safeUrl}" download="${safeName}" class="btn">Download Original Image</a>
           </div>
         </body>
         </html>
       `);
     } else {
-      return res.redirect(file.file_url);
+      if (isSafeUrl(file.file_url)) {
+        return res.redirect(file.file_url);
+      }
+      return res.status(400).send('Invalid file URL');
     }
   } catch (err) {
     console.error('getSharedFile error:', err);

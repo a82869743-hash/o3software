@@ -26,10 +26,14 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+  const allowedExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
   const ext = path.extname(file.originalname).toLowerCase();
-  if (allowed.includes(ext)) cb(null, true);
-  else cb(new Error('Only image files are allowed (jpg, jpeg, png, webp)'));
+  if (allowedExts.includes(ext) && allowedMimes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed (jpg, jpeg, png, webp)'));
+  }
 };
 
 const uploadMiddleware = multer({
