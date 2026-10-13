@@ -148,3 +148,114 @@ export const usePreviewHumanized = () => {
   });
 };
 
+export interface ProviderConfigData {
+  franchise_id: number;
+  provider: 'meta_cloud' | 'aisensy' | 'baileys_demo' | 'mock';
+  phone_number?: string;
+  phone_number_id?: string;
+  business_account_id?: string;
+  demo_whitelist?: string;
+  is_enabled: number;
+  demoModeAllowed: boolean;
+  isDemoActive: boolean;
+  health: {
+    provider: string;
+    status: 'connected' | 'disconnected' | 'ready' | 'demo_active';
+    details?: any;
+  };
+}
+
+export const useWhatsAppProviderConfig = () => {
+  return useQuery<{ success: boolean; data: ProviderConfigData }>({
+    queryKey: ['whatsapp-provider-config'],
+    queryFn: async () => {
+      const { data } = await api.get('/whatsapp/provider-config');
+      return data;
+    },
+  });
+};
+
+export const useUpdateWhatsAppProviderConfig = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: any) => {
+      const { data } = await api.post('/whatsapp/provider-config', payload);
+      return data;
+    },
+    onSuccess: (res: any) => {
+      toast.success(res.message || 'WhatsApp provider updated successfully');
+      queryClient.invalidateQueries({ queryKey: ['whatsapp-provider-config'] });
+      queryClient.invalidateQueries({ queryKey: ['baileys-status'] });
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || 'Failed to update WhatsApp provider');
+    },
+  });
+};
+
+export const useBaileysWipeSession = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post('/whatsapp/baileys/wipe');
+      return data;
+    },
+    onSuccess: (res: any) => {
+      toast.success(res.message || 'Baileys session wiped completely');
+      queryClient.invalidateQueries({ queryKey: ['baileys-status'] });
+      queryClient.invalidateQueries({ queryKey: ['whatsapp-provider-config'] });
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || 'Failed to wipe Baileys session');
+    },
+  });
+};
+
+export const useWhatsAppUsage = () => {
+  return useQuery({
+    queryKey: ['whatsapp-usage'],
+    queryFn: async () => {
+      const { data } = await api.get('/whatsapp/usage');
+      return data;
+    },
+  });
+};
+
+export const useWhatsAppOptOuts = () => {
+  return useQuery({
+    queryKey: ['whatsapp-opt-outs'],
+    queryFn: async () => {
+      const { data } = await api.get('/whatsapp/opt-outs');
+      return data;
+    },
+  });
+};
+
+export const useRemoveOptOut = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (phone: string) => {
+      const { data } = await api.post('/whatsapp/opt-outs/remove', { phone });
+      return data;
+    },
+    onSuccess: (res: any) => {
+      toast.success(res.message || 'Phone unblocked from opt-out list');
+      queryClient.invalidateQueries({ queryKey: ['whatsapp-opt-outs'] });
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || 'Failed to remove opt-out');
+    },
+  });
+};
+
+export const useWhatsAppTemplates = () => {
+  return useQuery({
+    queryKey: ['whatsapp-templates'],
+    queryFn: async () => {
+      const { data } = await api.get('/whatsapp/templates');
+      return data;
+    },
+  });
+};
+
+

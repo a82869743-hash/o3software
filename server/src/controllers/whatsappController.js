@@ -342,6 +342,198 @@ exports.baileysRequestPairingCode = async (req, res) => {
   }
 };
 
+// ─── PROVIDER ARCHITECTURE & GOVERNANCE ──────────────────────────────────────
+const whatsappManager = require('../services/whatsapp/WhatsAppManager');
+const { decrypt } = require('../utils/cryptoUtil');
+
+/** GET /api/whatsapp/provider-config — get active provider, whitelist, health */
+exports.getProviderConfig = async (req, res) => {
+  try {
+    const franchiseId = req.user.franchise_id || 1;
+    const [rows] = await pool.query(
+      'SELECT franchise_id, provider, phone_number, phone_number_id, business_account_id, demo_whitelist, is_enabled, updated_at FROM franchise_whatsapp_settings WHERE franchise_id = ?',
+      [franchiseId]
+    );
+
+    const config = rows[0] || {
+      franchise_id: franchiseId,
+      provider: process.env.WHATSAPP_PROVIDER || 'meta_cloud',
+      is_enabled: 1,
+      demo_whitelist: process.env.DEMO_WHITELIST || ''
+    };
+
+    const health = await whatsappManager.healthCheck(franchiseId);
+    const demoAllowed = process.env.ENABLE_BAILEYS_DEMO === 'true';
+
+    res.json({
+      success: true,
+      data: {
+        ...config,
+        demoModeAllowed: demoAllowed,
+        isDemoActive: config.provider === 'baileys_demo' && demoAllowed,
+        health
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/provider-config — update active provider and credentials */
+exports.updateProviderConfig = async (req, res) => {
+  try {
+    const franchiseId = req.user.franchise_id || 1;
+    const {
+      provider,
+      phoneNumber,
+      phoneNumberId,
+      businessAccountId,
+      accessToken,
+      aisensyApiKey,
+      demoWhitelist,
+      isEnabled
+    } = req.body;
+
+    // Only super_admin or franchise admin can change provider
+    if (provider === 'baileys_demo' && process.env.ENABLE_BAILEYS_DEMO !== 'true') {
+      return res.status(400).json({
+        success: false,
+        error: 'Baileys Demo Mode cannot be activated because ENABLE_BAILEYS_DEMO=true is not set in server environment.'
+      });
+    }
+
+    const result = await whatsappManager.setFranchiseProvider(franchiseId, {
+      provider,
+      phoneNumber,
+      phoneNumberId,
+      businessAccountId,
+      accessToken,
+      aisensyApiKey,
+      demoWhitelist,
+      isEnabled: isEnabled !== undefined ? (isEnabled ? 1 : 0) : 1
+    });
+
+    res.json({ success: true, data: result, message: `WhatsApp provider updated to ${provider}` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/baileys/wipe — disconnect and purge session from disk */
+exports.baileysWipe = async (req, res) => {
+  try {
+    const result = await whatsappManager.wipeBaileysSession();
+    res.json({ success: true, message: 'Baileys session successfully wiped from storage.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** GET /api/whatsapp/usage — per-category breakdown and estimated cost */
+exports.getUsageStats = async (req, res) => {
+  try {
+    const franchiseId = req.user.franchise_id || 1;
+    const [summary] = await pool.query(`
+      SELECT 
+        category,
+        COUNT(*) AS total_messages,
+        SUM(estimated_cost) AS total_cost_inr,
+        SUM(status = 'delivered') AS delivered_count,
+        SUM(status = 'read') AS read_count
+      FROM whatsapp_usage_logs
+      WHERE franchise_id = ?
+      GROUP BY category
+    `, [franchiseId]);
+
+    const [recent] = await pool.query(`
+      SELECT * FROM whatsapp_usage_logs
+      WHERE franchise_id = ?
+      ORDER BY created_at DESC LIMIT 50
+    `, [franchiseId]);
+
+    res.json({
+      success: true,
+      data: {
+        summary,
+        recent
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** GET /api/whatsapp/opt-outs — list opted-out phone numbers */
+exports.getOptOuts = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM whatsapp_opt_outs ORDER BY opt_out_date DESC'
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/opt-outs/remove — unblock an opted-out phone */
+exports.removeOptOut = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: 'Phone required' });
+    const clean = phone.replace(/\D/g, '');
+    await pool.query('DELETE FROM whatsapp_opt_outs WHERE phone LIKE ? OR phone LIKE ?', [`%${clean.slice(-10)}`, clean]);
+    res.json({ success: true, message: `Phone +${clean} unblocked from opt-out list` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** GET /api/whatsapp/templates — list official templates */
+exports.listTemplates = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM v2_whatsapp_templates ORDER BY is_active DESC, template_name ASC'
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** POST /api/whatsapp/templates — create / register template */
+exports.createTemplate = async (req, res) => {
+  try {
+    const { template_name, event_trigger, message_body, category = 'UTILITY', language_code = 'en', variables = [] } = req.body;
+    if (!template_name || !message_body) {
+      return res.status(400).json({ success: false, error: 'template_name and message_body required' });
+    }
+
+    const [result] = await pool.query(`
+      INSERT INTO v2_whatsapp_templates (template_name, event_trigger, message_body, category, language_code, variables, meta_status, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', 1)
+      ON DUPLICATE KEY UPDATE
+        message_body = VALUES(message_body),
+        category = VALUES(category),
+        updated_at = NOW()
+    `, [template_name, event_trigger || template_name, message_body, category, language_code, JSON.stringify(variables)]);
+
+    res.json({ success: true, message: 'Template saved successfully', id: result.insertId });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/** Public Webhook Handler for Meta Cloud API & BSPs */
+exports.webhook = async (req, res) => {
+  try {
+    const metaAdapter = whatsappManager.adapters.meta_cloud;
+    return await metaAdapter.handleWebhook(req, res);
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(500).send('Webhook Processing Error');
+  }
+};
+
 // Export helper for use in other controllers
 exports._sendWhatsAppMessage = sendWhatsAppMessage;
 

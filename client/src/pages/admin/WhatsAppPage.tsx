@@ -47,7 +47,14 @@ import {
   useBaileysDisconnect,
   useBaileysSendTest,
   useBaileysRequestPairingCode,
-  usePreviewHumanized
+  usePreviewHumanized,
+  useWhatsAppProviderConfig,
+  useUpdateWhatsAppProviderConfig,
+  useBaileysWipeSession,
+  useWhatsAppUsage,
+  useWhatsAppOptOuts,
+  useRemoveOptOut,
+  useWhatsAppTemplates
 } from '../../api/hooks/useWhatsApp';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
@@ -55,7 +62,7 @@ import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../..
 import { toast } from 'react-hot-toast';
 
 export default function WhatsAppPage() {
-  const [activeTab, setActiveTab] = useState<'queue' | 'warranties' | 'antispam'>('queue');
+  const [activeTab, setActiveTab] = useState<'queue' | 'warranties' | 'antispam' | 'providers' | 'optouts'>('queue');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [channelFilter, setChannelFilter] = useState('');
@@ -112,6 +119,40 @@ export default function WhatsAppPage() {
   const sendWhatsApp = useSendWhatsApp();
   const testSendMutation = useTestSendNotification();
   const previewHumanized = usePreviewHumanized();
+
+  // Provider Governance Queries & Mutations
+  const [showWipeModal, setShowWipeModal] = useState(false);
+  const [providerForm, setProviderForm] = useState({
+    provider: 'meta_cloud',
+    phoneNumber: '',
+    phoneNumberId: '',
+    businessAccountId: '',
+    accessToken: '',
+    aisensyApiKey: '',
+    demoWhitelist: ''
+  });
+
+  const { data: providerConfigData, refetch: refetchProviderConfig } = useWhatsAppProviderConfig();
+  const updateProviderConfig = useUpdateWhatsAppProviderConfig();
+  const wipeSessionMutation = useBaileysWipeSession();
+  const { data: optOutsData, refetch: refetchOptOuts } = useWhatsAppOptOuts();
+  const removeOptOutMutation = useRemoveOptOut();
+  const { data: usageData } = useWhatsAppUsage();
+  const { data: templatesData } = useWhatsAppTemplates();
+
+  useEffect(() => {
+    if (providerConfigData?.data) {
+      const cfg = providerConfigData.data;
+      setProviderForm(prev => ({
+        ...prev,
+        provider: cfg.provider || 'meta_cloud',
+        phoneNumber: cfg.phone_number || '',
+        phoneNumberId: cfg.phone_number_id || '',
+        businessAccountId: cfg.business_account_id || '',
+        demoWhitelist: cfg.demo_whitelist || ''
+      }));
+    }
+  }, [providerConfigData]);
 
   // Anti-Spam & Dynamic Humanizer Generator state
   const [antiSpamTrigger, setAntiSpamTrigger] = useState('PIPELINE_STATUS_UPDATE');
@@ -365,6 +406,47 @@ export default function WhatsAppPage() {
         )}
       </AnimatePresence>
 
+      {/* DEMO MODE SAFEGUARD WARNING BANNER */}
+      {providerConfigData?.data?.isDemoActive && (
+        <AnimatedCard className="bg-amber-950/40 border-2 border-amber-500/60 rounded-3xl p-5 mb-5 shadow-lg relative overflow-hidden text-amber-200">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
+                <AlertTriangle size={24} className="text-amber-400 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-amber-300 tracking-tight uppercase">
+                    ⚠️ DEMO MODE ACTIVE (Unofficial Baileys Engine)
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Restricted Demo
+                  </span>
+                </div>
+                <p className="text-xs text-amber-200/80 mt-1 max-w-2xl leading-relaxed">
+                  Baileys is active strictly for a one-time client demonstration. Sending is gated to whitelisted numbers only. Bulk campaigns are blocked. Transition to Meta Cloud API prior to production launch.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-stretch md:self-center justify-end shrink-0">
+              <button
+                onClick={() => setActiveTab('providers')}
+                className="px-3.5 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Switch Provider
+              </button>
+              <button
+                onClick={() => setShowWipeModal(true)}
+                className="px-3.5 py-2 bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 border border-rose-500/40 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Power size={13} />
+                <span>Disconnect & Wipe</span>
+              </button>
+            </div>
+          </div>
+        </AnimatedCard>
+      )}
+
       {/* WhatsApp Multi-Device Engine Connection Banner */}
       <AnimatedCard className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white rounded-3xl p-5 border border-slate-700/60 shadow-lg relative overflow-hidden">
         <div className="absolute right-0 top-0 w-80 h-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-emerald-500/15 via-transparent to-transparent pointer-events-none" />
@@ -543,6 +625,44 @@ export default function WhatsAppPage() {
             }`}
           >
             0% Bot Risk
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('providers')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+            activeTab === 'providers'
+              ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
+              : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+        >
+          <Zap size={16} className={activeTab === 'providers' ? 'text-white' : 'text-indigo-500'} />
+          <span>Provider & Cutover</span>
+          <span
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+              activeTab === 'providers' ? 'bg-indigo-500 text-white' : 'bg-indigo-100 text-indigo-700'
+            }`}
+          >
+            {providerConfigData?.data?.provider || 'meta_cloud'}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('optouts')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+            activeTab === 'optouts'
+              ? 'bg-rose-600 text-white shadow-sm shadow-rose-500/20'
+              : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+        >
+          <XCircle size={16} className={activeTab === 'optouts' ? 'text-white' : 'text-rose-500'} />
+          <span>Opt-Outs (STOP)</span>
+          <span
+            className={`text-xs px-2 py-0.5 rounded-full ${
+              activeTab === 'optouts' ? 'bg-rose-500 text-white' : 'bg-rose-100 text-rose-700'
+            }`}
+          >
+            {optOutsData?.data?.length || 0}
           </span>
         </button>
       </div>
@@ -1200,6 +1320,341 @@ export default function WhatsAppPage() {
         </div>
       )}
 
+      {/* TAB 4: Provider & Cutover Settings */}
+      {activeTab === 'providers' && (
+        <div className="space-y-6">
+          {/* Active Provider Card */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <AnimatedCard className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Active Gateway</span>
+                <h4 className="text-xl font-black text-slate-900 capitalize flex items-center gap-2">
+                  <Zap size={20} className="text-indigo-600" />
+                  {providerConfigData?.data?.provider === 'meta_cloud'
+                    ? 'Meta Cloud API'
+                    : providerConfigData?.data?.provider === 'baileys_demo'
+                    ? 'Baileys Demo Mode'
+                    : providerConfigData?.data?.provider === 'aisensy'
+                    ? 'AiSensy BSP'
+                    : 'Mock Adapter'}
+                </h4>
+                <p className="text-xs text-slate-500 mt-2">
+                  {providerConfigData?.data?.provider === 'meta_cloud'
+                    ? 'Official Meta Graph API v20.0 (0% BSP markup, 1,000 free monthly chats).'
+                    : providerConfigData?.data?.provider === 'baileys_demo'
+                    ? 'Unofficial client demonstration only. Whitelist enforced.'
+                    : providerConfigData?.data?.provider === 'aisensy'
+                    ? 'Official WhatsApp Business Solution Provider (BSP).'
+                    : 'In-memory simulator for unit tests and local sandbox.'}
+                </p>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span className="text-slate-400">Connection Health:</span>
+                <span className={`font-bold px-2 py-0.5 rounded-full ${
+                  providerConfigData?.data?.health?.status === 'connected' || providerConfigData?.data?.health?.status === 'ready'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : providerConfigData?.data?.health?.status === 'demo_active'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {providerConfigData?.data?.health?.status || 'Active'}
+                </span>
+              </div>
+            </AnimatedCard>
+
+            <AnimatedCard className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Monthly Usage & Cost</span>
+                <h4 className="text-xl font-black text-slate-900 flex items-center gap-2">
+                  ₹{Number((usageData?.data?.summary || []).reduce((acc: number, item: any) => acc + Number(item.total_cost_inr || 0), 0)).toFixed(2)}
+                </h4>
+                <div className="mt-3 space-y-1 text-xs text-slate-600">
+                  <div className="flex justify-between">
+                    <span>Utility Messages (₹0.1150):</span>
+                    <span className="font-bold">
+                      {(usageData?.data?.summary || []).find((s: any) => s.category === 'utility')?.total_messages || 0}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Marketing Messages (₹0.8631):</span>
+                    <span className="font-bold">
+                      {(usageData?.data?.summary || []).find((s: any) => s.category === 'marketing')?.total_messages || 0}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-400">
+                Official Meta rate card automatically applied per message
+              </div>
+            </AnimatedCard>
+
+            <AnimatedCard className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Safety & Demo Wipe</span>
+                <h4 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                  <ShieldCheck size={18} className="text-emerald-600" />
+                  Session Purge Gate
+                </h4>
+                <p className="text-xs text-slate-500 mt-2">
+                  Sever active Baileys socket connection and permanently remove session tokens from server storage.
+                </p>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowWipeModal(true)}
+                  className="w-full py-2 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Power size={13} />
+                  <span>Purge Baileys Session</span>
+                </button>
+              </div>
+            </AnimatedCard>
+          </div>
+
+          {/* Provider Switching Form */}
+          <AnimatedCard className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs">
+            <div className="border-b border-slate-100 pb-4 mb-5">
+              <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                <Zap size={18} className="text-indigo-600" />
+                Zero-Code Provider Switch & Credentials
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configure your active messaging backend. Credentials are encrypted in the database with AES-256-GCM.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                    Select Active Provider
+                  </label>
+                  <select
+                    value={providerForm.provider}
+                    onChange={(e) => setProviderForm(p => ({ ...p, provider: e.target.value as any }))}
+                    className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  >
+                    <option value="meta_cloud">Meta WhatsApp Cloud API (Production Default)</option>
+                    <option value="aisensy">AiSensy BSP (Official Partner)</option>
+                    <option value="baileys_demo">Baileys Demo Mode (Gated Client Demo Only)</option>
+                    <option value="mock">Mock Provider (Local Automated QA)</option>
+                  </select>
+                </div>
+
+                {providerForm.provider === 'meta_cloud' && (
+                  <>
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                        Meta Phone Number ID
+                      </label>
+                      <input
+                        type="text"
+                        value={providerForm.phoneNumberId}
+                        onChange={(e) => setProviderForm(p => ({ ...p, phoneNumberId: e.target.value }))}
+                        placeholder="e.g. 104829102948192"
+                        className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                        Meta Business Account ID (WABA)
+                      </label>
+                      <input
+                        type="text"
+                        value={providerForm.businessAccountId}
+                        onChange={(e) => setProviderForm(p => ({ ...p, businessAccountId: e.target.value }))}
+                        placeholder="e.g. 204810293847192"
+                        className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                        Permanent System User Access Token
+                      </label>
+                      <input
+                        type="password"
+                        value={providerForm.accessToken}
+                        onChange={(e) => setProviderForm(p => ({ ...p, accessToken: e.target.value }))}
+                        placeholder="EAAG... (Stored encrypted with AES-256-GCM)"
+                        className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {providerForm.provider === 'aisensy' && (
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                      AiSensy API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={providerForm.aisensyApiKey}
+                      onChange={(e) => setProviderForm(p => ({ ...p, aisensyApiKey: e.target.value }))}
+                      placeholder="Paste your AiSensy Campaign API key"
+                      className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                )}
+
+                {providerForm.provider === 'baileys_demo' && (
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
+                      Demo Whitelist Phone Numbers (Comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={providerForm.demoWhitelist}
+                      onChange={(e) => setProviderForm(p => ({ ...p, demoWhitelist: e.target.value }))}
+                      placeholder="919876543210, 919123456789"
+                      className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                    <p className="text-[11px] text-amber-600 mt-1">
+                      ⚠️ Safeguard: Messages to any number not listed here will be hard-blocked.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-5 flex flex-col justify-between">
+                <div>
+                  <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider mb-2">
+                    Official Webhook Endpoint (For Meta / BSP)
+                  </h4>
+                  <div className="bg-white border border-slate-200 rounded-xl p-3 font-mono text-xs text-slate-700 break-all select-all mb-3">
+                    {window.location.origin}/api/whatsapp/webhook
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                    Subscribe this endpoint to the <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">messages</code> field in your Meta Developer Console.
+                  </p>
+                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-xs text-indigo-800 space-y-1">
+                    <div className="font-bold">Automated Opt-Out Engine:</div>
+                    <div>Inbound messages with keyword <strong className="font-mono">"STOP"</strong> or <strong className="font-mono">"UNSUBSCRIBE"</strong> automatically suppress future sends to comply with DPDP Act 2023.</div>
+                  </div>
+                </div>
+
+                <div className="mt-5 pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateProviderConfig.mutate({
+                        provider: 'mock'
+                      }, {
+                        onSuccess: () => refetchProviderConfig()
+                      });
+                    }}
+                    className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold rounded-xl transition"
+                  >
+                    Rollback to Mock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateProviderConfig.mutate(providerForm, {
+                        onSuccess: () => refetchProviderConfig()
+                      });
+                    }}
+                    disabled={updateProviderConfig.isPending}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-50"
+                  >
+                    {updateProviderConfig.isPending ? 'Saving...' : 'Save & Switch Provider'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </AnimatedCard>
+        </div>
+      )}
+
+      {/* TAB 5: Opt-Outs & Anti-Spam Governance */}
+      {activeTab === 'optouts' && (
+        <div className="space-y-4">
+          <AnimatedCard className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-black text-slate-900 tracking-tight uppercase">
+                  WhatsApp Opt-Out & Anti-Spam Ledger
+                </span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                  DPDP Act 2023 Enforced
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
+                Recipients who reply with <strong className="text-slate-800">STOP</strong> or <strong className="text-slate-800">UNSUBSCRIBE</strong> are registered here. The notification dispatcher automatically drops all automated messages to these numbers with zero latency.
+              </p>
+            </div>
+            <button
+              onClick={() => refetchOptOuts()}
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl flex items-center gap-1.5 transition"
+            >
+              <RefreshCw size={13} />
+              <span>Refresh Ledger</span>
+            </button>
+          </AnimatedCard>
+
+          <AnimatedCard className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-bold">
+                    <th className="py-3 px-4">Phone Number</th>
+                    <th className="py-3 px-4">Opt-Out Date</th>
+                    <th className="py-3 px-4">Trigger Reason</th>
+                    <th className="py-3 px-4">Suppression Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {(optOutsData?.data || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
+                        No phone numbers have opted out. All customer communication channels are clear.
+                      </td>
+                    </tr>
+                  ) : (
+                    (optOutsData?.data || []).map((row: any) => (
+                      <tr key={row.id} className="hover:bg-slate-50/60 transition">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                          +{row.phone}
+                        </td>
+                        <td className="py-3 px-4 text-slate-500">
+                          {new Date(row.opt_out_date || row.created_at).toLocaleString('en-IN')}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100">
+                            {row.reason || 'Customer sent STOP'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="font-bold text-emerald-700 flex items-center gap-1">
+                            <CheckCircle2 size={13} /> Suppressed on All Gateways
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            onClick={() => {
+                              if (confirm(`Unblock +${row.phone} and allow automated notifications again?`)) {
+                                removeOptOutMutation.mutate(row.phone);
+                              }
+                            }}
+                            className="px-2.5 py-1 text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+                          >
+                            Unblock
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </AnimatedCard>
+        </div>
+      )}
+
       {/* MODAL 1: Sandbox Test Send Modal */}
       <AnimatedModal isOpen={showTestModal} onClose={() => setShowTestModal(false)}>
         <div className="p-6">
@@ -1613,6 +2068,42 @@ export default function WhatsAppPage() {
                 {directTestMutation.isPending ? 'Sending...' : 'Send Live Test'}
               </RippleButton>
             </div>
+          </div>
+        </div>
+      </AnimatedModal>
+
+      {/* MODAL 5: Permanent Baileys Session Wipe Modal */}
+      <AnimatedModal isOpen={showWipeModal} onClose={() => setShowWipeModal(false)}>
+        <div className="p-6">
+          <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mb-4">
+            <AlertTriangle size={24} />
+          </div>
+          <h3 className="text-xl font-bold text-slate-900 mb-2">
+            Purge Baileys Session from Disk?
+          </h3>
+          <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+            This will immediately close the active WhatsApp Web socket connection and permanently delete the authentication tokens stored in <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800">server/sessions/whatsapp/</code>.
+            Use this immediately after client demonstrations to guarantee zero unauthorized access.
+          </p>
+          <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+            <RippleButton variant="ghost" onClick={() => setShowWipeModal(false)}>
+              Cancel
+            </RippleButton>
+            <RippleButton
+              variant="primary"
+              onClick={() => {
+                wipeSessionMutation.mutate(undefined, {
+                  onSuccess: () => {
+                    setShowWipeModal(false);
+                    refetchProviderConfig();
+                  }
+                });
+              }}
+              disabled={wipeSessionMutation.isPending}
+              className="bg-rose-600 hover:bg-rose-700 text-white"
+            >
+              {wipeSessionMutation.isPending ? 'Purging...' : 'Purge Session Now'}
+            </RippleButton>
           </div>
         </div>
       </AnimatedModal>

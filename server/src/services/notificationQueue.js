@@ -325,107 +325,54 @@ class NotificationQueue {
   }
 
   /**
-   * WhatsApp Dispatcher — Baileys (primary, free) → Meta Cloud API (fallback if configured)
+   * WhatsApp Dispatcher — Routes through WhatsAppManager adapter layer
    */
   async dispatchWhatsApp(item, credentials) {
-    // Normalise phone number
     let phone = (item.mobile || '').replace(/\D/g, '');
     if (!phone) throw new Error('Recipient mobile number is missing');
     if (phone.length === 10) phone = '91' + phone;
 
-    const path = require('path');
-    const fs   = require('fs');
+    const whatsappManager = require('./whatsapp/WhatsAppManager');
+    const franchiseId = item.franchise_id || 1;
 
-    // Resolve attachment path for PDF documents
-    const baseUrl        = process.env.APP_BASE_URL || 'http://localhost:5000';
-    const attachmentUrl  = item.attachment_url
-      ? (item.attachment_url.startsWith('http') ? item.attachment_url : `${baseUrl}${item.attachment_url}`)
-      : null;
-    const attachmentPath = item.attachment_path || null;
+    // 1. If document/media attachment exists
+    if (item.attachment_path || item.attachment_url) {
+      const baseUrl = process.env.APP_BASE_URL || 'http://localhost:5000';
+      const attachmentUrl = item.attachment_url
+        ? (item.attachment_url.startsWith('http') ? item.attachment_url : `${baseUrl}${item.attachment_url}`)
+        : null;
+      const filename = item.attachment_path
+        ? require('path').basename(item.attachment_path)
+        : (attachmentUrl ? attachmentUrl.split('/').pop() : 'Document.pdf');
 
-    // ─── PRIMARY: Baileys (open-source, free, no Meta credentials needed) ──────
-    const baileys = require('./whatsappBaileys');
-    if (baileys.isConnected()) {
-      try {
-        // If there is a PDF/document attachment
-        if (attachmentPath && fs.existsSync(attachmentPath)) {
-          const filename = path.basename(attachmentPath);
-          const result   = await baileys.sendDocumentFromPath(phone, attachmentPath, filename, item.message_body);
-          return {
-            success:   true,
-            provider:  'Baileys (WhatsApp Web)',
-            messageId: result.messageId,
-            phone
-          };
-        }
-
-        // Plain text message
-        const result = await baileys.sendText(phone, item.message_body);
-        return {
-          success:   true,
-          provider:  'Baileys (WhatsApp Web)',
-          messageId: result.messageId,
-          phone
-        };
-      } catch (baileysErr) {
-        console.warn(`[NotificationQueue] Baileys dispatch failed for #${item.id}: ${baileysErr.message}. Checking Meta fallback...`);
-        // Fall through to Meta API check below
-      }
-    }
-
-    // ─── FALLBACK: Meta WhatsApp Cloud API (when Baileys is not connected) ─────
-    const { accessToken, phoneNumberId } = credentials.whatsapp;
-    if (accessToken && phoneNumberId) {
-      const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
-
-      let payload;
-      if (attachmentUrl) {
-        payload = {
-          messaging_product: 'whatsapp',
-          recipient_type:    'individual',
-          to:                phone,
-          type:              'document',
-          document: {
-            link:     attachmentUrl,
-            caption:  item.message_body,
-            filename: attachmentUrl.split('/').pop() || 'document.pdf'
-          }
-        };
-      } else {
-        payload = {
-          messaging_product: 'whatsapp',
-          recipient_type:    'individual',
-          to:                phone,
-          type:              'text',
-          text:              { preview_url: true, body: item.message_body }
-        };
-      }
-
-      const response = await axios.post(url, payload, {
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        timeout: 15000
+      return await whatsappManager.sendMedia({
+        to: phone,
+        mediaUrl: attachmentUrl,
+        mediaPath: item.attachment_path,
+        filename,
+        caption: item.message_body,
+        type: 'document',
+        franchiseId
       });
-
-      return {
-        success:   true,
-        provider:  'Meta WhatsApp Cloud API',
-        messageId: response.data?.messages?.[0]?.id || 'wa_sent',
-        phone
-      };
     }
 
-    // ─── SANDBOX / MOCK: No provider active ──────────────────────────────────
-    console.log(`[WHATSAPP SANDBOX] +${phone} | Template: ${item.template_name}`);
-    console.log(`  Body: ${item.message_body}`);
-    if (attachmentUrl) console.log(`  Attachment: ${attachmentUrl}`);
-    return {
-      success:   true,
-      mocked:    true,
-      provider:  'Sandbox (connect WhatsApp to send real messages)',
-      to:        phone,
-      messageId: `mock_wa_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-      timestamp: new Date().toISOString()
-    };
+    // 2. If pre-approved template
+    if (item.template_name && item.template_name !== 'CUSTOM_NOTIFICATION' && item.template_name !== 'MANUAL_TEXT') {
+      return await whatsappManager.sendTemplate({
+        to: phone,
+        templateName: item.template_name,
+        components: [item.message_body],
+        category: 'utility',
+        franchiseId
+      });
+    }
+
+    // 3. Free-form text
+    return await whatsappManager.sendFreeForm({
+      to: phone,
+      text: item.message_body,
+      franchiseId
+    });
   }
 
   /**
