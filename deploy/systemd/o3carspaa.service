@@ -1,0 +1,27 @@
+[Unit]
+Description=O3 Car Spaa — Multi-Franchise Detailing Studio ERP Backend
+Documentation=https://github.com/o3carspaa/erp
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/o3-car-spaa/server
+EnvironmentFile=/var/www/o3-car-spaa/.env
+ExecStart=/usr/bin/node src/app.js
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/o3-app.log
+StandardError=append:/var/log/o3-error.log
+
+# Resource Limits
+LimitNOFILE=65535
+MemoryMax=1G
+
+# Graceful stop timeout matching application failsafe
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
