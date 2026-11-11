@@ -38,9 +38,6 @@ export default function RegisterPage() {
   const registerMutation = useRegister();
   const { login } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [sendingOtp, setSendingOtp] = useState(false);
 
   const [selectedBrand, setSelectedBrand] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
@@ -84,28 +81,12 @@ export default function RegisterPage() {
   const isOtherModel = selectedModel === 'Other';
 
   const refFromLink = new URLSearchParams(window.location.search).get('ref') || '';
-  const { register, handleSubmit, getValues, formState: { errors } } = useForm<RegisterForm>({
+  const { register, handleSubmit, formState: { errors } } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
     defaultValues: { referralCode: refFromLink.toUpperCase() },
   });
 
-  const sendOtp = async () => {
-    const mobile = (getValues('mobile') || '').replace(/\D/g, '');
-    if (!/^[6-9]\d{9}$/.test(mobile)) { toast.error('Enter a valid 10-digit mobile number first'); return; }
-    setSendingOtp(true);
-    try {
-      const { data } = await api.post('/auth/otp/register', { mobile });
-      setOtpSent(true);
-      toast.success(data.message || 'OTP sent');
-      if (data.dev_otp) toast.success(`Dev OTP: ${data.dev_otp}`);
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Could not send OTP');
-    } finally { setSendingOtp(false); }
-  };
-
   const onSubmit = (data: RegisterForm) => {
-    if (!otpSent) { toast.error('Verify your mobile — tap "Send OTP"'); return; }
-    if (otp.length !== 6) { toast.error('Enter the 6-digit OTP sent to your mobile'); return; }
     const finalBrand = isOtherBrand ? customBrand : selectedBrand;
     const finalModel = isOtherModel ? customModel : selectedModel;
     if (!finalBrand?.trim() || !finalModel?.trim()) { toast.error('Select your car brand and model'); return; }
@@ -125,7 +106,6 @@ export default function RegisterPage() {
         whatsapp_number: waSame ? undefined : wa,
         referral_code: data.referralCode || undefined,
         franchise_id: studioId ? Number(studioId) : undefined,
-        otp,
       } as any,
       {
         onSuccess: (result) => {
@@ -250,15 +230,6 @@ export default function RegisterPage() {
               {errors.mobile && (
                 <p className="text-[11px] text-rose-600 mt-1.5 font-medium">{errors.mobile.message}</p>
               )}
-              <div className="flex gap-2 mt-2">
-                <input type="text" inputMode="numeric" maxLength={6} value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
-                  placeholder={otpSent ? 'Enter 6-digit OTP' : 'Verify mobile with OTP'} disabled={!otpSent}
-                  className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-bold tracking-widest disabled:opacity-60" />
-                <button type="button" onClick={sendOtp} disabled={sendingOtp}
-                  className="px-4 py-3 bg-slate-900 text-white text-xs font-bold rounded-xl whitespace-nowrap disabled:opacity-50">
-                  {sendingOtp ? 'Sending…' : otpSent ? 'Resend OTP' : 'Send OTP'}
-                </button>
-              </div>
             </div>
 
             {/* WhatsApp number (updates, invoices and reminders go here) */}

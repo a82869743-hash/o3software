@@ -52,9 +52,9 @@ exports.register = async (req, res) => {
     // Clean and normalize mobile number (strip non-digits and take last 10 digits)
     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
 
-    // Mobile must be verified with an OTP (stops sign-ups / account take-overs with someone else's number)
-    const otpError = await require('./forgotPasswordController').checkOtp(cleanMobile, 'register', req.body.otp);
-    if (otpError) return res.status(400).json({ success: false, error: otpError, field: 'otp' });
+    // No OTP at sign-up (studio's choice). A number the studio already registered at the counter can NOT be
+    // claimed here — that would hand its job cards and packages to whoever types the number. Those customers
+    // use Forgot Password, which proves the number with a WhatsApp code.
 
     {
       const { validateRegNo } = require('../utils/validators');
@@ -74,11 +74,10 @@ exports.register = async (req, res) => {
     if (existing.length > 0) {
       const userRec = existing[0];
       if (userRec.password_hash === 'manual') {
-        isManualActivation = true;
-        existingUserId = userRec.id;
-      } else {
-        return res.status(409).json({ success: false, error: 'Mobile already registered' });
+        return res.status(409).json({ success: false, code: 'USE_FORGOT_PASSWORD', field: 'mobile',
+          error: 'This number is already registered with O3 Car Spaa. Tap "Forgot Password" on the sign-in page to set your password.' });
       }
+      return res.status(409).json({ success: false, field: 'mobile', error: 'This mobile is already registered. Please sign in, or use Forgot Password.' });
     }
 
     await conn.beginTransaction();
