@@ -140,6 +140,8 @@ export default function ProfileHubPage() {
 
       {/* Licence credits for photos & logos — kept small and out of the way */}
       <p className="text-center pb-2">
+        <Link to="/privacy" className="text-[10.5px] text-slate-400 underline-offset-2 hover:underline">Privacy policy</Link>
+        <span className="text-[10.5px] text-slate-300 mx-2">·</span>
         <Link to="/image-credits" className="text-[10.5px] text-slate-400 underline-offset-2 hover:underline">Image credits</Link>
       </p>
     </div>

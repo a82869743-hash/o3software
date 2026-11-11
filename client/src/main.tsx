@@ -9,9 +9,11 @@ import App from './App';
 import './index.css';
 import { installStrictFields } from './utils/strictFields';
 import { startLiveUpdates } from './utils/liveUpdates';
+import { installNativeApp } from './native/nativeApp';
 
 installStrictFields();
 startLiveUpdates();
+installNativeApp(); // phone app only; does nothing in a browser
 
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

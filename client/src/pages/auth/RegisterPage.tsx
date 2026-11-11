@@ -433,6 +433,10 @@ export default function RegisterPage() {
                 'Create Account'
               )}
             </button>
+            <p className="text-[11px] text-slate-400 text-center mt-3">
+              By creating an account you agree to our{' '}
+              <Link to="/privacy" className="text-[#0284C7] font-semibold hover:underline">Privacy policy</Link>.
+            </p>
           </form>
 
           {/* Sign-in link */}

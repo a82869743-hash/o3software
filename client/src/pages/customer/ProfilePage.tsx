@@ -10,6 +10,7 @@ import api from '../../api/axiosInstance';
 import { Link } from 'react-router-dom';
 import { fileUrl } from '../../utils/endpoints';
 import { useLiveReload } from '../../utils/liveUpdates';
+import DeleteAccountCard from '../../components/customer/DeleteAccountCard';
 
 function ActiveCustomerPackageWidget() {
   const [pkg, setPkg] = useState<any>(null);
@@ -244,6 +245,7 @@ export default function ProfilePage() {
               <Button type="submit" icon={<Save size={18} />} size="lg" loading={updateProfileMut.isPending}>Save Changes</Button>
             </div>
           </form>
+          <DeleteAccountCard />
         </div>
       </div>
     </>

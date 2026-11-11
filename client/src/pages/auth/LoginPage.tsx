@@ -283,6 +283,7 @@ export default function LoginPage() {
             <p className="text-[10px] text-slate-400 font-medium">
               O3 Car Spaa v2.0 · Anand, Gujarat (388121)
             </p>
+            <p className="text-[10.5px] mt-1"><Link to="/privacy" className="text-slate-400 hover:underline">Privacy policy</Link></p>
           </div>
         </div>
       </div>

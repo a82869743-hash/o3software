@@ -530,6 +530,62 @@ exports.changePassword = async (req, res) => {
 };
 
 /**
+ * POST /auth/delete-account   (customers only; required by Google Play)
+ * Body: { password }
+ * Removes the customer's personal details and closes the account for good. Bills, invoices and service
+ * records stay (the studio must keep them for tax), but they no longer carry the name, mobile or email.
+ * Team accounts (staff/managers/admins) are closed by the studio, not by the person.
+ */
+exports.deleteAccount = async (req, res) => {
+  if (req.user.is_impersonating) {
+    return res.status(403).json({ success: false, error: 'Not available while viewing as another user.' });
+  }
+  if (req.user.role !== 'customer') {
+    return res.status(403).json({ success: false, code: 'TEAM_ACCOUNT', error: 'Team accounts are closed by your studio admin. Please ask them.' });
+  }
+  const conn = await pool.getConnection();
+  try {
+    const [[u]] = await conn.query('SELECT id, password_hash FROM users WHERE id = ? AND is_deleted = 0', [req.user.id]);
+    if (!u) return res.status(404).json({ success: false, error: 'Account not found' });
+    const pw = String(req.body.password || '');
+    const ok = u.password_hash === 'manual' || (!!pw && await bcrypt.compare(pw, u.password_hash).catch(() => false));
+    if (!ok) return res.status(401).json({ success: false, field: 'password', error: 'Password is incorrect' });
+
+    const [[act]] = await conn.query(
+      `SELECT COUNT(*) n FROM bookings WHERE customer_id = ?
+         AND status IN ('pending_approval','confirmed','in_progress','pending_payment','reschedule_required')`,
+      [u.id]
+    );
+    if (act.n > 0) {
+      return res.status(409).json({ success: false, code: 'ACTIVE_BOOKINGS',
+        error: 'You have a booking in progress. Please cancel it or wait until it is finished, then delete your account.' });
+    }
+
+    await conn.beginTransaction();
+    await conn.query(
+      `UPDATE users SET is_deleted = 1, deleted_at = NOW(), is_active = 0, token_version = token_version + 1,
+         name = 'Deleted customer', mobile = ?, email = NULL, password_hash = 'deleted', address = NULL,
+         whatsapp_number = NULL, profile_picture = NULL, opt_out_promotional = 1, crm_notes = NULL
+       WHERE id = ?`,
+      [`del${u.id}`.slice(0, 15), u.id]
+    );
+    await conn.query('DELETE FROM v2_customer_addresses WHERE customer_id = ?', [u.id]);
+    await conn.query('DELETE FROM customer_notes WHERE customer_id = ?', [u.id]);
+    await conn.query('UPDATE referral_codes SET is_active = 0 WHERE customer_id = ?', [u.id]);
+    // free the number plates, so the car can be registered again (e.g. by its next owner); bills keep their own copy
+    await conn.query('UPDATE vehicles SET registration_no = NULL WHERE customer_id = ?', [u.id]);
+    await conn.commit();
+    res.json({ success: true, message: 'Your account has been deleted.' });
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* not in a transaction */ }
+    console.error('DeleteAccount error:', err);
+    res.status(500).json({ success: false, error: 'Could not delete the account. Please try again.' });
+  } finally {
+    conn.release();
+  }
+};
+
+/**
  * POST /auth/logout
  * Invalides token version immediately in database
  */

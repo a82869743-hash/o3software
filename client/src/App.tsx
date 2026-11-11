@@ -24,6 +24,8 @@ const ProfileHubPage = lazy(() => import('./pages/customer/ProfileHubPage'));
 const ReferEarnPage = lazy(() => import('./pages/customer/ReferEarnPage'));
 const SupportPage = lazy(() => import('./pages/customer/SupportPage'));
 const ImageCreditsPage = lazy(() => import('./pages/ImageCreditsPage'));
+const PrivacyPolicyPage = lazy(() => import('./pages/PrivacyPolicyPage'));
+const DeleteAccountInfoPage = lazy(() => import('./pages/DeleteAccountInfoPage'));
 const DevLoginPage = lazy(() => import('./pages/auth/DevLoginPage'));
 
 const AllJobCardsPage = lazy(() => import('./pages/admin/AllJobCardsPage'));
@@ -290,6 +292,8 @@ export default function App() {
       {/* 403 Access Denied */}
       <Route path="/403" element={<NoAccessPage />} />
       <Route path="/image-credits" element={<ImageCreditsPage />} />
+      <Route path="/privacy" element={<PrivacyPolicyPage />} />
+      <Route path="/delete-account" element={<DeleteAccountInfoPage />} />
       {import.meta.env.DEV && <Route path="/dev-login" element={<DevLoginPage />} />}
       {/* Public routes */}
       <Route path="/login" element={
