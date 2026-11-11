@@ -368,7 +368,7 @@ export default function RegisterPage() {
                 <input
                   {...register('password')}
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="Min. 6 characters"
+                  placeholder="Min. 8 characters, letters + numbers"
                   className={`w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] placeholder:text-slate-400 transition-all duration-200 pr-12 ${
                     errors.password ? 'ring-2 ring-rose-400 border-rose-400' : ''
                   }`}
