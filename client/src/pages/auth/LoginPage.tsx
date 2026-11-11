@@ -164,7 +164,7 @@ export default function LoginPage() {
                   type="tel"
                   maxLength={10}
                   onInput={(e) => { e.currentTarget.value = e.currentTarget.value.replace(/\D/g, '').slice(0, 10); }}
-                  placeholder="7225030303"
+                  placeholder="Enter 10-digit mobile"
                   className={`w-full pl-14 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] placeholder:text-slate-400 transition-all duration-200 ${
                     errors.mobile ? 'ring-2 ring-rose-400 border-rose-400' : ''
                   }`}

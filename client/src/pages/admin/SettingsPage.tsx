@@ -514,7 +514,7 @@ export default function SettingsPage() {
               <Input label="Next Invoice Number" type="number" value={form.invoice_counter || ''} onChange={e => handleChange('invoice_counter', e.target.value)} />
               <Input label="Advance Booking Days Allowed" type="number" value={form.booking_advance_days || ''} onChange={e => handleChange('booking_advance_days', e.target.value)} />
               <Input label="Low Stock Threshold (Units)" type="number" value={form.low_stock_threshold || ''} onChange={e => handleChange('low_stock_threshold', e.target.value)} />
-              <Input label="Admin WhatsApp (for system alerts)" value={form.admin_whatsapp || ''} onChange={e => handleChange('admin_whatsapp', e.target.value)} placeholder="Include country code, e.g. 917225030303" />
+              <Input label="Admin WhatsApp (for system alerts)" value={form.admin_whatsapp || ''} onChange={e => handleChange('admin_whatsapp', e.target.value)} placeholder="Include country code, e.g. 919876543210" />
             </div>
           </section>
 

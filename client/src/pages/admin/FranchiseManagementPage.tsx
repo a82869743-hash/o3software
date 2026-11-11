@@ -1061,7 +1061,7 @@ export default function FranchiseManagementPage() {
                             franchise: { ...settingsData.franchise, phone: e.target.value },
                           })
                         }
-                        placeholder="e.g. 7225030303"
+                        placeholder="e.g. 9876543210"
                       />
                     </div>
                     <div>

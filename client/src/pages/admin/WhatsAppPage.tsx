@@ -1892,7 +1892,7 @@ export default function WhatsAppPage() {
                         type="text"
                         value={pairingPhoneInput}
                         onChange={(e) => setPairingPhoneInput(e.target.value)}
-                        placeholder="9316668760"
+                        placeholder="e.g. 9876543210"
                         className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                       />
                       <button
