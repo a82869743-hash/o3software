@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { ymd } from '../../utils/formatters';
+import { useState, useEffect } from 'react';
+import api from '../../api/axiosInstance';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Phone, Mail, Calendar, CheckSquare, IndianRupee, Download } from 'lucide-react';
 import { useStaffDetail, useUpdateStaff, useStaffAttendance, useMarkAttendance, useStaffPayments, useAddPayment, useCompletePayment } from '../../api/hooks/useStaff';
@@ -12,6 +14,7 @@ import Input from '../../components/ui/Input';
 import Textarea from '../../components/ui/Textarea';
 import Modal from '../../components/ui/Modal';
 import DataTable from '../../components/ui/DataTable';
+import Dropdown from '../../components/ui/Dropdown';
 
 const tabs = [
   { key: 'profile', label: 'Profile & Settings' },
@@ -38,12 +41,15 @@ export default function StaffDetailPage() {
   const [showAttModal, setShowAttModal] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
 
-  const [attForm, setAttForm] = useState({ att_date: new Date().toISOString().slice(0, 10), status: 'present', note: '', check_in_time: '', check_out_time: '' });
-  const [payForm, setPayForm] = useState({ amount: '', purpose: '', payment_date: new Date().toISOString().slice(0, 10) });
+  const [attForm, setAttForm] = useState({ att_date: ymd(), status: 'present', note: '', check_in_time: '', check_out_time: '' });
+  const [payForm, setPayForm] = useState({ amount: '', purpose: '', payment_date: ymd() });
   const [profileForm, setProfileForm] = useState({ name: '', mobile: '', email: '', specialisations: '' });
 
-  // Initialize profile form when data loads
-  useState(() => {
+  const [newPassword, setNewPassword] = useState('');
+  const [savingPw, setSavingPw] = useState(false);
+
+  // Fill the form once the staff member has loaded
+  useEffect(() => {
     if (staff) {
       setProfileForm({
         name: staff.name || '',
@@ -52,7 +58,7 @@ export default function StaffDetailPage() {
         specialisations: staff.profile?.specialisations || '',
       });
     }
-  });
+  }, [staff]);
 
   if (isStaffLoading) return <SkeletonLoader lines={8} />;
   if (!staff) return <div className="p-8 text-center text-gray-500">Staff member not found.</div>;
@@ -63,6 +69,19 @@ export default function StaffDetailPage() {
       toast('success', 'Profile updated successfully');
     } catch (err: any) {
       toast('error', err?.response?.data?.error || 'Failed to update profile');
+    }
+  };
+
+  const handleSetPassword = async () => {
+    setSavingPw(true);
+    try {
+      const r = await api.post(`/staff/${staffId}/reset-password`, { new_password: newPassword });
+      toast('success', r.data.message || 'Password changed');
+      setNewPassword('');
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || err.message || 'Could not change the password');
+    } finally {
+      setSavingPw(false);
     }
   };
 
@@ -85,7 +104,7 @@ export default function StaffDetailPage() {
       await addPayMutation.mutateAsync({ staffId, amount: parseFloat(payForm.amount), purpose: payForm.purpose, payment_date: payForm.payment_date });
       toast('success', 'Payment recorded');
       setShowPayModal(false);
-      setPayForm({ amount: '', purpose: '', payment_date: new Date().toISOString().slice(0, 10) });
+      setPayForm({ amount: '', purpose: '', payment_date: ymd() });
     } catch(err: any) {
       toast('error', err?.response?.data?.error || 'Failed to add payment');
     }
@@ -127,6 +146,14 @@ export default function StaffDetailPage() {
             <Textarea label="Specialisations" value={profileForm.specialisations} onChange={e => setProfileForm({...profileForm, specialisations: e.target.value})} />
             <div className="pt-2">
               <Button variant="primary" onClick={handleUpdateProfile} loading={updateMutation.isPending}>Save Changes</Button>
+            </div>
+          </div>
+          <div className="mt-6 pt-5 border-t border-gray-100">
+            <h3 className="text-lg font-semibold">Login password</h3>
+            <p className="text-xs text-gray-500 mt-0.5 mb-3">They sign in with their mobile number and this password. Changing it signs them out everywhere.</p>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1"><Input label="New password" type="text" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="At least 8 characters, letters and numbers" /></div>
+              <Button variant="primary" onClick={handleSetPassword} loading={savingPw} disabled={newPassword.length < 8}>Set password</Button>
             </div>
           </div>
         </div>
@@ -186,14 +213,14 @@ export default function StaffDetailPage() {
           <Input label="Date" type="date" value={attForm.att_date} onChange={e => setAttForm({...attForm, att_date: e.target.value})} />
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-            <select 
+            <Dropdown 
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
               value={attForm.status} onChange={e => setAttForm({...attForm, status: e.target.value})}
             >
               <option value="present">Present</option>
               <option value="absent">Absent</option>
               <option value="half_day">Half Day</option>
-            </select>
+            </Dropdown>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Input label="Check-In Time" type="time" value={attForm.check_in_time} onChange={e => setAttForm({...attForm, check_in_time: e.target.value})} />

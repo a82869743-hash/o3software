@@ -1,14 +1,14 @@
 const pool = require('../config/db');
-const crypto = require('crypto');
-const Razorpay = require('razorpay');
 
-let razorpayInstance = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-  razorpayInstance = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
-  });
-}
+/** What the customer pays for one unit: the listed price less the admin's discount %, to the rupee. */
+const salePrice = (prod) => {
+  const list = parseFloat(prod.selling_price) || 0;
+  const pct = Math.min(Math.max(parseFloat(prod.discount_pct) || 0, 0), 100);
+  return Math.round(list * (100 - pct)) / 100;
+};
+/** Staff / manager pay the staff price when the admin set one; everyone else the customer price. */
+const buyerPrice = (prod, user) => (['staff', 'manager'].includes(user?.role) && parseFloat(prod.staff_price) > 0)
+  ? Math.round(parseFloat(prod.staff_price) * 100) / 100 : salePrice(prod);
 
 // ─── LIST ORDERS (ADMIN) ───────────────────────────
 exports.listOrders = async (req, res) => {
@@ -95,7 +95,7 @@ exports.createOrder = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Product ID or cart items and payment method are required' });
     }
 
-    if (!['razorpay', 'qr'].includes(payment_method)) {
+    if (!['qr', 'cash'].includes(payment_method)) {
       return res.status(400).json({ success: false, error: 'Invalid payment method' });
     }
 
@@ -112,8 +112,10 @@ exports.createOrder = async (req, res) => {
         const pid = item.product_id || item.id;
         const q = parseInt(item.quantity) || 1;
         const [products] = await conn.query(
-          'SELECT id, product_name, selling_price, quantity FROM inventory WHERE id = ? AND is_deleted = 0',
-          [pid]
+          `SELECT i.id, i.product_name, COALESCE(fp.selling_price, i.selling_price) AS selling_price, i.discount_pct, i.quantity, i.staff_price
+           FROM inventory i LEFT JOIN franchise_inventory_pricing fp ON fp.inventory_id = i.id AND fp.franchise_id = ?
+           WHERE i.id = ? AND i.is_deleted = 0`,
+          [Number(req.franchiseId || req.user?.franchise_id || 1), pid]
         );
         if (!products.length) {
           await conn.rollback();
@@ -124,7 +126,7 @@ exports.createOrder = async (req, res) => {
           await conn.rollback();
           return res.status(400).json({ success: false, error: `Insufficient stock for "${prod.product_name}"` });
         }
-        const uPrice = parseFloat(prod.selling_price) || 0;
+        const uPrice = buyerPrice(prod, req.user);
         const iTotal = uPrice * q;
         totalAmount += iTotal;
         itemsSummary.push({
@@ -138,15 +140,17 @@ exports.createOrder = async (req, res) => {
     } else {
       // Single product backward compatibility
       const [products] = await conn.query(
-        'SELECT id, product_name, selling_price, quantity FROM inventory WHERE id = ? AND is_deleted = 0',
-        [product_id]
+        `SELECT i.id, i.product_name, COALESCE(fp.selling_price, i.selling_price) AS selling_price, i.discount_pct, i.quantity, i.staff_price
+           FROM inventory i LEFT JOIN franchise_inventory_pricing fp ON fp.inventory_id = i.id AND fp.franchise_id = ?
+           WHERE i.id = ? AND i.is_deleted = 0`,
+        [Number(req.franchiseId || req.user?.franchise_id || 1), product_id]
       );
       if (!products.length) {
         await conn.rollback();
         return res.status(404).json({ success: false, error: 'Product not found' });
       }
       const prod = products[0];
-      const uPrice = parseFloat(prod.selling_price) || 0;
+      const uPrice = buyerPrice(prod, req.user);
       totalAmount = uPrice * quantity;
       if (parseFloat(prod.quantity) < quantity) {
         await conn.rollback();
@@ -163,53 +167,25 @@ exports.createOrder = async (req, res) => {
 
     const itemsJsonStr = JSON.stringify(itemsSummary);
     const unitPrice = itemsSummary.length > 0 ? itemsSummary[0].unit_price : 0;
-    let razorpayOrder = null;
     let orderId = null;
 
-    if (payment_method === 'razorpay') {
-      const calculatedAmount = Math.round(totalAmount * 100); // in paise
-      if (razorpayInstance) {
-        const options = {
-          amount: calculatedAmount,
-          currency: 'INR',
-          receipt: `prod_order_${Date.now()}`
-        };
-        razorpayOrder = await razorpayInstance.orders.create(options);
-      } else {
-        console.warn('[RAZORPAY MOCK MODE] Creating simulated order for product purchase');
-        razorpayOrder = {
-          id: `order_mock_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          amount: calculatedAmount,
-          currency: 'INR',
-          receipt: `prod_order_mock_${Date.now()}`
-        };
-      }
-
-      // Insert product order as pending
+    if (payment_method === 'cash') {
+      // Pay at the studio when collecting — the studio confirms the order, then marks it paid
       const [oResult] = await conn.query(
-        `INSERT INTO product_orders 
-         (customer_id, product_id, quantity, unit_price, total_amount, payment_method, payment_status, razorpay_order_id, items_json, shipping_address)
-         VALUES (?, ?, ?, ?, ?, 'razorpay', 'pending', ?, ?, ?)`,
-        [customerId, primaryProductId, primaryQuantity, unitPrice, totalAmount, razorpayOrder.id, itemsJsonStr, shipping_address || null]
+        `INSERT INTO product_orders
+         (customer_id, product_id, quantity, unit_price, total_amount, payment_method, payment_status, items_json, shipping_address, franchise_id)
+         VALUES (?, ?, ?, ?, ?, 'cash', 'pending', ?, ?, ?)`,
+        [customerId, primaryProductId, primaryQuantity, unitPrice, totalAmount, itemsJsonStr, shipping_address || 'Collect at studio', (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
       orderId = oResult.insertId;
-
-      // Insert into v2_payments
       await conn.query(
-        `INSERT INTO v2_payments 
-         (customer_id, product_id, amount, payment_method, status, razorpay_order_id, notes)
-         VALUES (?, ?, ?, 'razorpay', 'pending', ?, ?)`,
-        [customerId, primaryProductId, totalAmount, razorpayOrder.id, JSON.stringify({ product_order_id: orderId, items: itemsSummary })]
+        `INSERT INTO v2_payments (customer_id, product_id, amount, payment_method, status, notes)
+         VALUES (?, ?, ?, 'cash', 'pending', ?)`,
+        [customerId, primaryProductId, totalAmount, JSON.stringify({ product_order_id: orderId, items: itemsSummary, pay_at_studio: true })]
       );
-
       await conn.commit();
-      return res.json({
-        success: true,
-        order_id: orderId,
-        payment_method: 'razorpay',
-        razorpay_order: razorpayOrder
-      });
-
+      return res.json({ success: true, order_id: orderId, payment_method: 'cash', total_amount: totalAmount,
+        message: 'Order placed — collect and pay at the studio' });
     } else {
       // QR payment confirmation
       if (!qr_transaction_id) {
@@ -220,9 +196,9 @@ exports.createOrder = async (req, res) => {
       // Insert product order as pending
       const [oResult] = await conn.query(
         `INSERT INTO product_orders 
-         (customer_id, product_id, quantity, unit_price, total_amount, payment_method, payment_status, qr_transaction_id, items_json, shipping_address)
-         VALUES (?, ?, ?, ?, ?, 'qr', 'pending', ?, ?, ?)`,
-        [customerId, primaryProductId, primaryQuantity, unitPrice, totalAmount, qr_transaction_id, itemsJsonStr, shipping_address || null]
+         (customer_id, product_id, quantity, unit_price, total_amount, payment_method, payment_status, qr_transaction_id, items_json, shipping_address, franchise_id)
+         VALUES (?, ?, ?, ?, ?, 'qr', 'pending', ?, ?, ?, ?)`,
+        [customerId, primaryProductId, primaryQuantity, unitPrice, totalAmount, qr_transaction_id, itemsJsonStr, shipping_address || null, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
       orderId = oResult.insertId;
 
@@ -231,7 +207,7 @@ exports.createOrder = async (req, res) => {
         `INSERT INTO v2_payments 
          (customer_id, product_id, amount, payment_method, status, notes)
          VALUES (?, ?, ?, 'qr', 'pending', ?)`,
-        [customerId, product_id, totalAmount, JSON.stringify({ product_order_id: orderId, quantity, qr_transaction_id })]
+        [customerId, primaryProductId, totalAmount, JSON.stringify({ product_order_id: orderId, quantity, qr_transaction_id })]
       );
 
       await conn.commit();
@@ -246,106 +222,6 @@ exports.createOrder = async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error('createOrder error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
-  } finally {
-    conn.release();
-  }
-};
-
-// ─── VERIFY RAZORPAY PAYMENT ────────────────────────
-exports.verifyPayment = async (req, res) => {
-  const conn = await pool.getConnection();
-  try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, error: 'Missing payment details' });
-    }
-
-    await conn.beginTransaction();
-
-    // Fetch the pending order
-    const [orders] = await conn.query(
-      'SELECT * FROM product_orders WHERE razorpay_order_id = ? AND payment_status = ? FOR UPDATE',
-      [razorpay_order_id, 'pending']
-    );
-
-    if (!orders.length) {
-      await conn.rollback();
-      return res.status(404).json({ success: false, error: 'Order not found or already verified' });
-    }
-
-    const order = orders[0];
-
-    // Verification check
-    let signatureIsValid = false;
-    if (razorpay_order_id.startsWith('order_mock_') || !razorpayInstance) {
-      signatureIsValid = true;
-    } else {
-      const body = razorpay_order_id + "|" + razorpay_payment_id;
-      const expectedSignature = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(body.toString())
-        .digest('hex');
-      signatureIsValid = (expectedSignature === razorpay_signature);
-    }
-
-    if (!signatureIsValid) {
-      // Mark order as failed
-      await conn.query('UPDATE product_orders SET payment_status = ? WHERE id = ?', ['failed', order.id]);
-      await conn.query('UPDATE v2_payments SET status = ? WHERE razorpay_order_id = ?', ['failed', razorpay_order_id]);
-      await conn.commit();
-      return res.status(400).json({ success: false, error: 'Invalid payment signature' });
-    }
-
-    // Update order status to completed
-    await conn.query(
-      `UPDATE product_orders 
-       SET payment_status = 'completed', razorpay_payment_id = ?, razorpay_signature = ? 
-       WHERE id = ?`,
-      [razorpay_payment_id, razorpay_signature, order.id]
-    );
-
-    // Update v2_payments
-    await conn.query(
-      `UPDATE v2_payments 
-       SET status = 'captured', razorpay_payment_id = ?, razorpay_signature = ? 
-       WHERE razorpay_order_id = ?`,
-      [razorpay_payment_id, razorpay_signature, razorpay_order_id]
-    );
-
-    // Get the payment ID for transaction log
-    const [payments] = await conn.query('SELECT id FROM v2_payments WHERE razorpay_order_id = ?', [razorpay_order_id]);
-    if (payments.length) {
-      await conn.query(
-        `INSERT INTO v2_payment_transactions 
-         (payment_id, transaction_type, amount, status) 
-         VALUES (?, 'credit', ?, 'success')`,
-        [payments[0].id, order.total_amount]
-      );
-    }
-
-    // Deduct stock quantity in inventory
-    await conn.query(
-      'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
-      [order.quantity, order.product_id]
-    );
-
-    // Log Buy & Sell record as complete
-    await conn.query(
-      `INSERT INTO buy_sell (type, party_name, party_mobile, product_id, product_name, quantity, unit_price, total_amount, note, status, transaction_date, created_by)
-       SELECT 'sell_b2c', u.name, u.mobile, i.id, i.product_name, ?, ?, ?, 'B2C product purchase via customer portal (Razorpay)', 'complete', CURDATE(), u.id
-       FROM users u, inventory i
-       WHERE u.id = ? AND i.id = ?`,
-      [order.quantity, order.unit_price, order.total_amount, order.customer_id, order.product_id]
-    );
-
-    await conn.commit();
-    res.json({ success: true, message: 'Payment verified and order completed' });
-
-  } catch (err) {
-    await conn.rollback();
-    console.error('verifyPayment error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   } finally {
     conn.release();
@@ -402,6 +278,9 @@ exports.confirmQrOrder = async (req, res) => {
 
       // 2. Update order status to completed
       await conn.query(`UPDATE product_orders SET payment_status = 'completed' WHERE id = ?`, [id]);
+      // Accounts: shop sale revenue (its Payments row already exists)
+      await require('../services/moneyIn').recordMoneyIn(conn, { amount: order.total_amount, type: 'product_sale', refId: Number(id), skipPayment: true,
+        note: `Shop order #${id}`, franchiseId: order.franchise_id || 1, userId: req.user.id });
 
       // 3. Deduct stock & log buy_sell B2C for each item
       for (const item of cartItems) {
@@ -414,8 +293,8 @@ exports.confirmQrOrder = async (req, res) => {
 
         try {
           await conn.query(
-            `INSERT INTO buy_sell (type, party_name, party_mobile, product_id, product_name, quantity, unit_price, total_amount, note, status, transaction_date, created_by)
-             SELECT 'sell_b2c', u.name, u.mobile, i.id, i.product_name, ?, ?, ?, 'B2C product purchase (Cart Approved by Admin)', 'complete', CURDATE(), ?
+            `INSERT INTO buy_sell (type, party_name, party_mobile, product_id, product_name, quantity, unit_price, total_amount, note, status, transaction_date, created_by, franchise_id)
+             SELECT 'sell_b2c', u.name, u.mobile, i.id, i.product_name, ?, ?, ?, 'B2C product purchase (Cart Approved by Admin)', 'complete', CURDATE(), ?, COALESCE(u.franchise_id, 1)
              FROM users u, inventory i
              WHERE u.id = ? AND i.id = ?`,
             [q, uPrice, tPrice, req.user.id || 1, order.customer_id, pid]
@@ -445,8 +324,8 @@ exports.confirmQrOrder = async (req, res) => {
 
         try {
           await conn.query(
-            `INSERT INTO buy_sell (type, party_name, party_mobile, product_id, product_name, quantity, unit_price, total_amount, note, status, transaction_date, created_by)
-             SELECT 'sell_b2c', u.name, u.mobile, i.id, i.product_name, ?, ?, ?, 'B2C product purchase (Approved by Admin)', 'complete', CURDATE(), ?
+            `INSERT INTO buy_sell (type, party_name, party_mobile, product_id, product_name, quantity, unit_price, total_amount, note, status, transaction_date, created_by, franchise_id)
+             SELECT 'sell_b2c', u.name, u.mobile, i.id, i.product_name, ?, ?, ?, 'B2C product purchase (Approved by Admin)', 'complete', CURDATE(), ?, COALESCE(u.franchise_id, 1)
              FROM users u, inventory i
              WHERE u.id = ? AND i.id = ?`,
             [order.quantity, order.unit_price, order.total_amount, req.user.id || 1, order.customer_id, order.product_id]
@@ -460,8 +339,10 @@ exports.confirmQrOrder = async (req, res) => {
     // Update v2_payments status to captured if present
     try {
       await conn.query(
-        `UPDATE v2_payments SET status = 'captured' WHERE customer_id = ? AND status = 'pending'`,
-        [order.customer_id]
+        // only this order's payment (other pending payments of the customer are unrelated)
+        `UPDATE v2_payments SET status = 'captured' WHERE customer_id = ? AND status = 'pending'
+           AND JSON_VALID(notes) AND JSON_UNQUOTE(JSON_EXTRACT(notes, '$.product_order_id')) = ?`,
+        [order.customer_id, String(id)]
       );
     } catch (payErr) {
       console.warn('v2_payments update warning:', payErr.message);
@@ -480,6 +361,19 @@ exports.confirmQrOrder = async (req, res) => {
 };
 
 // ─── REJECT PRODUCT ORDER (ADMIN) ───────────────────────
+// POST /products/orders/:id/collected — customer picked up a paid order at the studio
+exports.markCollected = async (req, res) => {
+  try {
+    const [r] = await pool.query(
+      "UPDATE product_orders SET collected_at = NOW() WHERE id = ? AND payment_status = 'completed' AND collected_at IS NULL", [req.params.id]);
+    if (!r.affectedRows) return res.status(400).json({ success: false, error: 'Only an approved order that is not collected yet can be marked collected' });
+    res.json({ success: true, message: 'Order marked collected & paid' });
+  } catch (err) {
+    console.error('markCollected error:', err.message);
+    res.status(500).json({ success: false, error: 'Could not mark collected' });
+  }
+};
+
 exports.rejectOrder = async (req, res) => {
   const conn = await pool.getConnection();
   try {
@@ -492,10 +386,15 @@ exports.rejectOrder = async (req, res) => {
       'SELECT * FROM product_orders WHERE id = ? FOR UPDATE',
       [id]
     );
-
-    if (!orders.length) {
+    if (!orders.length || (req.user.role !== 'super_admin' && Number(orders[0].franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1))) {
       await conn.rollback();
       return res.status(404).json({ success: false, error: 'Product order not found' });
+    }
+    if (orders[0].payment_status !== 'pending') {
+      await conn.rollback();
+      return res.status(409).json({ success: false, error: orders[0].payment_status === 'completed'
+        ? 'This order is already paid' + (orders[0].collected_at ? ' and collected' : '') + '. Use a refund in Payments instead.'
+        : `This order is already ${orders[0].payment_status}` });
     }
 
     // Update product_orders status to failed
@@ -526,12 +425,29 @@ exports.rejectOrder = async (req, res) => {
 // ─── LIST CUSTOMER PRODUCTS ────────────────────────
 exports.listCustomerProducts = async (req, res) => {
   try {
+    // This studio's own customer price wins over the head-office price; then only the
+    // price fields this role may see (Super Admin → Prices) are sent.
+    const fid = Number(req.franchiseId || req.user?.franchise_id || 1);
     const [rows] = await pool.query(
-      `SELECT * FROM inventory WHERE is_deleted = 0 ORDER BY product_name ASC, id DESC`
-    );
-    res.json({ success: true, data: rows });
+      `SELECT i.*, fp.selling_price AS studio_selling_price, fp.franchise_price AS studio_franchise_price
+       FROM inventory i
+       LEFT JOIN franchise_inventory_pricing fp ON fp.inventory_id = i.id AND fp.franchise_id = ?
+       WHERE i.is_deleted = 0 AND COALESCE(i.category, '') <> 'Studio Materials'  -- studio supplies are not for sale
+       ORDER BY i.product_name ASC, i.id DESC`, [fid]);
+    const { applyPriceVisibility } = require('../services/priceVisibility');
+    const role = req.user?.role || 'customer';
+    const data = [];
+    for (const r of rows) {
+      const { studio_selling_price, studio_franchise_price, ...item } = r;
+      if (studio_selling_price != null) item.selling_price = studio_selling_price;
+      if (studio_franchise_price != null) item.franchise_price = studio_franchise_price;
+      data.push(await applyPriceVisibility(item, role));
+    }
+    res.json({ success: true, data });
   } catch (err) {
     console.error('listCustomerProducts error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+
+exports.buyerPrice = buyerPrice;

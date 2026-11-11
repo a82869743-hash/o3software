@@ -1,3 +1,5 @@
+import { ymd, dateOnly } from '../../utils/formatters';
+import { normalizeCarType } from '../../utils/carTypes';
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
@@ -8,6 +10,9 @@ import Select from '../../components/ui/Select';
 import Button from '../../components/ui/Button';
 import PackageRenewModal from '../../components/shared/PackageRenewModal';
 import { useAuthStore } from '../../store/authStore';
+import { useLiveReload } from '../../utils/liveUpdates';
+import { can } from '../../utils/access';
+import Dropdown from '../../components/ui/Dropdown';
 
 export default function CustomerDetailPage() {
   const { id } = useParams();
@@ -147,6 +152,8 @@ export default function CustomerDetailPage() {
     }
   };
 
+  useLiveReload(() => { fetchDetail(); }); // reload when anything changes elsewhere
+
   // Fetch all packages when modal opens
   useEffect(() => {
     if (assignModalOpen) {
@@ -196,12 +203,7 @@ export default function CustomerDetailPage() {
     const pkg = packages.find(p => p.id.toString() === selectedPackageId);
     const vehicle = data?.vehicles?.find((v: any) => v.id.toString() === selectedVehicleId);
     if (pkg && vehicle) {
-      const cat = vehicle.category || 'sedan';
-      let priceKey = 'price_sedan';
-      if (cat === 'hatchback') priceKey = 'price_hatchback';
-      else if (cat === 'medium_hatchback') priceKey = 'price_medium_hatchback';
-      else if (cat === 'premium_sedan') priceKey = 'price_premium_sedan';
-      else if (cat === 'suv') priceKey = 'price_suv';
+      const priceKey = `price_${normalizeCarType(vehicle.category) || 'sedan'}`;
       
       setPricePaid(pkg[priceKey] || pkg.price_sedan || '0');
     }
@@ -249,11 +251,14 @@ export default function CustomerDetailPage() {
 
   const fetchDetail = async () => {
     try {
+      // packages are shown only to people allowed to see them (no needless "no permission" calls)
+      const seesPackages = can(useAuthStore.getState().user, 'packages', 'view');
+      const none = (data: any) => Promise.resolve({ data: { success: false, data } });
       const [resCust, resPkg, resPkgHistory, resRenewals] = await Promise.all([
         api.get(`/customers/${id}`),
-        api.get(`/user-packages/active?user_id=${id}`).catch(() => ({ data: { success: false, data: null } })),
-        api.get(`/user-packages/history?user_id=${id}`).catch(() => ({ data: { success: false, data: [] } })),
-        api.get(`/user-packages/renewals?user_id=${id}`).catch(() => ({ data: { success: false, data: [] } })),
+        seesPackages ? api.get(`/user-packages/active?user_id=${id}`).catch(() => ({ data: { success: false, data: null } })) : none(null),
+        seesPackages ? api.get(`/user-packages/history?user_id=${id}`).catch(() => ({ data: { success: false, data: [] } })) : none([]),
+        seesPackages ? api.get(`/user-packages/renewals?user_id=${id}`).catch(() => ({ data: { success: false, data: [] } })) : none([]),
       ]);
       if (resCust.data.success) {
         setData(resCust.data.data);
@@ -632,7 +637,7 @@ export default function CustomerDetailPage() {
               </div>
               <div className="space-y-3">
                 {packageHistory.map((pkg: any) => {
-                  const isExpired = pkg.status === 'expired' || (pkg.end_date && new Date(pkg.end_date) < new Date());
+                  const isExpired = pkg.status === 'expired' || (pkg.end_date && dateOnly(pkg.end_date) < ymd());
                   return (
                     <div key={pkg.id} className={`p-3 rounded-xl border relative ${isExpired ? 'bg-gray-50 border-gray-100 opacity-70' : 'bg-blue-50 border-blue-100'}`}>
                       <div className="flex items-center justify-between">
@@ -700,7 +705,7 @@ export default function CustomerDetailPage() {
                 </h3>
               </div>
               <button
-                onClick={() => navigate('/admin/job-carts/create', { state: { prefill: { customer_name: data.name, customer_mobile: data.mobile, customer_email: data.email, id: data.id } } })}
+                onClick={() => navigate('/admin/job-carts/new', { state: { prefill: { customer_name: data.name, customer_mobile: data.mobile, customer_email: data.email, id: data.id } } })}
                 className="text-xs font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center gap-1 transition cursor-pointer"
               >
                 <Plus size={13} /> New Job Card
@@ -866,7 +871,7 @@ export default function CustomerDetailPage() {
           {/* Select Vehicle */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">Select Customer Vehicle *</label>
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={selectedVehicleId}
               onChange={(e) => setSelectedVehicleId(e.target.value)}
@@ -877,13 +882,13 @@ export default function CustomerDetailPage() {
                   {v.brand} {v.model} ({v.registration_no || 'No Reg'}) - {v.category ? v.category.toUpperCase() : 'UNKNOWN'}
                 </option>
               ))}
-            </select>
+            </Dropdown>
           </div>
 
           {/* Select Package */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">Select Package *</label>
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={selectedPackageId}
               onChange={(e) => setSelectedPackageId(e.target.value)}
@@ -894,7 +899,7 @@ export default function CustomerDetailPage() {
                   {pkg.name}
                 </option>
               ))}
-            </select>
+            </Dropdown>
           </div>
 
           {/* Price Paid */}
@@ -909,7 +914,7 @@ export default function CustomerDetailPage() {
           {/* Duration Months */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">Duration (Months) *</label>
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={durationMonths}
               onChange={(e) => setDurationMonths(e.target.value)}
@@ -919,7 +924,7 @@ export default function CustomerDetailPage() {
               <option value="6">6 Months</option>
               <option value="12">12 Months (1 Year)</option>
               <option value="24">24 Months (2 Years)</option>
-            </select>
+            </Dropdown>
           </div>
 
           {/* Included Services */}
@@ -995,7 +1000,7 @@ export default function CustomerDetailPage() {
           {/* Selected Vehicle */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">Select Vehicle *</label>
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={customVehicleId}
               onChange={(e) => setCustomVehicleId(e.target.value)}
@@ -1006,7 +1011,7 @@ export default function CustomerDetailPage() {
                   {v.brand} {v.model} ({v.registration_no || 'No Reg'})
                 </option>
               ))}
-            </select>
+            </Dropdown>
           </div>
 
           {/* Price Paid */}
@@ -1021,7 +1026,7 @@ export default function CustomerDetailPage() {
           {/* Duration Months */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">Duration (Months) *</label>
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={customDurationMonths}
               onChange={(e) => setCustomDurationMonths(e.target.value)}
@@ -1031,7 +1036,7 @@ export default function CustomerDetailPage() {
               <option value="6">6 Months</option>
               <option value="12">12 Months (1 Year)</option>
               <option value="24">24 Months (2 Years)</option>
-            </select>
+            </Dropdown>
           </div>
 
           {/* Service Builder */}
@@ -1050,7 +1055,7 @@ export default function CustomerDetailPage() {
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {customServices.map((row, idx) => (
                 <div key={idx} className="flex gap-2 items-center">
-                  <select
+                  <Dropdown
                     className="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-xs bg-white"
                     value={row.service_id}
                     onChange={(e) => {
@@ -1063,7 +1068,7 @@ export default function CustomerDetailPage() {
                     {allServicesList.map(s => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
-                  </select>
+                  </Dropdown>
                   <input
                     type="number"
                     min="1"
@@ -1158,7 +1163,7 @@ export default function CustomerDetailPage() {
           <div className="space-y-4 py-2">
             <div>
               <label className="block text-xs font-bold text-gray-500 mb-1">Select Service</label>
-              <select
+              <Dropdown
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 value={adjustService}
                 onChange={(e) => {
@@ -1175,7 +1180,7 @@ export default function CustomerDetailPage() {
                     {u.service_name}
                   </option>
                 ))}
-              </select>
+              </Dropdown>
             </div>
 
             <div>

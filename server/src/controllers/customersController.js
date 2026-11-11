@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { guessCarCategory } = require('../utils/carCategory');
 const { logAudit } = require('./auditController');
 
 function parseDateRobust(dateStr) {
@@ -37,10 +38,34 @@ exports.list = async (req, res) => {
     let where = "u.role = 'customer' AND u.is_active = 1" + fCond.clause;
     const params = [...fCond.params];
 
-    if (search) {
-      const s = `%${search.trim()}%`;
-      where += " AND (u.name LIKE ? OR u.mobile LIKE ? OR u.email LIKE ? OR u.id IN (SELECT customer_id FROM vehicles WHERE registration_no LIKE ? OR brand LIKE ? OR model LIKE ?))";
-      params.push(s, s, s, s, s, s);
+    // Search: digits → mobile; otherwise words must START a name / car word, or be inside the car number.
+    // Best matches first (exact name / mobile / car number), so short searches don't look random.
+    let rankSql = '0';
+    const rankParams = [];
+    const term = (search || '').trim();
+    if (term) {
+      const digits = term.replace(/\D/g, '');
+      const reg = `%${term.replace(/\s+/g, '').toUpperCase()}%`;
+      const startsWord = [`${term}%`, `% ${term}%`];
+      const conds = [
+        'u.name LIKE ? OR u.name LIKE ?',
+        'u.email LIKE ?',
+      ];
+      params.push(...startsWord, `${term}%`);
+      // 1–2 letters: customer name only (car words like "Qute" would look random)
+      if (term.length >= 3) {
+        conds.push("u.id IN (SELECT customer_id FROM vehicles WHERE REPLACE(UPPER(registration_no), ' ', '') LIKE ? OR brand LIKE ? OR model LIKE ? OR model LIKE ?)");
+        params.push(reg, `${term}%`, ...startsWord);
+      }
+      if (digits.length >= 3) { conds.push('u.mobile LIKE ?'); params.push(`%${digits}%`); }
+      where += ` AND (${conds.map(c => `(${c})`).join(' OR ')})`;
+      rankSql = `CASE
+        WHEN u.name = ? OR u.mobile = ? THEN 0
+        WHEN u.id IN (SELECT customer_id FROM vehicles WHERE REPLACE(UPPER(registration_no), ' ', '') = ?) THEN 0
+        WHEN u.name LIKE ? THEN 1
+        WHEN u.name LIKE ? THEN 2
+        ELSE 3 END`;
+      rankParams.push(term, digits || term, term.replace(/\s+/g, '').toUpperCase(), `${term}%`, `% ${term}%`);
     }
 
     const [rows] = await pool.query(`
@@ -48,9 +73,9 @@ exports.list = async (req, res) => {
              u.custom_discount_type, u.custom_discount_value, u.crm_notes
       FROM users u
       WHERE ${where}
-      ORDER BY u.created_at DESC
+      ORDER BY ${term ? `${rankSql}, u.name ASC, ` : ''}u.created_at DESC
       LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
+    `, [...params, ...rankParams, parseInt(limit), offset]);
 
     const [totalRows] = await pool.query(`SELECT COUNT(u.id) as total FROM users u WHERE ${where}`, params);
 
@@ -216,6 +241,17 @@ exports.updateCustomer = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Access denied: Cannot edit customer from another franchise' });
     }
 
+    {
+      const V = require('../utils/validators');
+      if (email && !V.isValidEmail(String(email).trim())) { await conn.rollback(); return res.status(400).json({ success: false, error: 'Enter a valid email address' }); }
+      if (mobile) {
+        const m = V.normalizeMobile(mobile);
+        if (!V.isValidMobile(m)) { await conn.rollback(); return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' }); }
+        const [[dupM]] = await conn.query('SELECT id FROM users WHERE mobile = ? AND id <> ? AND is_deleted = 0', [m, id]);
+        if (dupM) { await conn.rollback(); return res.status(409).json({ success: false, error: 'Another account already uses this mobile number' }); }
+        req.body.mobile = m;
+      }
+    }
     let dType = custom_discount_type;
     if (dType !== undefined && !['percentage', 'fixed', 'none'].includes(dType)) {
       dType = 'none';
@@ -237,7 +273,7 @@ exports.updateCustomer = async (req, res) => {
       [
         name ? name.trim() : null,
         email !== undefined ? (email ? email.trim() : null) : old.email,
-        mobile ? mobile.trim() : null,
+        req.body.mobile ? String(req.body.mobile).trim() : null,
         dType !== undefined ? dType : null,
         dVal,
         crm_notes !== undefined ? (crm_notes ? crm_notes.trim() : null) : null,
@@ -319,11 +355,13 @@ exports.assignPackage = async (req, res) => {
     // Insert user_package
     const [upResult] = await conn.query(
       `INSERT INTO user_packages 
-       (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_id)
-       VALUES (?, ?, ?, ?, 'paid', 'active', ?, ?)`,
-      [id, package_id, startDate, endDate, parseFloat(price_paid) || parseFloat(pkg.price || 0), vehicle_id || null]
+       (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_id, franchise_id)
+       VALUES (?, ?, ?, ?, 'paid', 'active', ?, ?, ?)`,
+      [id, package_id, startDate, endDate, parseFloat(price_paid) || parseFloat(pkg.price || 0), vehicle_id || null, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
     const userPackageId = upResult.insertId;
+    await conn.query(`INSERT INTO v2_package_renewals (customer_id, package_id, customer_package_id, renewal_date, amount_paid, payment_id, renewed_by, notes)
+      VALUES (?, ?, ?, ?, ?, NULL, 'admin', 'Package added to customer')`, [id, package_id, userPackageId, startDate, parseFloat(price_paid) || parseFloat(pkg.price || 0)]);
 
     // Handle package usage services
     if (custom_services && Array.isArray(custom_services) && custom_services.length > 0) {
@@ -383,6 +421,10 @@ exports.addNote = async (req, res) => {
     if (!note || !note.trim()) {
       return res.status(400).json({ success: false, error: 'Note content is required' });
     }
+    const [[nc]] = await pool.query("SELECT id, franchise_id FROM users WHERE id = ? AND role = 'customer' AND is_deleted = 0", [id]);
+    if (!nc || (!req.isSuperAdmin && req.franchiseId && Number(nc.franchise_id || 1) !== Number(req.franchiseId))) {
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
 
     const [result] = await pool.query(
       "INSERT INTO customer_notes (customer_id, note) VALUES (?, ?)",
@@ -405,21 +447,38 @@ exports.createManual = async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const { name, mobile, email, brand, model, category, registration_no, package_id, price, package_custom_services, package_start_date, package_end_date } = req.body;
+    let { name, mobile, email, password, brand, model, category, registration_no, package_id, price, package_custom_services, package_start_date, package_end_date } = req.body;
+    const { validateRegNo, isValidMobile, normalizeMobile } = require('../utils/validators');
 
     if (!name || !mobile) {
+      await connection.rollback();
       return res.status(400).json({ success: false, error: 'Name and mobile are required' });
     }
+    if (!isValidMobile(mobile)) { await connection.rollback(); return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' }); }
+    mobile = normalizeMobile(mobile);
+    if (registration_no) {
+      const rc = validateRegNo(registration_no);
+      if (!rc.valid) { await connection.rollback(); return res.status(400).json({ success: false, error: rc.error }); }
+      registration_no = rc.value;
+    }
 
-    // Check if user exists
+    // Check if user exists. A password lets the walk-in log in to the app with this mobile right away.
+    if (password && String(password).length < 6) { await connection.rollback(); return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' }); }
+    const passwordHash = password ? await require('bcryptjs').hash(String(password), 10) : null;
     let customerId;
-    const [existing] = await connection.query("SELECT id FROM users WHERE mobile = ?", [mobile]);
+    const [existing] = await connection.query("SELECT id, role, password_hash FROM users WHERE mobile = ?", [mobile]);
     if (existing.length > 0) {
+      if (existing[0].role !== 'customer') { await connection.rollback(); return res.status(409).json({ success: false, error: 'This mobile belongs to a staff/admin account' }); }
       customerId = existing[0].id;
+      // Only set a password for an account that never had one; never overwrite the customer's own.
+      if (passwordHash && (!existing[0].password_hash || existing[0].password_hash === 'manual')) {
+        await connection.query('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, customerId]);
+      }
     } else {
+      if (!passwordHash) { await connection.rollback(); return res.status(400).json({ success: false, error: 'Set a password so the customer can log in to the app' }); }
       const [userResult] = await connection.query(
-        "INSERT INTO users (name, mobile, email, role, password_hash, franchise_id) VALUES (?, ?, ?, 'customer', 'manual', ?)",
-        [name, mobile, email || null, req.franchiseId || 1]
+        "INSERT INTO users (name, mobile, email, role, password_hash, franchise_id) VALUES (?, ?, ?, 'customer', ?, ?)",
+        [name, mobile, email || null, passwordHash, req.franchiseId || 1]
       );
       customerId = userResult.insertId;
     }
@@ -449,7 +508,7 @@ exports.createManual = async (req, res) => {
         
         const [vehResult] = await connection.query(
           "INSERT INTO vehicles (customer_id, registration_no, brand, model, category, is_primary) VALUES (?, ?, ?, ?, ?, ?)",
-          [customerId, registration_no || null, brand, model, category || null, 1]
+          [customerId, registration_no || null, brand, model, category || guessCarCategory(brand, model) || 'sedan', 1]
         );
         vehicleId = vehResult.insertId;
       }
@@ -457,26 +516,28 @@ exports.createManual = async (req, res) => {
 
     // Add Package
     if (package_id && vehicleId) {
-      const [pkgs] = await connection.query('SELECT name FROM packages WHERE id = ?', [package_id]);
+      const [pkgs] = await connection.query('SELECT name, package_validity FROM packages WHERE id = ?', [package_id]);
       const packageName = pkgs.length ? pkgs[0].name : '';
-      const lowerPkgName = packageName.toLowerCase();
 
       let finalStartDate = parseDateRobust(package_start_date) || new Date();
       let finalEndDate = parseDateRobust(package_end_date);
 
       if (!finalEndDate) {
-        const durationMonths = lowerPkgName.includes('bronze') ? 3 : (lowerPkgName.includes('silver') ? 5 : 12);
+        const durationMonths = Number(pkgs[0]?.package_validity) || 12;
         finalEndDate = new Date(finalStartDate);
         finalEndDate.setMonth(finalEndDate.getMonth() + durationMonths);
       }
 
       const [upResult] = await connection.query(
         `INSERT INTO user_packages 
-         (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_segment, vehicle_id)
-         VALUES (?, ?, ?, ?, 'paid', 'active', ?, ?, ?)`,
-        [customerId, package_id, finalStartDate, finalEndDate, price || 0, category || null, vehicleId]
+         (user_id, package_id, start_date, end_date, payment_status, package_status, price_paid, vehicle_segment, vehicle_id, franchise_id)
+         VALUES (?, ?, ?, ?, 'paid', 'active', ?, ?, ?, ?)`,
+        [customerId, package_id, finalStartDate, finalEndDate, price || 0, category || null, vehicleId, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
       const userPackageId = upResult.insertId;
+      // purchase history; money was taken earlier (offline / old customer), so nothing is added to today's income
+      await connection.query(`INSERT INTO v2_package_renewals (customer_id, package_id, customer_package_id, renewal_date, amount_paid, payment_id, renewed_by, notes)
+        VALUES (?, ?, ?, ?, ?, NULL, 'admin', 'Registered with package (paid earlier)')`, [customerId, package_id, userPackageId, finalStartDate, price || 0]);
 
       if (package_custom_services && Array.isArray(package_custom_services)) {
         for (const item of package_custom_services) {
@@ -527,10 +588,21 @@ exports.createManual = async (req, res) => {
   }
 };
 
+// Customer row in this admin's franchise (super admin: any) — null after sending 404/403
+async function scopedCustomer(req, res, id) {
+  const [[c]] = await pool.query("SELECT id, franchise_id FROM users WHERE id = ? AND role = 'customer'", [id]);
+  if (!c) { res.status(404).json({ success: false, error: 'Customer not found' }); return null; }
+  if (!req.isSuperAdmin && c.franchise_id && req.franchiseId && Number(c.franchise_id) !== Number(req.franchiseId)) {
+    res.status(403).json({ success: false, error: 'Access denied: customer belongs to another franchise' }); return null;
+  }
+  return c;
+}
+
 // ─── SOFT DELETE CUSTOMER ─────────────────────
 exports.softDelete = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!(await scopedCustomer(req, res, id))) return;
     await pool.query("UPDATE users SET is_active = 0 WHERE id = ? AND role = 'customer'", [id]);
     res.json({ success: true, message: 'Customer archived' });
   } catch (err) {
@@ -543,6 +615,7 @@ exports.softDelete = async (req, res) => {
 exports.restore = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!(await scopedCustomer(req, res, id))) return;
     await pool.query("UPDATE users SET is_active = 1 WHERE id = ? AND role = 'customer'", [id]);
     res.json({ success: true, message: 'Customer restored' });
   } catch (err) {

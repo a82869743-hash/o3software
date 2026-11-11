@@ -7,6 +7,41 @@
  */
 
 const pool = require('../config/db');
+const { guessCarCategory } = require('../utils/carCategory');
+const { validateRegNo, normalizeMobile, isValidMobile } = require('../utils/validators');
+const referralService = require('../services/referralService');
+
+/** When a quick wash is completed: referral earning becomes payable + feedback request on WhatsApp. */
+async function onQuickWashCompleted(bookingId) {
+  try {
+    const [[b]] = await pool.query(
+      `SELECT b.*, u.name AS customer_name, u.mobile FROM bookings b LEFT JOIN users u ON u.id = b.customer_id WHERE b.id = ?`, [bookingId]);
+    if (!b) return;
+    await pool.query(
+      "UPDATE referral_ledger SET status = 'unpaid', bill_amount = ?, amount = IF(reward_type = 'percent', ROUND(? * reward_rate / 100, 2), amount) WHERE source_type = 'quick_wash' AND source_id = ? AND status = 'pending'",
+      [b.total_amount || 0, b.total_amount || 0, bookingId]
+    );
+    if (b.customer_id && b.mobile) {
+      const crypto = require('crypto');
+      const [[existing]] = await pool.query('SELECT id FROM v2_review_requests WHERE booking_id = ? LIMIT 1', [bookingId]);
+      if (!existing) {
+        const token = crypto.randomBytes(32).toString('hex');
+        await pool.query(
+          "INSERT INTO v2_review_requests (customer_id, booking_id, sent_via, status, feedback_token, franchise_id) VALUES (?, ?, 'whatsapp', 'sent', ?, ?)",
+          [b.customer_id, bookingId, token, b.franchise_id || 1]
+        );
+        const url = `${process.env.CLIENT_URL || 'http://localhost:5173'}/feedback/${token}`;
+        require('../services/notificationService').notify({
+          customerId: b.customer_id, channels: ['whatsapp'], referenceType: 'quick_wash', referenceId: bookingId,
+          franchiseId: b.franchise_id || 1, idempotencyKey: `feedback_qw_${bookingId}`,
+          customMessageBody: `Thank you for choosing O3 Car Spaa! Your ${b.vehicle_brand || ''} ${b.vehicle_model || ''} wash is complete. Please rate your experience: ${url}`,
+        }).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('[QuickWash] completion hook failed:', e.message);
+  }
+}
 
 // ─── CREATE QUICK WASH ──────────────────────
 exports.create = async (req, res) => {
@@ -27,24 +62,43 @@ exports.create = async (req, res) => {
     let resolvedVehicleId = vehicle_id || null;
     let resolvedBrand = rawBrand;
     let resolvedModel = rawModel;
-    let resolvedRegNo = rawReg ? rawReg.toUpperCase().replace(/\s/g, '') : null;
+    const regCheck = validateRegNo(rawReg);
+    if (!vehicle_id && !regCheck.valid) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: regCheck.error });
+    }
+    let resolvedRegNo = regCheck.valid ? regCheck.value : null;
+    const franchiseId = req.franchiseId || req.user?.franchise_id || 1;
 
-    // Resolve customer by mobile or create walk-in customer
+    // Existing vehicle → its owner is the customer
+    if (!resolvedCustomerId && resolvedRegNo) {
+      const [[veh]] = await conn.query('SELECT customer_id FROM vehicles WHERE registration_no = ?', [resolvedRegNo]);
+      if (veh) resolvedCustomerId = veh.customer_id;
+    }
+
+    // Walk-in: find by mobile or create (no password — the customer activates with an OTP)
     if (!resolvedCustomerId) {
-      const custMobile = req.body.customer_mobile || '9999999999';
-      const custName = req.body.customer_name || 'Walk-in Customer';
-      const [existingUser] = await conn.query('SELECT id FROM users WHERE mobile = ?', [custMobile]);
+      if (!isValidMobile(req.body.customer_mobile)) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: 'Enter a valid 10-digit customer mobile number' });
+      }
+      const custMobile = normalizeMobile(req.body.customer_mobile);
+      const custName = String(req.body.customer_name || '').trim();
+      if (!custName) { await conn.rollback(); return res.status(400).json({ success: false, error: 'Customer name is required' }); }
+      const [existingUser] = await conn.query('SELECT id, role FROM users WHERE mobile = ?', [custMobile]);
       if (existingUser.length) {
+        if (existingUser[0].role !== 'customer') {
+          await conn.rollback();
+          return res.status(409).json({ success: false, error: 'This mobile belongs to a staff/admin account' });
+        }
         resolvedCustomerId = existingUser[0].id;
       } else {
-        const bcrypt = require('bcryptjs');
-        const hash = await bcrypt.hash('123456', 10);
         const [newUser] = await conn.query(
-          'INSERT INTO users (name, mobile, password_hash, role) VALUES (?, ?, ?, ?)',
-          [custName, custMobile, hash, 'customer']
+          "INSERT INTO users (name, mobile, password_hash, role, franchise_id) VALUES (?, ?, 'manual', 'customer', ?)",
+          [custName.slice(0, 100), custMobile, franchiseId]
         );
         resolvedCustomerId = newUser.insertId;
-        await conn.query('INSERT INTO loyalty (customer_id) VALUES (?)', [resolvedCustomerId]);
+        await conn.query('INSERT IGNORE INTO loyalty (customer_id) VALUES (?)', [resolvedCustomerId]);
       }
     }
 
@@ -71,7 +125,7 @@ exports.create = async (req, res) => {
       } else {
         const [newVeh] = await conn.query(
           'INSERT INTO vehicles (customer_id, brand, model, registration_no, category) VALUES (?, ?, ?, ?, ?)',
-          [resolvedCustomerId, resolvedBrand || 'Generic', resolvedModel || 'Car', resolvedRegNo, 'sedan']
+          [resolvedCustomerId, resolvedBrand || 'Unknown', resolvedModel || 'Unknown', resolvedRegNo, vehicle_category || guessCarCategory(resolvedBrand, resolvedModel) || 'sedan']
         );
         resolvedVehicleId = newVeh.insertId;
       }
@@ -88,8 +142,8 @@ exports.create = async (req, res) => {
     const now = new Date();
     const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     let [existingSlots] = await conn.query(
-      "SELECT id FROM slots WHERE slot_date = ? AND start_time = '00:00:00' AND end_time = '23:59:59' LIMIT 1",
-      [today]
+      "SELECT id FROM slots WHERE slot_date = ? AND start_time = '00:00:00' AND end_time = '23:59:59' AND franchise_id = ? LIMIT 1",
+      [today, franchiseId]
     );
 
     let slotId;
@@ -97,21 +151,20 @@ exports.create = async (req, res) => {
       slotId = existingSlots[0].id;
     } else {
       const [slotResult] = await conn.query(
-        "INSERT INTO slots (slot_date, start_time, end_time, max_capacity, booked_count) VALUES (?, '00:00:00', '23:59:59', 999, 0)",
-        [today]
+        "INSERT INTO slots (franchise_id, slot_date, start_time, end_time, max_capacity, booked_count) VALUES (?, ?, '00:00:00', '23:59:59', 999, 0)",
+        [franchiseId, today]
       );
       slotId = slotResult.insertId;
     }
 
     // Calculate queue position
     const [queueRows] = await conn.query(
-      "SELECT COUNT(*) AS cnt FROM bookings WHERE job_type = 'quick_wash' AND wash_status IN ('pending','washing') AND DATE(created_at) = CURDATE()"
+      "SELECT COUNT(*) AS cnt FROM bookings WHERE job_type = 'quick_wash' AND wash_status IN ('pending','washing') AND DATE(created_at) = CURDATE() AND franchise_id = ?", [franchiseId]
     );
     const queuePosition = (queueRows[0]?.cnt || 0) + 1;
 
     // Sanitize vehicle_category to valid ENUM values
-    const validCategories = ['hatchback', 'medium_hatchback', 'sedan', 'premium_sedan', 'suv'];
-    const safeCategory = validCategories.includes(vehicle_category) ? vehicle_category : null;
+    const safeCategory = require('../utils/carCategory').normalizeCarType(vehicle_category);
 
     // Handle package usage
     let packageUsed = false;
@@ -144,13 +197,15 @@ exports.create = async (req, res) => {
       const cat = safeCategory || 'sedan';
       const priceCol = `price_${cat}`;
       const [svcRows] = await conn.query(
-        `SELECT price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv FROM services WHERE id = ?`,
+        `SELECT price_hatchback, price_semi_sedan, price_sedan, price_premium_sedan, price_suv, price_premium_suv FROM services WHERE id = ?`,
         [service_id]
       );
       if (svcRows.length) {
         originalPrice = Number(svcRows[0][priceCol]) || Number(svcRows[0].price_sedan) || 0;
       }
     }
+    // Price typed by the studio on the quick wash form wins over the list price
+    if (req.body.price !== undefined && req.body.price !== '' && Number(req.body.price) >= 0) originalPrice = Number(req.body.price);
 
     // First wash 50% discount check
     const { checkFirstWashEligibility } = require('../utils/firstWashHelper');
@@ -172,13 +227,23 @@ exports.create = async (req, res) => {
       INSERT INTO bookings
         (customer_id, vehicle_id, slot_id, service_id, package_id,
          vehicle_brand, vehicle_model, vehicle_reg_no, vehicle_category,
-         job_type, status, wash_status, queue_position, notes, discount_percent, discount_amount, total_amount)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'quick_wash', 'confirmed', 'pending', ?, ?, ?, ?, ?)
+         job_type, status, wash_status, queue_position, notes, discount_percent, discount_amount, total_amount, franchise_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'quick_wash', 'confirmed', 'pending', ?, ?, ?, ?, ?, ?)
     `, [
       resolvedCustomerId, resolvedVehicleId, slotId, service_id || null, actualPackageId,
       resolvedBrand, resolvedModel, resolvedRegNo, safeCategory,
-      queuePosition, notes || null, discountPercent, discountAmount, totalAmount
+      queuePosition, notes || null, discountPercent, discountAmount, totalAmount, franchiseId
     ]);
+
+    const referrer = await referralService.resolveReferrer(conn, req.body, franchiseId, resolvedCustomerId);
+    if (referrer) {
+      const [[cust]] = await conn.query('SELECT name FROM users WHERE id = ?', [resolvedCustomerId]);
+      await referralService.syncForSource(conn, {
+        sourceType: 'quick_wash', sourceId: result.insertId, franchiseId, referrer,
+        referredCustomerId: resolvedCustomerId, referredCustomerName: cust?.name, billAmount: totalAmount,
+        finalised: false, label: `Quick wash #${result.insertId} — ${resolvedRegNo || ''}`, userId: req.user.id,
+      });
+    }
 
     // Increment slot count
     await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slotId]);
@@ -188,7 +253,7 @@ exports.create = async (req, res) => {
     // Socket notification
     const io = req.app.get('io');
     if (io) {
-      io.emit('quick_wash_created', { bookingId: result.insertId, queuePosition });
+      io.to('internal').emit('quick_wash_created', { bookingId: result.insertId, queuePosition });
     }
 
     res.status(201).json({
@@ -204,9 +269,10 @@ exports.create = async (req, res) => {
         : `Quick wash booked — Queue #${queuePosition}`,
     });
   } catch (err) {
-    await conn.rollback();
+    try { await conn.rollback(); } catch { /* ignore */ }
+    if (err.status === 400) return res.status(400).json({ success: false, error: err.message });
     console.error('Quick wash create error:', err.message, err.sql || '');
-    res.status(500).json({ success: false, error: err.message || 'Failed to create quick wash booking' });
+    res.status(500).json({ success: false, error: 'Failed to create quick wash booking' });
   } finally {
     conn.release();
   }
@@ -218,6 +284,7 @@ exports.list = async (req, res) => {
     const { status, date, page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let where = "b.job_type = 'quick_wash'";
+    if (!req.isGlobalAdmin) where += ` AND b.franchise_id = ${Number(req.franchiseId) || 1}`;
     const params = [];
 
     if (status && status !== 'all') {
@@ -299,7 +366,7 @@ exports.updateStatus = async (req, res) => {
     }
 
     const [existing] = await conn.query(
-      "SELECT * FROM bookings WHERE id = ? AND job_type = 'quick_wash'", [id]
+      "SELECT * FROM bookings WHERE id = ? AND (job_type = 'quick_wash' OR job_type IS NULL OR job_type = 'standard' OR job_type = 'wash')", [id]
     );
     if (!existing.length) {
       await conn.rollback();
@@ -354,6 +421,15 @@ exports.updateStatus = async (req, res) => {
       [...values, id]
     );
 
+    // Money: a finished wash is paid at the studio → Payments + Accounts (once)
+    if (targetStatus === 'completed' && existing[0].status !== 'completed' && existing[0].status !== 'delivered') {
+      await require('../services/moneyIn').recordMoneyIn(conn, {
+        customerId: existing[0].customer_id, amount: existing[0].total_amount, method: req.body.payment_method || 'cash',
+        type: 'quick_wash', refId: Number(id), bookingId: Number(id), note: `Quick wash QW-${id}`,
+        franchiseId: existing[0].franchise_id || 1, userId: req.user.id,
+      });
+    }
+
     // If wash completed, check first wash discount or award 10% loyalty points from 2nd wash onward
     if (targetStatus === 'completed') {
       const [bRows] = await conn.query('SELECT customer_id, total_amount, discount_percent FROM bookings WHERE id = ?', [id]);
@@ -376,7 +452,12 @@ exports.updateStatus = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: targetStatus });
+      io.to('internal').emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: targetStatus });
+      if (existing[0].customer_id) io.to(`user_${existing[0].customer_id}`).emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: targetStatus });
+    }
+    if (targetStatus === 'completed') { onQuickWashCompleted(parseInt(id)); awardQuickWash(parseInt(id), req); }
+    if (targetStatus === 'cancelled') referralService.cancelForSource(pool, 'quick_wash', parseInt(id)).catch(() => {});
+    {
     }
 
     res.json({ success: true, message: `Wash status updated to ${targetStatus}`, wash_status: targetStatus });
@@ -400,7 +481,7 @@ exports.queueStats = async (req, res) => {
         COUNT(CASE WHEN wash_status = 'delivered' THEN 1 END) AS delivered_count,
         COUNT(*) AS total_today
       FROM bookings
-      WHERE job_type = 'quick_wash' AND DATE(created_at) = CURDATE()
+      WHERE job_type = 'quick_wash' AND DATE(created_at) = CURDATE()${req.isGlobalAdmin ? '' : ` AND franchise_id = ${Number(req.franchiseId) || 1}`}
     `);
 
     res.json({ success: true, data: stats[0] });
@@ -414,8 +495,17 @@ exports.queueStats = async (req, res) => {
 exports.getInvoice = async (req, res) => {
   try {
     const { id } = req.params;
+    const [[qw]] = await pool.query("SELECT id, customer_id, status FROM bookings WHERE id = ? AND job_type = 'quick_wash'", [id]);
+    if (!qw || (req.user.role === 'customer' && Number(qw.customer_id) !== Number(req.user.id))) {
+      return res.status(404).json({ success: false, error: 'Quick wash not found' });
+    }
+    if (req.user.role === 'customer' && !['completed', 'delivered'].includes(qw.status)) {
+      return res.status(400).json({ success: false, error: 'The invoice is ready once the wash is finished' });
+    }
     const { generateQuickWashInvoicePDF } = require('../services/invoiceService');
-    const { pdfBuffer, invoiceNumber } = await generateQuickWashInvoicePDF(id);
+    const result = await generateQuickWashInvoicePDF(id);
+    const pdfBuffer = result?.pdfBuffer || result;
+    const invoiceNumber = result?.invoiceNumber || `QuickWash-Invoice-${id}`;
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${invoiceNumber}.pdf"`);
@@ -441,7 +531,7 @@ exports.updatePhase = async (req, res) => {
     }
 
     const [existing] = await conn.query(
-      "SELECT id FROM bookings WHERE id = ? AND job_type = 'quick_wash'", [id]
+      "SELECT id FROM bookings WHERE id = ? AND (job_type = 'quick_wash' OR job_type IS NULL OR job_type = 'standard' OR job_type = 'wash')", [id]
     );
     if (!existing.length) {
       await conn.rollback();
@@ -472,11 +562,14 @@ exports.updatePhase = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('wash:phase_updated', { bookingId: parseInt(id), phase, timestamp: updates.phase_updated_at });
+      io.to('internal').emit('wash:phase_updated', { bookingId: parseInt(id), phase, timestamp: updates.phase_updated_at });
+      if (existing && existing[0] && existing[0].customer_id) io.to(`user_${existing[0].customer_id}`).emit('wash:phase_updated', { bookingId: parseInt(id), phase });
       if (phase === 'complete') {
-        io.emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: 'completed' });
+        onQuickWashCompleted(parseInt(id));
+        awardQuickWash(parseInt(id), req);
+        io.to('internal').emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: 'completed' });
       } else {
-        io.emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: 'washing' });
+        io.to('internal').emit('quick_wash_updated', { bookingId: parseInt(id), wash_status: 'washing' });
       }
     }
 
@@ -495,8 +588,8 @@ exports.getPhase = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.query(
-      "SELECT id, current_phase, phase_updated_at, wash_status FROM bookings WHERE id = ? AND job_type = 'quick_wash'",
-      [id]
+      `SELECT id, current_phase, phase_updated_at, wash_status FROM bookings WHERE id = ? AND (job_type = 'quick_wash' OR job_type IS NULL OR job_type = 'standard' OR job_type = 'wash')${req.user?.role === 'customer' ? ' AND customer_id = ?' : ''}`,
+      req.user?.role === 'customer' ? [id, req.user.id] : [id]
     );
     if (!rows.length) {
       return res.status(404).json({ success: false, error: 'Quick wash booking not found' });
@@ -508,20 +601,90 @@ exports.getPhase = async (req, res) => {
   }
 };
 
-// ─── GET QUICK WASH INVOICE PDF ────────────
-exports.getInvoice = async (req, res) => {
+/**
+ * Washing incentive for a finished quick wash. Washers come from the request (worked_by: [ids]), else the
+ * ones saved earlier, else the staff member who marked it done. Admin can change them later (PUT /:id/worked-by).
+ */
+async function awardQuickWash(id, req) {
   try {
-    const { id } = req.params;
-    const invoiceService = require('../services/invoiceService');
-    const pdfBuffer = await invoiceService.generateQuickWashInvoicePDF(id);
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="quick-wash-${id}.pdf"`,
+    const engine = require('../services/incentiveEngine');
+    const [[b]] = await pool.query('SELECT id, franchise_id, service_id, cart_items_json, vehicle_category, worked_by_json, completed_at FROM bookings WHERE id = ?', [id]);
+    if (!b) return;
+    let workers = Array.isArray(req.body?.worked_by) ? req.body.worked_by : null;
+    if (!workers) { try { workers = JSON.parse(b.worked_by_json || 'null'); } catch (_) { workers = null; } }
+    if (!workers || !workers.length) workers = ['staff', 'manager'].includes(req.user?.role) ? [req.user.id] : [];
+    workers = [...new Set(workers.map(Number).filter(Boolean))];
+    // only this studio's active staff count
+    if (workers.length) {
+      const [ok] = await pool.query("SELECT id FROM users WHERE id IN (?) AND franchise_id = ? AND role IN ('staff','manager') AND is_active = 1", [workers, b.franchise_id || 1]);
+      workers = ok.map(u => u.id);
+    }
+    await pool.query('UPDATE bookings SET worked_by_json = ? WHERE id = ?', [workers.length ? JSON.stringify(workers) : null, id]);
+
+    let names = [];
+    try { names = (JSON.parse(b.cart_items_json || '[]') || []).map(i => i.name || i.service_name).filter(Boolean); } catch (_) { /* no cart */ }
+    const [svcs] = await pool.query('SELECT name, incentive_type FROM services WHERE id = ? OR name IN (?)', [b.service_id || 0, names.length ? names : ['']]);
+    let types = svcs.map(engine.typeOfService).filter(Boolean);
+    if (!types.length) types = ['washing'];            // a quick wash is a wash
+    await engine.awardForVehicle(pool, {
+      franchiseId: b.franchise_id || 1, bookingId: Number(id), workerIds: workers, types,
+      vehicleClass: engine.vehicleClassOf(b.vehicle_category), when: b.completed_at || new Date(),
     });
-    res.send(pdfBuffer);
   } catch (err) {
-    console.error('Quick wash invoice error:', err);
-    res.status(500).json({ success: false, error: 'Failed to generate quick wash invoice' });
+    console.error('[incentive] quick wash', id, err.message);
+  }
+}
+
+// PUT /quick-wash/:id/worked-by { worked_by: [staffIds] } — who washed it (recalculates their incentive)
+exports.setWorkedBy = async (req, res) => {
+  try {
+    const [[b]] = await pool.query("SELECT id, wash_status, franchise_id FROM bookings WHERE id = ?", [req.params.id]);
+    if (!b || (req.user.role !== 'super_admin' && Number(b.franchise_id || 1) !== Number(req.franchiseId || req.user.franchise_id || 1))) {
+      return res.status(404).json({ success: false, error: 'Quick wash not found' });
+    }
+    if (!Array.isArray(req.body.worked_by)) return res.status(400).json({ success: false, error: 'Choose who washed the car' });
+    if (['completed', 'delivered'].includes(b.wash_status)) await awardQuickWash(b.id, req);
+    else await pool.query('UPDATE bookings SET worked_by_json = ? WHERE id = ?', [JSON.stringify(req.body.worked_by.map(Number).filter(Boolean)), b.id]);
+    res.json({ success: true, message: 'Saved' });
+  } catch (err) {
+    console.error('setWorkedBy error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 };
 
+// ─── SET PRICE (studio sets / changes the price of a quick wash, e.g. a walk-in with no service) ─
+exports.setPrice = async (req, res) => {
+  try {
+    const price = Number(req.body.price);
+    if (!(price >= 0)) return res.status(400).json({ success: false, error: 'Enter a valid price' });
+    const [[bk]] = await pool.query("SELECT id, discount_percent, status, customer_id, franchise_id FROM bookings WHERE id = ? AND job_type = 'quick_wash'", [req.params.id]);
+    if (!bk) return res.status(404).json({ success: false, error: 'Quick wash not found' });
+    if (req.user.role !== 'super_admin' && Number(bk.franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1)) {
+      return res.status(404).json({ success: false, error: 'Quick wash not found' });
+    }
+    if (['completed', 'delivered'].includes(bk.status) && !['admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'This wash is finished and paid. Only an admin can change its price.' });
+    }
+    if (['cancelled', 'rejected'].includes(bk.status)) return res.status(422).json({ success: false, error: `This wash is ${bk.status}` });
+    // first-wash discount (if it was given) stays as a percent of the new price
+    const discount = Math.round(price * (Number(bk.discount_percent) || 0)) / 100;
+    const total = Math.max(0, price - discount);
+    await pool.query('UPDATE bookings SET total_amount = ?, discount_amount = ? WHERE id = ?', [total, discount, bk.id]);
+    // Already finished and paid → keep Payments and Accounts equal to the new price
+    if (['completed', 'delivered'].includes(bk.status)) {
+      const [[pay]] = await pool.query("SELECT id FROM v2_payments WHERE booking_id = ? AND notes LIKE 'Quick wash%' LIMIT 1", [bk.id]);
+      if (pay) {
+        await pool.query('UPDATE v2_payments SET amount = ? WHERE id = ?', [total, pay.id]);
+        await pool.query("UPDATE transactions SET amount = ?, note = CONCAT(COALESCE(note, ''), ?) WHERE type = 'quick_wash' AND reference_id = ?",
+          [total, ` · price changed to ₹${total} by ${req.user.name || 'admin'} (#${req.user.id})`, bk.id]);
+      } else {
+        await require('../services/moneyIn').recordMoneyIn(pool, { customerId: bk.customer_id, amount: total, type: 'quick_wash', refId: bk.id,
+          bookingId: bk.id, note: `Quick wash QW-${bk.id}`, franchiseId: bk.franchise_id || 1, userId: req.user.id });
+      }
+    }
+    res.json({ success: true, data: { total_amount: total, discount_amount: discount } });
+  } catch (err) {
+    console.error('Quick wash set price error:', err);
+    res.status(500).json({ success: false, error: 'Could not save the price' });
+  }
+};

@@ -1,4 +1,16 @@
 const pool = require('../config/db');
+// A studio admin may change only their own studio's products; the main catalog is changed by its own admins and the Super Admin.
+// product fields that must make sense: status active/inactive, discount 0–100 %, GST 0–28 %, prices and stock 0 or more
+function productFieldError(b) {
+  if (b.status !== undefined && !['active', 'inactive'].includes(b.status)) return 'Status must be active or inactive';
+  if (b.discount_pct !== undefined && b.discount_pct !== null && b.discount_pct !== '' && !(Number(b.discount_pct) >= 0 && Number(b.discount_pct) <= 100)) return 'Discount must be 0 to 100 %';
+  if (b.gst_pct !== undefined && b.gst_pct !== null && b.gst_pct !== '' && !(Number(b.gst_pct) >= 0 && Number(b.gst_pct) <= 28)) return 'GST must be 0 to 28 %';
+  for (const k of ['cost_price', 'franchise_price', 'selling_price', 'staff_price', 'quantity', 'low_stock_threshold']) {
+    if (b[k] !== undefined && b[k] !== null && b[k] !== '' && !(Number(b[k]) >= 0)) return `${k.replace(/_/g, ' ')} must be 0 or more`;
+  }
+  return null;
+}
+const ownProducts = (req) => (req.user.role === 'super_admin' ? '' : ` AND COALESCE(franchise_id, 1) = ${Number(req.franchiseId) || Number(req.user.franchise_id) || 1}`);
 const xlsx = require('xlsx');
 
 // Helper: Sanitize item prices based on user role and optional franchise context
@@ -31,10 +43,10 @@ async function sanitizeItemForRole(item, userRole = 'customer', franchiseId = 1)
     } catch (e) {}
   }
 
-  if (userRole === 'admin') {
-    // Main Admin sees ALL pricing tiers
-    return sanitized;
-  } else if (userRole === 'franchise') {
+  // Super Admin controls which price tiers each role can see (Settings → price_visibility)
+  return require('../services/priceVisibility').applyPriceVisibility(sanitized, userRole);
+  // eslint-disable-next-line no-unreachable
+  if (userRole === 'franchise') {
     // Franchise profile ONLY sees their wholesale franchise_price and customer selling_price
     delete sanitized.cost_price;
     delete sanitized.staff_price;
@@ -69,6 +81,8 @@ exports.list = async (req, res) => {
 
     let where = 'is_deleted = 0';
     const params = [];
+    // studio supplies are internal: customers never see them
+    if (userRole === 'customer') where += " AND COALESCE(category, '') <> 'Studio Materials'";
 
     if (!req.isGlobalAdmin) {
       if (targetFid && targetFid !== 1) {
@@ -86,7 +100,7 @@ exports.list = async (req, res) => {
     }
 
     if (low_stock === 'true' || low_stock === '1') {
-      where += ' AND quantity <= low_stock_threshold';
+      where += ' AND (low_stock_threshold > 0 AND quantity <= low_stock_threshold)';
     }
 
     if (category) {
@@ -107,7 +121,7 @@ exports.list = async (req, res) => {
     const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM inventory WHERE ${where}`, params);
 
     const [rows] = await pool.query(
-      `SELECT *, (quantity <= low_stock_threshold) AS is_low_stock
+      `SELECT *, ((low_stock_threshold > 0 AND quantity <= low_stock_threshold)) AS is_low_stock
        FROM inventory WHERE ${where}
        ORDER BY product_name ASC
        LIMIT ? OFFSET ?`,
@@ -135,10 +149,10 @@ exports.list = async (req, res) => {
 exports.getOne = async (req, res) => {
   try {
     const userRole = req.user ? req.user.role : 'customer';
-    const franchiseId = req.headers['x-franchise-id'] ? parseInt(req.headers['x-franchise-id'], 10) : 1;
+    const franchiseId = req.franchiseId || 1;
 
     const [rows] = await pool.query(
-      'SELECT *, (quantity <= low_stock_threshold) AS is_low_stock FROM inventory WHERE id = ? AND is_deleted = 0',
+      'SELECT *, ((low_stock_threshold > 0 AND quantity <= low_stock_threshold)) AS is_low_stock FROM inventory WHERE id = ? AND is_deleted = 0',
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Product not found' });
@@ -154,12 +168,13 @@ exports.getOne = async (req, res) => {
 // ─── CREATE ─────────────────────────────────
 exports.create = async (req, res) => {
   try {
-    if (req.user && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, error: 'Only Main Admin can create inventory items' });
+    // Prices are set by HQ only (Super Admin). Others may manage stock details but not prices.
+    if (req.user.role !== 'super_admin') {
+      for (const f of ['cost_price', 'franchise_price', 'selling_price', 'staff_price', 'price_visible_to_staff', 'target_franchises']) delete req.body[f];
     }
-
+    { const fe = productFieldError(req.body); if (fe) return res.status(400).json({ success: false, error: fe }); }
     const {
-      product_name, unit = 'pcs', quantity = 0, low_stock_threshold = 5, images_json, description,
+      product_name, unit = 'pcs',quantity = 0, low_stock_threshold = 5, images_json, description,
       sku, barcode, category, sub_category, brand, vehicle_compatibility, variant,
       cost_price = 0, franchise_price = 0, selling_price = 0, staff_price = 0, price_visible_to_staff = 1,
       discount_pct = 0, gst_pct = 0,
@@ -171,7 +186,7 @@ exports.create = async (req, res) => {
 
     const imagesVal = images_json ? (typeof images_json === 'string' ? images_json : JSON.stringify(images_json)) : null;
 
-    const franchiseId = req.headers['x-franchise-id'] ? parseInt(req.headers['x-franchise-id'], 10) : 1;
+    const franchiseId = req.franchiseId || 1;
 
     const [result] = await pool.query(
       `INSERT INTO inventory (
@@ -218,13 +233,14 @@ exports.create = async (req, res) => {
 // ─── UPDATE ─────────────────────────────────
 exports.update = async (req, res) => {
   try {
-    if (req.user && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, error: 'Only Main Admin can modify inventory pricing and details' });
+    // Prices are set by HQ only (Super Admin). Others may manage stock details but not prices.
+    if (req.user.role !== 'super_admin') {
+      for (const f of ['cost_price', 'franchise_price', 'selling_price', 'staff_price', 'price_visible_to_staff', 'target_franchises']) delete req.body[f];
     }
 
-    const [existing] = await pool.query('SELECT id FROM inventory WHERE id = ? AND is_deleted = 0', [req.params.id]);
+    { const fe = productFieldError(req.body); if (fe) return res.status(400).json({ success: false, error: fe }); }
+    const [existing] = await pool.query(`SELECT id FROM inventory WHERE id = ? AND is_deleted = 0${ownProducts(req)}`, [req.params.id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Product not found' });
-
     const productId = req.params.id;
     const updates = [];
     const params = [];
@@ -298,8 +314,8 @@ exports.getFranchisePricings = async (req, res) => {
 
 exports.setFranchisePricing = async (req, res) => {
   try {
-    if (req.user && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, error: 'Only Main Admin can set franchise prices' });
+    if (req.user.role !== 'super_admin') {
+      return res.status(403).json({ success: false, error: 'Only the Super Admin can set franchise prices' });
     }
 
     const { id } = req.params;
@@ -311,6 +327,7 @@ exports.setFranchisePricing = async (req, res) => {
 
     const fPrice = franchise_price !== undefined ? parseFloat(franchise_price) : 0;
     const sPrice = selling_price !== undefined && selling_price !== null ? parseFloat(selling_price) : null;
+    if (!(fPrice >= 0) || (sPrice !== null && !(sPrice >= 0))) return res.status(400).json({ success: false, error: 'Prices must be 0 or more' });
 
     await pool.query(
       `INSERT INTO franchise_inventory_pricing (inventory_id, franchise_id, franchise_price, selling_price)
@@ -334,13 +351,18 @@ exports.adjustQuantity = async (req, res) => {
     const { delta } = req.body;
     if (delta === undefined || delta === null) return res.status(400).json({ success: false, error: 'Delta is required' });
 
-    const [existing] = await pool.query('SELECT id, quantity FROM inventory WHERE id = ? AND is_deleted = 0', [req.params.id]);
+    const [existing] = await pool.query(`SELECT id, quantity FROM inventory WHERE id = ? AND is_deleted = 0${ownProducts(req)}`, [req.params.id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Product not found' });
 
-    await pool.query('UPDATE inventory SET quantity = quantity + ? WHERE id = ?', [parseFloat(delta), req.params.id]);
+    const d = parseFloat(delta);
+    if (!Number.isFinite(d)) return res.status(400).json({ success: false, error: 'Enter a valid number' });
+    if (Number(existing[0].quantity) + d < 0) {
+      return res.status(400).json({ success: false, error: `Only ${Number(existing[0].quantity)} in stock — can't remove ${Math.abs(d)}` });
+    }
+    await pool.query('UPDATE inventory SET quantity = quantity + ? WHERE id = ?', [d, req.params.id]);
 
     const [updated] = await pool.query(
-      'SELECT *, (quantity <= low_stock_threshold) AS is_low_stock FROM inventory WHERE id = ?',
+      'SELECT *, ((low_stock_threshold > 0 AND quantity <= low_stock_threshold)) AS is_low_stock FROM inventory WHERE id = ?',
       [req.params.id]
     );
     res.json({ success: true, data: { ...updated[0], is_low_stock: !!updated[0].is_low_stock }, message: 'Quantity adjusted' });
@@ -353,7 +375,7 @@ exports.adjustQuantity = async (req, res) => {
 // ─── SOFT DELETE ────────────────────────────
 exports.softDelete = async (req, res) => {
   try {
-    const [existing] = await pool.query('SELECT id FROM inventory WHERE id = ? AND is_deleted = 0', [req.params.id]);
+    const [existing] = await pool.query(`SELECT id FROM inventory WHERE id = ? AND is_deleted = 0${ownProducts(req)}`, [req.params.id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Product not found' });
 
     await pool.query('UPDATE inventory SET is_deleted = 1 WHERE id = ?', [req.params.id]);
@@ -393,12 +415,12 @@ exports.bulkUpload = async (req, res) => {
 
       if (existing.length) {
         // Update quantity (add to existing)
-        await conn.query('UPDATE inventory SET quantity = quantity + ?, price = ? WHERE id = ?', [quantity, price, existing[0].id]);
+        await conn.query('UPDATE inventory SET quantity = quantity + ?, selling_price = ? WHERE id = ?', [quantity, price, existing[0].id]);
       } else {
         // Insert new
         await conn.query(
-          'INSERT INTO inventory (product_name, unit, quantity, low_stock_threshold, price) VALUES (?, ?, ?, ?, ?)',
-          [name, unit, quantity, lowStock, price]
+          'INSERT INTO inventory (product_name, unit, quantity, low_stock_threshold, selling_price, franchise_id) VALUES (?, ?, ?, ?, ?, ?)',
+          [name, unit, quantity, lowStock, price, req.user?.franchise_id || 1]
         );
       }
       count++;
@@ -449,7 +471,7 @@ exports.uploadImage = async (req, res) => {
           const cloudinary = require('../config/cloudinary');
           const result = await new Promise((resolve, reject) => {
             const stream = cloudinary.uploader.upload_stream(
-              { folder: 'gk-autoherb/inventory-photos', resource_type: 'image' },
+              { folder: 'o3-car-spaa/inventory-photos', resource_type: 'image' },
               (err, res) => { if (err) reject(err); else resolve(res); }
             );
             stream.end(file.buffer);
@@ -505,7 +527,8 @@ exports.bulkDelete = async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, error: 'Product IDs array required' });
     }
-    await pool.query('UPDATE inventory SET is_deleted = 1 WHERE id IN (?)', [ids]);
+    const [r] = await pool.query(`UPDATE inventory SET is_deleted = 1 WHERE id IN (?)${ownProducts(req)}`, [ids]);
+    if (r.affectedRows < ids.length) return res.status(r.affectedRows ? 207 : 404).json({ success: r.affectedRows > 0, error: `${ids.length - r.affectedRows} of these products are not your studio's and were not changed`, changed: r.affectedRows });
     res.json({ success: true, message: `${ids.length} products deleted successfully` });
   } catch (err) {
     console.error('Bulk delete error:', err);
@@ -520,7 +543,8 @@ exports.bulkUpdateCategory = async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0 || !category) {
       return res.status(400).json({ success: false, error: 'IDs array and category string required' });
     }
-    await pool.query('UPDATE inventory SET category = ? WHERE id IN (?)', [category, ids]);
+    const [r] = await pool.query(`UPDATE inventory SET category = ? WHERE id IN (?)${ownProducts(req)}`, [category, ids]);
+    if (r.affectedRows < ids.length) return res.status(r.affectedRows ? 207 : 404).json({ success: r.affectedRows > 0, error: `${ids.length - r.affectedRows} of these products are not your studio's and were not changed`, changed: r.affectedRows });
     res.json({ success: true, message: `Category updated to "${category}" for ${ids.length} products` });
   } catch (err) {
     console.error('Bulk update category error:', err);
@@ -532,10 +556,12 @@ exports.bulkUpdateCategory = async (req, res) => {
 exports.bulkUpdateStatus = async (req, res) => {
   try {
     const { ids, status } = req.body;
+    if (status && !['active', 'inactive'].includes(status)) return res.status(400).json({ success: false, error: 'Status must be active or inactive' });
     if (!Array.isArray(ids) || ids.length === 0 || !status) {
       return res.status(400).json({ success: false, error: 'IDs array and status required' });
     }
-    await pool.query('UPDATE inventory SET status = ? WHERE id IN (?)', [status, ids]);
+    const [r] = await pool.query(`UPDATE inventory SET status = ? WHERE id IN (?)${ownProducts(req)}`, [status, ids]);
+    if (r.affectedRows < ids.length) return res.status(r.affectedRows ? 207 : 404).json({ success: r.affectedRows > 0, error: `${ids.length - r.affectedRows} of these products are not your studio's and were not changed`, changed: r.affectedRows });
     res.json({ success: true, message: `Status updated to "${status}" for ${ids.length} products` });
   } catch (err) {
     console.error('Bulk update status error:', err);

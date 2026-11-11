@@ -1,18 +1,31 @@
 const pool = require('../config/db');
 const { getFranchiseEntitlements } = require('../middleware/permissions');
+const { clearPermissionCache } = require('../middleware/accessControl');
+const { FEATURE_CATALOG } = require('../config/featureCatalog');
+
+const SUPER_ONLY_MODULES = FEATURE_CATALOG.filter(f => f.isSuperAdminOnly).map(f => f.key);
 
 // List roles (Super Admin sees all; Franchise Admin sees system templates + own franchise custom roles)
 exports.listRoles = async (req, res) => {
   try {
     const isSuper = req.user && req.user.role === 'super_admin';
     const fid = req.franchiseId || 1;
-
-    const sql = isSuper
-      ? 'SELECT * FROM v2_roles ORDER BY is_system_role DESC, id ASC'
-      : 'SELECT * FROM v2_roles WHERE is_system_role = 1 OR franchise_id = ? ORDER BY is_system_role DESC, id ASC';
-
-    const [rows] = await pool.query(sql, isSuper ? [] : [fid]);
-    res.json({ success: true, data: rows });
+    // Templates (manager/staff, franchise_id NULL) are visible to everyone but editable by the Super Admin only.
+    const sql = `
+      SELECT r.*, f.name AS franchise_name,
+             (SELECT COUNT(*) FROM v2_role_permissions rp WHERE rp.role_id = r.id) AS permission_count,
+             (SELECT COUNT(*) FROM users u WHERE u.is_deleted = 0 AND (u.custom_role_id = r.id
+                OR (u.custom_role_id IS NULL AND r.franchise_id IS NULL AND u.role = r.role_name)
+                ) ${isSuper ? '' : 'AND u.franchise_id = ?'}) AS user_count
+      FROM v2_roles r
+      LEFT JOIN franchises f ON f.id = r.franchise_id
+      WHERE r.is_system_role = 0 AND (r.franchise_id IS NULL ${isSuper ? 'OR 1=1' : 'OR r.franchise_id = ?'})
+      ORDER BY r.franchise_id IS NOT NULL, r.franchise_id, r.id`;
+    const [rows] = await pool.query(sql, isSuper ? [] : [fid, fid]);
+    res.json({
+      success: true,
+      data: rows.map(r => ({ ...r, is_template: r.franchise_id === null, editable: isSuper || r.franchise_id === fid })),
+    });
   } catch (err) {
     console.error('List roles error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
@@ -26,9 +39,12 @@ exports.createRole = async (req, res) => {
     if (!role_name || !role_name.trim()) {
       return res.status(400).json({ success: false, error: 'Role name is required' });
     }
+    if (['super_admin', 'admin', 'customer', 'manager', 'staff'].includes(role_name.trim().toLowerCase())) {
+      return res.status(400).json({ success: false, error: 'That role name is reserved' });
+    }
 
     const isSuper = req.user && req.user.role === 'super_admin';
-    const fid = isSuper ? (req.body.franchise_id || null) : (req.franchiseId || 1);
+    const fid = isSuper ? (req.body.franchise_id ? parseInt(req.body.franchise_id, 10) : (req.franchiseId || 1)) : (req.franchiseId || 1);
 
     // Check uniqueness within franchise scope
     const [existing] = await pool.query(
@@ -91,8 +107,8 @@ exports.deleteRole = async (req, res) => {
 
     const [existing] = await pool.query('SELECT * FROM v2_roles WHERE id = ?', [id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Role not found' });
-    if (existing[0].is_system_role === 1) {
-      return res.status(400).json({ success: false, error: 'System template roles cannot be deleted' });
+    if (existing[0].is_system_role === 1 || existing[0].franchise_id === null) {
+      return res.status(400).json({ success: false, error: 'Built-in roles cannot be deleted' });
     }
 
     const isSuper = req.user && req.user.role === 'super_admin';
@@ -107,6 +123,7 @@ exports.deleteRole = async (req, res) => {
       await conn.query('UPDATE users SET custom_role_id = NULL WHERE custom_role_id = ?', [id]);
       await conn.query('DELETE FROM v2_roles WHERE id = ?', [id]);
       await conn.commit();
+      clearPermissionCache();
       res.json({ success: true, message: 'Role deleted successfully' });
     } catch (e) {
       await conn.rollback();
@@ -124,6 +141,12 @@ exports.deleteRole = async (req, res) => {
 exports.getRolePermissions = async (req, res) => {
   try {
     const { id } = req.params;
+    const [roleRows] = await pool.query('SELECT franchise_id FROM v2_roles WHERE id = ?', [id]);
+    if (!roleRows.length) return res.status(404).json({ success: false, error: 'Role not found' });
+    const isSuper = req.user && req.user.role === 'super_admin';
+    if (!isSuper && roleRows[0].franchise_id !== null && roleRows[0].franchise_id !== req.franchiseId) {
+      return res.status(403).json({ success: false, error: 'Not your franchise role' });
+    }
     const [rows] = await pool.query('SELECT permission_id FROM v2_role_permissions WHERE role_id = ?', [id]);
     res.json({ success: true, data: rows.map(r => r.permission_id) });
   } catch (err) {
@@ -153,7 +176,12 @@ exports.saveRolePermissions = async (req, res) => {
     const isSuper = req.user && req.user.role === 'super_admin';
     const roleFranchiseId = roleRows[0].franchise_id || req.franchiseId || 1;
 
-    // Check ownership of custom role
+    if (roleRows[0].is_system_role === 1) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'System roles cannot be changed' });
+    }
+
+    // Check ownership of custom role (templates with franchise_id NULL are Super Admin only)
     if (!isSuper && roleRows[0].franchise_id !== req.franchiseId) {
       await conn.rollback();
       return res.status(403).json({ success: false, error: 'Cannot manage permissions for another franchise\'s role' });
@@ -190,15 +218,21 @@ exports.saveRolePermissions = async (req, res) => {
       }
     }
 
-    // Clear existing
-    await conn.query('DELETE FROM v2_role_permissions WHERE role_id = ?', [id]);
+    // Super-Admin-only modules can never be given to franchise staff
+    let cleanIds = permission_ids.map(Number).filter(Number.isInteger);
+    if (cleanIds.length) {
+      const [blocked] = await conn.query('SELECT id FROM v2_permissions WHERE id IN (?) AND module IN (?)', [cleanIds, SUPER_ONLY_MODULES]);
+      const blockedSet = new Set(blocked.map(b => b.id));
+      cleanIds = cleanIds.filter(i => !blockedSet.has(i));
+    }
 
-    // Insert new
-    for (const pId of permission_ids) {
-      await conn.query('INSERT INTO v2_role_permissions (role_id, permission_id) VALUES (?, ?)', [id, pId]);
+    await conn.query('DELETE FROM v2_role_permissions WHERE role_id = ?', [id]);
+    for (const pId of cleanIds) {
+      await conn.query('INSERT IGNORE INTO v2_role_permissions (role_id, permission_id) VALUES (?, ?)', [id, pId]);
     }
 
     await conn.commit();
+    clearPermissionCache();
     res.json({ success: true, message: 'Role permissions saved within entitlement ceiling successfully' });
   } catch (err) {
     await conn.rollback();
@@ -213,7 +247,15 @@ exports.saveRolePermissions = async (req, res) => {
 exports.listAllPermissions = async (req, res) => {
   try {
     const isSuper = req.user && req.user.role === 'super_admin';
-    const [allPerms] = await pool.query('SELECT * FROM v2_permissions ORDER BY module ASC, id ASC');
+    const [allPermsRaw] = await pool.query('SELECT * FROM v2_permissions ORDER BY module ASC, id ASC');
+    const order = FEATURE_CATALOG.map(f => f.key);
+    const allPerms = allPermsRaw
+      .filter(p => !SUPER_ONLY_MODULES.includes(p.module))
+      .map(p => {
+        const f = FEATURE_CATALOG.find(x => x.key === p.module);
+        return { ...p, module_name: f ? f.name : p.module, category: f ? f.category : 'Other' };
+      })
+      .sort((a, b) => order.indexOf(a.module) - order.indexOf(b.module));
 
     if (isSuper) {
       return res.json({ success: true, data: allPerms });

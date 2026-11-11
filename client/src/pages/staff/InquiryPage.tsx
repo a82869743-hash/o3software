@@ -53,7 +53,7 @@ export default function StaffInquiryPage() {
             <UserPlus size={28} className="text-[#2563EB]" />
           </div>
           <h2 className="text-xl font-black text-[#0F172A] mb-1">New Customer Lead</h2>
-          <p className="text-sm text-[#5f5e5e] text-center max-w-md">
+          <p className="text-sm text-[#64748B] text-center max-w-md">
             Record details for walk-in customers or callers so the admin team can follow up later.
           </p>
         </div>

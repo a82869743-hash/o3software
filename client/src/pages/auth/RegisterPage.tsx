@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,16 +9,22 @@ import { useAuthStore } from '../../store/authStore';
 import { carBrands as fallbackCarBrands, getModelsForBrand } from '../../utils/carData';
 import { useBrands, useModels } from '../../api/hooks/useVehicles';
 import Logo from '../../components/shared/Logo';
+import api from '../../api/axiosInstance';
+import { regNoError, normalizeRegNo } from '../../utils/validators';
+import { carBrands as datasetBrands } from '../../utils/carData';
+import Dropdown from '../../components/ui/Dropdown';
+import { locationPermission, getLocation, distanceM } from '../../utils/location';
 
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  mobile: z.string().regex(/^[0-9]{10}$/, 'Enter valid 10-digit mobile number'),
+  mobile: z.string().regex(/^[6-9][0-9]{9}$/, 'Enter valid 10-digit mobile number'),
   email: z.string().email('Enter a valid email').optional().or(z.literal('')),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: z.string().min(8, 'At least 8 characters').regex(/(?=.*[a-zA-Z])(?=.*\d)/, 'Use letters and numbers'),
   confirmPassword: z.string().min(1, 'Please confirm your password'),
   carBrand: z.string().optional(),
   carModel: z.string().optional(),
-  carRegNo: z.string().optional(),
+  carRegNo: z.string().min(1, 'Enter your car registration number').refine(v => !regNoError(v), { message: 'Invalid number plate (e.g. MH01AB1234)' }),
+  whatsapp: z.string().optional(),
   referralCode: z.string().optional(),
 }).refine((data) => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
@@ -32,33 +38,80 @@ export default function RegisterPage() {
   const registerMutation = useRegister();
   const { login } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
 
   const [selectedBrand, setSelectedBrand] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [customBrand, setCustomBrand] = useState('');
   const [customModel, setCustomModel] = useState('');
+  const [waSame, setWaSame] = useState(true);
+  const [studios, setStudios] = useState<{ id: number; name: string; city?: string; address?: string; latitude?: string; longitude?: string }[]>([]);
+  const [studioId, setStudioId] = useState('');
+  const [nearNote, setNearNote] = useState('');
+
+  // Studios to choose from; if location is already allowed, the nearest one is picked for them
+  useEffect(() => {
+    api.get('/franchises/public').then(async r => {
+      const list = r.data.data || [];
+      setStudios(list);
+      if (list.length === 1) { setStudioId(String(list[0].id)); return; }
+      if ((await locationPermission()) !== 'granted') return;
+      try {
+        const me = await getLocation(8000);
+        const withPin = list.filter((s: any) => s.latitude != null);
+        if (!withPin.length) return;
+        const near = withPin.map((s: any) => ({ s, d: distanceM(me, { lat: +s.latitude, lng: +s.longitude }) })).sort((a: any, b: any) => a.d - b.d)[0];
+        setStudioId(String(near.s.id));
+        setNearNote(`Nearest to you (${near.d < 1000 ? near.d + ' m' : (near.d / 1000).toFixed(1) + ' km'})`);
+      } catch { /* they can choose themselves */ }
+    }).catch(() => {});
+  }, []);
 
   const { data: brandsRes } = useBrands();
   const { data: modelsRes } = useModels(selectedBrand);
 
   const liveBrands: string[] = brandsRes?.data || [];
-  const carBrands = liveBrands.length > 0 ? Array.from(new Set([...liveBrands, 'Others'])) : fallbackCarBrands;
+  const carBrands = Array.from(new Set([...datasetBrands.filter(b => b !== 'Others'), ...liveBrands, 'Others']));
 
   const liveModels: string[] = modelsRes?.data || [];
   const models = selectedBrand
-    ? (liveModels.length > 0 ? Array.from(new Set([...liveModels, 'Other'])) : getModelsForBrand(selectedBrand))
+    ? Array.from(new Set([...getModelsForBrand(selectedBrand).filter(m => m !== 'Other'), ...liveModels, 'Other']))
     : [];
 
   const isOtherBrand = selectedBrand === 'Others';
   const isOtherModel = selectedModel === 'Other';
 
-  const { register, handleSubmit, formState: { errors } } = useForm<RegisterForm>({
+  const refFromLink = new URLSearchParams(window.location.search).get('ref') || '';
+  const { register, handleSubmit, getValues, formState: { errors } } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
+    defaultValues: { referralCode: refFromLink.toUpperCase() },
   });
 
+  const sendOtp = async () => {
+    const mobile = (getValues('mobile') || '').replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(mobile)) { toast.error('Enter a valid 10-digit mobile number first'); return; }
+    setSendingOtp(true);
+    try {
+      const { data } = await api.post('/auth/otp/register', { mobile });
+      setOtpSent(true);
+      toast.success(data.message || 'OTP sent');
+      if (data.dev_otp) toast.success(`Dev OTP: ${data.dev_otp}`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not send OTP');
+    } finally { setSendingOtp(false); }
+  };
+
   const onSubmit = (data: RegisterForm) => {
+    if (!otpSent) { toast.error('Verify your mobile — tap "Send OTP"'); return; }
+    if (otp.length !== 6) { toast.error('Enter the 6-digit OTP sent to your mobile'); return; }
     const finalBrand = isOtherBrand ? customBrand : selectedBrand;
     const finalModel = isOtherModel ? customModel : selectedModel;
+    if (!finalBrand?.trim() || !finalModel?.trim()) { toast.error('Select your car brand and model'); return; }
+    if (studios.length > 1 && !studioId) { toast.error('Choose your studio'); return; }
+    const wa = (data.whatsapp || '').replace(/\D/g, '');
+    if (!waSame && !/^[6-9]\d{9}$/.test(wa)) { toast.error('Enter a valid 10-digit WhatsApp number'); return; }
 
     registerMutation.mutate(
       { 
@@ -66,15 +119,18 @@ export default function RegisterPage() {
         mobile: data.mobile, 
         email: data.email || undefined, 
         password: data.password,
-        car_brand: finalBrand || undefined,
-        car_model: finalModel || undefined,
-        car_reg_no: data.carRegNo || undefined,
-        referral_code: data.referralCode || undefined
-      },
+        car_brand: finalBrand,
+        car_model: finalModel,
+        car_reg_no: normalizeRegNo(data.carRegNo),
+        whatsapp_number: waSame ? undefined : wa,
+        referral_code: data.referralCode || undefined,
+        franchise_id: studioId ? Number(studioId) : undefined,
+        otp,
+      } as any,
       {
         onSuccess: (result) => {
           login(result.token, result.user);
-          toast.success(`Welcome to O3 Car Spaaa, ${result.user.name}!`);
+          toast.success(`Welcome to O3 Car Spaa, ${result.user.name}!`);
           navigate('/customer/services');
         },
         onError: (err: any) => {
@@ -89,6 +145,7 @@ export default function RegisterPage() {
     <div className="min-h-screen bg-slate-50 flex">
       {/* Left — brand panel */}
       <div className="hidden lg:flex w-1/2 bg-[#0F172A] relative overflow-hidden items-center justify-center pattern-overlay">
+        <img src="/photos/studio-hero.webp" alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
         <div className="absolute inset-0 bg-gradient-to-br from-[#0284C7]/20 via-transparent to-[#0369A1]/10 animate-gradient-shift" />
         <div className="relative z-10 px-16 max-w-md">
           <div className="mb-6">
@@ -96,7 +153,7 @@ export default function RegisterPage() {
           </div>
           <div className="w-16 h-1 bg-gradient-to-r from-[#0284C7] to-[#38BDF8] mt-6 mb-6 rounded-full" />
           <p className="text-slate-300 text-sm leading-relaxed font-medium">
-            Join O3 Car Spaaa for a premium car care experience. Track your ceramic coating,
+            Join O3 Car Spaa for a premium car care experience. Track your ceramic coating,
             earn loyalty rewards, and book service slots with ease.
           </p>
           <div className="mt-10 space-y-3">
@@ -126,12 +183,15 @@ export default function RegisterPage() {
       </div>
 
       {/* Right — register form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-white">
+      <div className="w-full lg:w-1/2 flex items-start lg:items-center justify-center px-5 pt-6 pb-10 lg:p-8 bg-white">
         <div className="w-full max-w-md animate-fade-in-up">
-          {/* Mobile brand header */}
-          <div className="lg:hidden text-center mb-8 flex flex-col items-center">
-            <Logo size="lg" />
-            <div className="w-12 h-1 bg-[#0284C7] mx-auto mt-4 rounded-full" />
+          {/* Mobile app hero */}
+          <div className="lg:hidden -mx-5 -mt-6 mb-6 px-6 pt-10 pb-16 rounded-b-[32px] bg-gradient-to-br from-[#0F172A] via-[#1E3A8A] to-[#2563EB] text-white text-center relative overflow-hidden">
+            <img src="/photos/studio-hero.webp" alt="" className="absolute inset-0 w-full h-full object-cover opacity-45" />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#0B1F4D]/40 via-[#0B1F4D]/60 to-[#1D4ED8]/80" />
+            <div className="relative inline-flex bg-white rounded-2xl p-2 shadow-xl"><Logo size="md" /></div>
+            <p className="relative mt-5 text-2xl font-black leading-tight">At your time.<br /><span className="text-sky-300">Showroom shine.</span></p>
+            <p className="relative mt-2 text-xs text-white/80">Ceramic · PPF · Detailing · Premium wash</p>
           </div>
 
           <div className="mb-8">
@@ -190,6 +250,36 @@ export default function RegisterPage() {
               {errors.mobile && (
                 <p className="text-[11px] text-rose-600 mt-1.5 font-medium">{errors.mobile.message}</p>
               )}
+              <div className="flex gap-2 mt-2">
+                <input type="text" inputMode="numeric" maxLength={6} value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                  placeholder={otpSent ? 'Enter 6-digit OTP' : 'Verify mobile with OTP'} disabled={!otpSent}
+                  className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-bold tracking-widest disabled:opacity-60" />
+                <button type="button" onClick={sendOtp} disabled={sendingOtp}
+                  className="px-4 py-3 bg-slate-900 text-white text-xs font-bold rounded-xl whitespace-nowrap disabled:opacity-50">
+                  {sendingOtp ? 'Sending…' : otpSent ? 'Resend OTP' : 'Send OTP'}
+                </button>
+              </div>
+            </div>
+
+            {/* WhatsApp number (updates, invoices and reminders go here) */}
+            <div>
+              <label className="flex items-center gap-2 text-[13px] font-semibold text-slate-700 cursor-pointer select-none">
+                <input type="checkbox" checked={waSame} onChange={e => setWaSame(e.target.checked)} className="w-4 h-4 accent-[#0284C7]" />
+                My WhatsApp number is the same as my mobile
+              </label>
+              {!waSame && (
+                <div className="relative mt-2">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-semibold">+91</span>
+                  <input
+                    {...register('whatsapp')}
+                    type="tel"
+                    maxLength={10}
+                    onInput={(e) => { e.currentTarget.value = e.currentTarget.value.replace(/\D/g, '').slice(0, 10); }}
+                    placeholder="WhatsApp number"
+                    className="w-full pl-14 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] placeholder:text-slate-400"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Email (optional) */}
@@ -215,20 +305,20 @@ export default function RegisterPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
-                  Car Brand <span className="text-slate-400 normal-case tracking-normal">(optional)</span>
+                  Car Brand <span className="text-rose-500">*</span>
                 </label>
-                <select
+                <Dropdown
                   value={selectedBrand}
                   onChange={(e) => { setSelectedBrand(e.target.value); setSelectedModel(''); setCustomBrand(''); setCustomModel(''); }}
                   className="w-full px-3.5 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] transition-all duration-200 cursor-pointer"
                 >
                   <option value="">Select brand...</option>
                   {carBrands.map(b => <option key={b} value={b}>{b}</option>)}
-                </select>
+                </Dropdown>
               </div>
               <div>
                 <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
-                  Car Model <span className="text-slate-400 normal-case tracking-normal">(optional)</span>
+                  Car Model <span className="text-rose-500">*</span>
                 </label>
                 {isOtherBrand ? (
                   <input
@@ -239,7 +329,7 @@ export default function RegisterPage() {
                     className="w-full px-3.5 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7]"
                   />
                 ) : (
-                  <select
+                  <Dropdown
                     value={selectedModel}
                     onChange={(e) => { setSelectedModel(e.target.value); setCustomModel(''); }}
                     className="w-full px-3.5 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] cursor-pointer"
@@ -247,22 +337,43 @@ export default function RegisterPage() {
                   >
                     <option value="">{selectedBrand ? 'Select model...' : 'Select brand first'}</option>
                     {models.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
+                  </Dropdown>
+                )}
+                {isOtherModel && !isOtherBrand && (
+                  <input type="text" value={customModel} onChange={(e) => setCustomModel(e.target.value)} placeholder="Type your model"
+                    className="mt-2 w-full px-3.5 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7]" />
                 )}
               </div>
             </div>
 
             <div>
               <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
-                Registration No. <span className="text-slate-400 normal-case tracking-normal">(optional)</span>
+                Registration No. <span className="text-rose-500">*</span>
               </label>
               <input
                 {...register('carRegNo')}
+                maxLength={11}
                 type="text"
-                placeholder="e.g. GJ06AB1234"
+                placeholder="e.g. MH01AB1234"
                 className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium focus:ring-2 focus:ring-[#0284C7]/20 focus:bg-white focus:border-[#0284C7] placeholder:text-slate-400 transition-all duration-200 uppercase"
               />
+              {errors.carRegNo && <p className="text-[11px] text-rose-600 mt-1.5 font-medium">{errors.carRegNo.message}</p>}
             </div>
+
+            {/* Studio (only when there is more than one) */}
+            {studios.length > 1 && (
+              <div>
+                <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
+                  Your studio <span className="text-rose-500">*</span>
+                </label>
+                <Dropdown value={studioId} onChange={(e) => { setStudioId(e.target.value); setNearNote(''); }}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-medium">
+                  <option value="">Choose the studio you will visit</option>
+                  {studios.map(s => <option key={s.id} value={s.id}>{s.name}{s.city ? ` — ${s.city}` : ''}</option>)}
+                </Dropdown>
+                {nearNote && <p className="text-[11px] text-emerald-600 mt-1.5 font-semibold">{nearNote}</p>}
+              </div>
+            )}
 
             {/* Referral Code */}
             <div>
@@ -366,7 +477,7 @@ export default function RegisterPage() {
           {/* Footer */}
           <div className="mt-8 text-center">
             <p className="text-[10px] text-slate-400 font-medium">
-              O3 Car Spaaa v2.0 · Anand, Gujarat (388121)
+              O3 Car Spaa v2.0 · Anand, Gujarat (388121)
             </p>
           </div>
         </div>

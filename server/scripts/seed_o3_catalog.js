@@ -3,7 +3,7 @@ const mysql = require('mysql2/promise');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 async function seedO3Catalog() {
-  console.log('--- Seeding O3 Car Spa Official Services & Packages Catalog ---');
+  console.log('--- Seeding O3 Car Spaa Official Services & Packages Catalog ---');
 
   const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
@@ -125,7 +125,7 @@ async function seedO3Catalog() {
       }
     }
 
-    console.log('✓ 5 Official O3 Car Spa Annual Packages Seeded!');
+    console.log('✓ 5 Official O3 Car Spaa Annual Packages Seeded!');
 
     await conn.commit();
     console.log('\n🎉 O3 CATALOG SEED COMPLETED SUCCESSFULLY!');

@@ -9,7 +9,9 @@ import toast from 'react-hot-toast';
 
 import { useQuotations, useDeleteQuotation } from '../../api/hooks/useQuotations';
 import api from '../../api/axiosInstance';
+import AdminHero from '../../components/admin/AdminHero';
 import ConfirmModal from '../../components/ui/ConfirmModal';
+import Dropdown from '../../components/ui/Dropdown';
 
 function formatDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -79,21 +81,24 @@ export default function QuotationsListPage() {
     }
   };
 
-  const handleConvertToJobCart = (q: any) => {
-    // Navigate to job card creation page and prefill details using react-router state
-    navigate('/admin/job-carts/new', {
-      state: {
-        prefill: {
-          customer_name: q.customer_name,
-          customer_mobile: q.customer_mobile,
-          customer_email: q.customer_email || '',
-          car_brand: q.car_brand || '',
-          car_model: q.car_model || '',
-          vehicle_reg_no: q.vehicle_no || '',
-          notes: `Converted from Quotation #${q.quotation_number}. ${q.notes || ''}`
-        }
-      }
-    });
+  const handleConvertToJobCart = async (q: any) => {
+    try {
+      const { data } = await api.post(`/quotations/${q.id}/convert`);
+      refetch();
+      navigate('/admin/job-carts/new', { state: { prefill: data.data } });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Could not convert quotation');
+    }
+  };
+
+  const handleSendWhatsApp = async (q: any) => {
+    try {
+      const { data } = await api.post(`/quotations/${q.id}/whatsapp`);
+      toast.success(data.message);
+      refetch();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Could not send quotation');
+    }
   };
 
   const clearFilters = () => {
@@ -110,22 +115,19 @@ export default function QuotationsListPage() {
   const hasFilters = search || status || fromDate || toDate;
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', sans-serif", minHeight: '100vh' }}>
+    <div style={{ fontFamily: "'Manrope', sans-serif", minHeight: '100vh' }}>
+      <AdminHero title={'Service Quotations & Estimates'} subtitle={'Manage, print, and convert customer quotations to job cards'} />
       {/* ─── Header ─── */}
       <div style={{ marginBottom: '28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
           <div>
-            <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#0F172A', margin: 0, letterSpacing: '-0.5px' }}>
-              Service Quotations & Estimates
-            </h1>
-            <p style={{ color: '#5f5e5e', fontSize: '13px', marginTop: '4px' }}>
-              Manage, print, and convert customer quotations to job cards
-            </p>
+            
+            
           </div>
           <div style={{ display: 'flex', gap: '10px' }}>
             <button
               onClick={() => refetch()}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#f6f3f2', color: '#5f5e5e', border: '1px solid #ede8e7', borderRadius: '10px', padding: '10px 16px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#F1F5F9', color: '#64748B', border: '1px solid #ede8e7', borderRadius: '10px', padding: '10px 16px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
             >
               <RefreshCw size={15} />
               Refresh
@@ -159,7 +161,7 @@ export default function QuotationsListPage() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#f9f6f5', borderRadius: '8px', padding: '8px 14px' }}>
           <Filter size={14} color="#9e9e9e" />
-          <select
+          <Dropdown
             value={status}
             onChange={e => setStatus(e.target.value)}
             style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '13px', color: '#0F172A', cursor: 'pointer' }}
@@ -169,7 +171,7 @@ export default function QuotationsListPage() {
             <option value="sent">Sent</option>
             <option value="accepted">Accepted</option>
             <option value="declined">Declined</option>
-          </select>
+          </Dropdown>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#f9f6f5', borderRadius: '8px', padding: '8px 14px' }}>
@@ -275,12 +277,12 @@ export default function QuotationsListPage() {
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
                 {/* Quotation No */}
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0F172A', fontFamily: 'monospace' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0F172A', fontFamily: 'Manrope, sans-serif' }}>
                   {q.quotation_number}
                 </div>
 
                 {/* Date */}
-                <div style={{ fontSize: '12px', color: '#5f5e5e', fontWeight: 500 }}>
+                <div style={{ fontSize: '12px', color: '#64748B', fontWeight: 500 }}>
                   {formatDate(q.created_at)}
                 </div>
 
@@ -296,7 +298,7 @@ export default function QuotationsListPage() {
                     {q.car_brand} {q.car_model}
                   </div>
                   {q.vehicle_no && (
-                    <div style={{ fontSize: '11px', color: '#9e9e9e', marginTop: '2px' }}>🚗 {q.vehicle_no}</div>
+                    <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px', fontWeight: 600 }}>{q.vehicle_no}</div>
                   )}
                 </div>
 
@@ -343,7 +345,7 @@ export default function QuotationsListPage() {
                       display: 'flex', alignItems: 'center', gap: '4px',
                       padding: '6px 10px', borderRadius: '6px',
                       border: '1px solid #ede8e7',
-                      background: 'white', color: '#5f5e5e', fontSize: '11px', fontWeight: 600,
+                      background: 'white', color: '#64748B', fontSize: '11px', fontWeight: 600,
                       cursor: 'pointer', transition: 'all 0.15s',
                     }}
                   >
@@ -363,6 +365,14 @@ export default function QuotationsListPage() {
                   >
                     <Briefcase size={12} />
                     Job Card
+                  </button>
+
+                  <button
+                    onClick={() => handleSendWhatsApp(q)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '6px',
+                      border: '1px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    WhatsApp
                   </button>
 
                   <button
@@ -398,7 +408,7 @@ export default function QuotationsListPage() {
           >
             <ChevronLeft size={16} /> Prev
           </button>
-          <span style={{ fontSize: '13px', color: '#5f5e5e', fontWeight: 600 }}>
+          <span style={{ fontSize: '13px', color: '#64748B', fontWeight: 600 }}>
             Page {page} of {totalPages}
           </span>
           <button

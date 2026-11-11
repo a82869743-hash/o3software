@@ -7,7 +7,9 @@ import {
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
+import AdminHero from '../../components/admin/AdminHero';
 import ConfirmModal from '../../components/ui/ConfirmModal';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 interface JobCardRecord {
   id: number;
@@ -75,6 +77,7 @@ export default function AllJobCardsPage() {
   }, [page, statusFilter, serviceCategoryFilter, search, fromDate, toDate]);
 
   useEffect(() => { setPage(1); }, [statusFilter, serviceCategoryFilter, search, fromDate, toDate]);
+  useLiveReload(() => { fetchRecords(); }); // reload when anything changes elsewhere
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
 
 
@@ -125,21 +128,16 @@ export default function AllJobCardsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <AdminHero title={'All Job Cards'} subtitle={'View, filter, search, print and download official PDF job cards & bills'} />
 
       {/* ── Page Header ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: 40, height: 40, borderRadius: 12, background: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF' }}>
-              <ClipboardList size={22} />
-            </div>
+
             <div>
-              <h1 style={{ fontSize: '22px', fontWeight: 900, color: '#0F172A', margin: 0, letterSpacing: '-0.5px' }}>
-                All Job Cards
-              </h1>
-              <p style={{ fontSize: '13px', color: '#64748B', margin: 0, marginTop: '2px', fontWeight: 500 }}>
-                View, filter, search, print and download official PDF job cards & bills
-              </p>
+              
+              
             </div>
           </div>
         </div>

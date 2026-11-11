@@ -15,8 +15,9 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const mysql = require('mysql2/promise');
 
-async function main() {
-  const pool = mysql.createPool({
+async function runStartupMigrations(existingPool) {
+  const isInternalPool = !existingPool;
+  const pool = existingPool || mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '3306', 10),
     user: process.env.DB_USER || 'root',
@@ -27,7 +28,14 @@ async function main() {
     multipleStatements: true,
   });
 
-  const conn = await pool.getConnection();
+  let conn;
+  try {
+    conn = await pool.getConnection();
+  } catch (connErr) {
+    console.warn('[MIGRATIONS] Database connection pending, will retry on next connection:', connErr.message);
+    if (isInternalPool) await pool.end().catch(() => {});
+    return;
+  }
 
   try {
     console.log('═══════════════════════════════════════════');
@@ -100,6 +108,10 @@ async function main() {
     await addColumnIfNotExists('inventory', 'selling_price', 'DECIMAL(10,2) DEFAULT 0');
     await addColumnIfNotExists('inventory', 'cost_price', 'DECIMAL(10,2) DEFAULT 0');
     await addColumnIfNotExists('inventory', 'images_json', 'TEXT DEFAULT NULL');
+
+    // ─── slots table ──────────────────────────────────
+    console.log('\n📅 Migrating: slots table');
+    await addColumnIfNotExists('slots', 'is_deleted', 'TINYINT DEFAULT 0');
 
     // ─── v2_gst_records table ─────────────────────────
     console.log('\n📊 Migrating: v2_gst_records table');
@@ -222,16 +234,136 @@ async function main() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
+    // ─── Discount Reason & Reference Columns ─────────────────
+    console.log('\n📝 Migrating: Discount Reason & Reference Columns');
+    await addColumnIfNotExists('job_carts', 'discount_reason', 'VARCHAR(255) DEFAULT NULL');
+    await addColumnIfNotExists('job_carts', 'discount_reference', 'VARCHAR(255) DEFAULT NULL');
+    await addColumnIfNotExists('manual_bills', 'discount_reason', 'VARCHAR(255) DEFAULT NULL');
+    await addColumnIfNotExists('manual_bills', 'discount_reference', 'VARCHAR(255) DEFAULT NULL');
+
+    // ─── Partial PPF Custom Price & Notes ─────────────────────
+    console.log('\n✨ Migrating: Partial PPF Custom Fields');
+    await addColumnIfNotExists('job_services', 'custom_price', 'DECIMAL(10,2) DEFAULT NULL');
+    await addColumnIfNotExists('job_services', 'custom_notes', 'VARCHAR(255) DEFAULT NULL');
+
+    // ─── Slot Closures & Holidays ────────────────────────────
+    console.log('\n📅 Migrating: slot_closures table');
+    await createTableIfNotExists('slot_closures', `
+      CREATE TABLE slot_closures (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        franchise_id INT DEFAULT 1,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        slot_time VARCHAR(50) DEFAULT NULL,
+        reason VARCHAR(255) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    // ─── Job Card Live Progress Stages ───────────────────────
+    console.log('\n🚀 Migrating: job_card_stages table');
+    await createTableIfNotExists('job_card_stages', `
+      CREATE TABLE job_card_stages (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        job_cart_id INT UNSIGNED NOT NULL,
+        stage_name VARCHAR(100) NOT NULL,
+        status VARCHAR(50) DEFAULT 'pending',
+        notes TEXT DEFAULT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_job_cart (job_cart_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    // ─── Customer Rewards Table ──────────────────────────────
+    console.log('\n🎁 Migrating: customer_rewards table');
+    await createTableIfNotExists('customer_rewards', `
+      CREATE TABLE customer_rewards (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_id INT NOT NULL,
+        reward_type ENUM('welcome', 'first_service', 'birthday', 'referral_bonus', 'loyalty_milestone') NOT NULL,
+        points_awarded INT NOT NULL DEFAULT 0,
+        discount_pct DECIMAL(5,2) DEFAULT NULL,
+        description VARCHAR(255),
+        redeemed TINYINT(1) DEFAULT 0,
+        redeemed_at TIMESTAMP NULL,
+        expires_at TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_customer (customer_id),
+        INDEX idx_type (reward_type)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    // ─── Franchise Stock Requests & Pricing ──────────────────
+    console.log('\n🏬 Migrating: franchise_stock_requests & pricing tables');
+    await createTableIfNotExists('franchise_inventory_pricing', `
+      CREATE TABLE franchise_inventory_pricing (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        inventory_id INT NOT NULL,
+        franchise_id INT NOT NULL,
+        franchise_price DECIMAL(10,2) DEFAULT NULL,
+        selling_price DECIMAL(10,2) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_inv_fran (inventory_id, franchise_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    await createTableIfNotExists('franchise_stock_requests', `
+      CREATE TABLE franchise_stock_requests (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        franchise_id INT NOT NULL,
+        product_id INT UNSIGNED NULL,
+        product_name VARCHAR(255) NOT NULL,
+        requested_quantity INT UNSIGNED NOT NULL DEFAULT 1,
+        unit VARCHAR(50) DEFAULT 'pcs',
+        estimated_price DECIMAL(10,2) DEFAULT NULL,
+        notes TEXT NULL,
+        status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+        rejection_reason VARCHAR(255) NULL,
+        approved_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_franchise_req (franchise_id),
+        INDEX idx_req_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    // ─── Multi-franchise & Core Missing Columns ────────────────
+    console.log('\n🏢 Migrating: Multi-franchise & Core Columns');
+    await addColumnIfNotExists('transactions', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('deliveries', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('staff_payments', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('package_requests', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('product_orders', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('services', 'franchise_id', 'INT NULL DEFAULT NULL');
+    await addColumnIfNotExists('slots', 'is_deleted', 'TINYINT DEFAULT 0');
+    await addColumnIfNotExists('job_carts', 'total_amount', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+    await addColumnIfNotExists('vendors', 'franchise_id', 'INT NULL DEFAULT 1');
+    await addColumnIfNotExists('bookings', 'booking_type', "VARCHAR(50) DEFAULT 'direct'");
+    await addColumnIfNotExists('bookings', 'user_package_id', 'INT NULL');
+    await addColumnIfNotExists('bookings', 'package_service_name', 'VARCHAR(255) NULL');
+    await addColumnIfNotExists('bookings', 'pickup_type', "VARCHAR(50) DEFAULT 'none'");
+    await addColumnIfNotExists('bookings', 'pickup_charge', 'DECIMAL(10,2) DEFAULT 0.00');
+    await addColumnIfNotExists('vehicles', 'category', "VARCHAR(50) DEFAULT 'sedan'");
+    await addColumnIfNotExists('users', 'profile_picture', 'VARCHAR(255) NULL');
+
+
+
     console.log('\n═══════════════════════════════════════════');
+
     console.log('  ✅ Migration completed successfully!');
     console.log('═══════════════════════════════════════════\n');
 
   } catch (err) {
-    console.error('\n❌ Migration failed:', err);
+    console.error('\n❌ Migration notice:', err.message);
   } finally {
-    conn.release();
-    await pool.end();
+    if (conn) conn.release();
+    if (isInternalPool) await pool.end().catch(() => {});
   }
 }
 
-main();
+module.exports = { runStartupMigrations };
+
+if (require.main === module) {
+  runStartupMigrations().then(() => process.exit(0)).catch(() => process.exit(1));
+}

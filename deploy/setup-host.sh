@@ -72,6 +72,9 @@ pm2 set pm2-logrotate:retain 10
 pm2 set pm2-logrotate:compress true
 
 # ── 4. Install & Configure MySQL 8.0 ─────────────────────────────────────────
+# Server clock on India time, so crontab times (02:00 backup etc.) mean IST
+timedatectl set-timezone Asia/Kolkata || true
+
 echo "🗄️ [4/8] Installing MySQL 8.0 Database Server..."
 apt-get install -y mysql-server
 

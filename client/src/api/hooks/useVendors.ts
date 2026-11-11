@@ -8,14 +8,6 @@ export function useVendors(params?: { search?: string; active_only?: boolean }) 
   });
 }
 
-export function useVendor(id: number | string) {
-  return useQuery({
-    queryKey: ['vendor', id],
-    queryFn: () => api.get(`/vendors/${id}`).then(r => r.data),
-    enabled: !!id,
-  });
-}
-
 export function useCreateVendor() {
   const qc = useQueryClient();
   return useMutation({

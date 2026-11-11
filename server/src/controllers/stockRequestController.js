@@ -52,6 +52,10 @@ exports.create = async (req, res) => {
     const activeFranchiseId = req.headers['x-franchise-id']
       ? parseInt(req.headers['x-franchise-id'], 10)
       : (req.body.franchise_id || req.user.franchise_id || 1);
+    // The main studio (HQ) supplies the others; it never orders stock from itself.
+    if (Number(activeFranchiseId) === 1) {
+      return res.status(400).json({ success: false, error: 'The main studio does not order stock from itself. Add stock in Inventory instead.' });
+    }
 
     let orderItems = [];
     if (Array.isArray(items) && items.length > 0) {
@@ -142,6 +146,12 @@ exports.approve = async (req, res) => {
       }
 
       const mainItem = invRows[0];
+      if (Number(mainItem.franchise_id || 1) === Number(reqItem.franchise_id || 1)) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: 'This request is from the same studio that holds the stock — nothing to send' });
+      }
+      const sErr = await require('../utils/stock').stockError(conn, reqItem.product_id, transferQty);
+      if (sErr) { await conn.rollback(); return res.status(400).json({ success: false, error: sErr }); }
 
       // Deduct stock from main admin inventory
       await conn.query('UPDATE inventory SET quantity = GREATEST(0, quantity - ?) WHERE id = ?', [transferQty, reqItem.product_id]);

@@ -15,12 +15,12 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
     const adminHash = await bcrypt.hash('12345', 10);
     const testHash = await bcrypt.hash('test123', 10);
 
-    // Update O3 Car Spa Owner password
+    // Update O3 Car Spaa Owner password
     await conn.query(
       `UPDATE users SET mobile = '9316668760', password_hash = ? WHERE role = 'admin' AND mobile = '9316668760'`,
       [adminHash]
     );
-    console.log('✓ O3 Car Spa Owner mobile set to 9316668760, password updated to: 12345');
+    console.log('✓ O3 Car Spaa Owner mobile set to 9316668760, password updated to: 12345');
 
     // Update other admins just in case
     await conn.query(

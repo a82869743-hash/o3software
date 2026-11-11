@@ -60,6 +60,9 @@ import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
 import { toast } from 'react-hot-toast';
+import { socketUrl } from '../../utils/endpoints';
+import Dropdown from '../../components/ui/Dropdown';
+import { copyText } from '../../utils/copyText';
 
 export default function WhatsAppPage() {
   const [activeTab, setActiveTab] = useState<'queue' | 'warranties' | 'antispam' | 'providers' | 'optouts'>('queue');
@@ -91,8 +94,8 @@ export default function WhatsAppPage() {
   // Test Send Form
   const [testForm, setTestForm] = useState({
     channel: 'whatsapp',
-    mobile: '9876543210',
-    email: 'customer@o3carspaa.com',
+    mobile: '',
+    email: '',
     template_name: 'WARRANTY_CERTIFICATE',
     message_body: 'Test notification from O3 Car Spaa automation sandbox.'
   });
@@ -209,8 +212,8 @@ export default function WhatsAppPage() {
 
   // Socket.io for Real-time Failure Alerts & WhatsApp Engine events
   useEffect(() => {
-    const socketUrl = import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000';
-    const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+    const wsUrl = socketUrl();
+    const socket = io(wsUrl, { transports: ['websocket', 'polling'] });
 
     socket.on('notification_failed', (data: any) => {
       console.warn('[Socket.io] Real-time notification failure alert:', data);
@@ -508,7 +511,9 @@ export default function WhatsAppPage() {
                   <Sparkles size={14} /> Send Direct Test
                 </button>
                 <button
-                  onClick={() => disconnectBaileys.mutate()}
+                  onClick={() => {
+                    if (confirm('Unlink the studio WhatsApp?\n\nCustomers will get no replies, booking messages or login codes until you scan a new QR.')) disconnectBaileys.mutate();
+                  }}
                   disabled={disconnectBaileys.isPending}
                   className="px-3.5 py-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-bold rounded-xl flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
                 >
@@ -570,7 +575,7 @@ export default function WhatsAppPage() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex items-center gap-2 border-b border-gray-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto no-scrollbar [&>button]:shrink-0 [&>button]:whitespace-nowrap">
         <button
           onClick={() => setActiveTab('queue')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
@@ -682,7 +687,7 @@ export default function WhatsAppPage() {
               />
             </div>
 
-            <select
+            <Dropdown
               value={channelFilter}
               onChange={(e) => setChannelFilter(e.target.value)}
               className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-slate-900/20"
@@ -690,10 +695,9 @@ export default function WhatsAppPage() {
               <option value="">All Channels</option>
               <option value="whatsapp">WhatsApp</option>
               <option value="email">Gmail / Email</option>
-              <option value="sms">SMS</option>
-            </select>
+            </Dropdown>
 
-            <select
+            <Dropdown
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
               className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-slate-900/20"
@@ -703,7 +707,7 @@ export default function WhatsAppPage() {
               <option value="queued">Queued</option>
               <option value="processing">Processing</option>
               <option value="failed">Failed</option>
-            </select>
+            </Dropdown>
 
             <button
               onClick={() => {
@@ -1124,7 +1128,7 @@ export default function WhatsAppPage() {
                   <label className="text-xs font-semibold text-gray-600 uppercase mb-1 block">
                     Event Trigger / Notification Type
                   </label>
-                  <select
+                  <Dropdown
                     value={antiSpamTrigger}
                     onChange={(e) => setAntiSpamTrigger(e.target.value)}
                     className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs font-medium focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
@@ -1137,7 +1141,7 @@ export default function WhatsAppPage() {
                     <option value="INVOICE_GENERATED">Tax Invoice Soft Copy</option>
                     <option value="WARRANTY_CERTIFICATE">Warranty Certificate Issued</option>
                     <option value="CUSTOM_SPINTAX">Custom Spintax Formula</option>
-                  </select>
+                  </Dropdown>
                 </div>
 
                 {antiSpamTrigger === 'CUSTOM_SPINTAX' ? (
@@ -1430,7 +1434,7 @@ export default function WhatsAppPage() {
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
                     Select Active Provider
                   </label>
-                  <select
+                  <Dropdown
                     value={providerForm.provider}
                     onChange={(e) => setProviderForm(p => ({ ...p, provider: e.target.value as any }))}
                     className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -1439,7 +1443,7 @@ export default function WhatsAppPage() {
                     <option value="aisensy">AiSensy BSP (Official Partner)</option>
                     <option value="baileys_demo">Baileys Demo Mode (Gated Client Demo Only)</option>
                     <option value="mock">Mock Provider (Local Automated QA)</option>
-                  </select>
+                  </Dropdown>
                 </div>
 
                 {providerForm.provider === 'meta_cloud' && (
@@ -1668,14 +1672,14 @@ export default function WhatsAppPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Channel</label>
-              <select
+              <Dropdown
                 value={testForm.channel}
                 onChange={(e) => setTestForm((p) => ({ ...p, channel: e.target.value }))}
                 className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-slate-900/20"
               >
                 <option value="whatsapp">Meta WhatsApp Cloud API (Sandbox/Live)</option>
                 <option value="email">Gmail / SMTP Email (Sandbox/Live)</option>
-              </select>
+              </Dropdown>
             </div>
 
             {testForm.channel === 'whatsapp' ? (
@@ -1920,7 +1924,7 @@ export default function WhatsAppPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          navigator.clipboard.writeText(generatedPairingCode || baileysData?.data?.pairingCode || '');
+                          copyText(generatedPairingCode || baileysData?.data?.pairingCode || '');
                           setCopiedCode(true);
                           setTimeout(() => setCopiedCode(false), 2000);
                           toast.success('Pairing code copied!');

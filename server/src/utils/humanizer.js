@@ -125,9 +125,9 @@ const EVENT_VARIATIONS = {
   ],
 
   SERVICE_STARTED: [
-    (v, g, s) => `${g}\n\nOur detailing team has officially started work on your {{vehicle_number}}. We estimate completion by approximately *{{estimated_time}}*. We'll notify you as soon as the final inspection wraps up!\n\n${s}`,
-    (v, g, s) => `${g}\n\nYour {{vehicle_number}} is now on the studio bay at O3 Car Spaa! The process is underway with an expected finish time of *{{estimated_time}}*.\n\n${s}`,
-    (v, g, s) => `${g}\n\nJust letting you know that our detailing specialists have begun working on your vehicle ({{vehicle_number}}). Target completion: *{{estimated_time}}*.\n\n${s}`
+    (v, g, s) => `${g}\n\nOur detailing team has officially started work on your {{vehicle_number}}. We'll let you know as soon as it's ready.\n\n${s}`,
+    (v, g, s) => `${g}\n\nYour {{vehicle_number}} is now on the studio bay at O3 Car Spaa! Work is underway and it will be ready soon.\n\n${s}`,
+    (v, g, s) => `${g}\n\nJust letting you know that our detailing specialists have begun working on your vehicle ({{vehicle_number}}). We'll message you once it's ready.\n\n${s}`
   ],
 
   SERVICE_COMPLETED: [
@@ -252,7 +252,22 @@ function humanizeManualMessage(text, customerName = null) {
   return injectAntiFingerprintSalt(result);
 }
 
+/**
+ * WhatsApp messages keep at most `max` emojis (the first ones); the rest are removed.
+ * Covers fixed messages, admin templates and AI replies alike.
+ */
+function limitEmojis(text, max = 1) {
+  if (!text) return text;
+  let kept = 0;
+  return String(text)
+    .replace(/\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic}|\p{Emoji_Modifier})*/gu, (m) => (kept++ < max ? m : ''))
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^[ \t]+/gm, '')
+    .replace(/ {2,}/g, ' ');
+}
+
 module.exports = {
+  limitEmojis,
   humanizeNotification,
   humanizeManualMessage,
   parseSpintax,

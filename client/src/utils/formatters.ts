@@ -1,7 +1,25 @@
 // Currency formatter (Indian Rupees)
 export const formatINR = (amount: number | string | null | undefined): string => {
   const parsed = Number(amount);
-  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(isNaN(parsed) ? 0 : parsed);
+  // Whole rupees show as ₹1,000; amounts with paise (GST) show as ₹1,178.82, the same as the bill PDF
+  const v = isNaN(parsed) ? 0 : Math.round(parsed * 100) / 100;
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }).format(v);
+};
+
+/**
+ * "YYYY-MM-DD" in India time. Use instead of toISOString().slice(0, 10), which gives the UTC date:
+ * between midnight and 5:30 am IST that is yesterday, and local midnight dates (1st of the month) shift back a day.
+ */
+export const ymd = (d: Date | string | number = new Date()): string => {
+  const x = d instanceof Date ? d : new Date(d);
+  return isNaN(x.getTime()) ? '' : x.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+};
+
+/** Day part of an API date, in India time, whether it came as "2026-11-12" or as a timestamp. */
+export const dateOnly = (v: string | Date | null | undefined): string => {
+  if (!v) return '';
+  const s = String(v);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ymd(v);
 };
 
 // Date formatter (IST Asia/Kolkata)
@@ -50,4 +68,12 @@ export const timeAgo = (date: string): string => {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+};
+
+/** 45 → "45 min", 60 → "1 hour", 125 → "2 hours 5 min", 2880 → "48 hours" */
+export const formatDuration = (minutes: number | string | null | undefined): string => {
+  const m = Math.round(Number(minutes) || 0);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return `${h} hour${h > 1 ? 's' : ''}${r ? ` ${r} min` : ''}`;
 };

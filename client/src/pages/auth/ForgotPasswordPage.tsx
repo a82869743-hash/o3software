@@ -54,9 +54,9 @@ export default function ForgotPasswordPage() {
     finally { setIsPending(false); }
   };
 
-  const inputCls = 'w-full px-4 py-4 bg-[#f6f3f2] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 placeholder:text-[#8f6f6c]/60 transition-all duration-200';
+  const inputCls = 'w-full px-4 py-4 bg-[#F1F5F9] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 placeholder:text-[#94A3B8]/60 transition-all duration-200';
   const btnCls = 'w-full py-4 bg-gradient-to-br from-[#1D4ED8] to-[#2563EB] text-white font-bold rounded-lg shadow-lg shadow-[#2563EB]/20 hover:shadow-xl hover:shadow-[#2563EB]/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 uppercase tracking-wider text-sm';
-  const labelCls = 'block text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-2';
+  const labelCls = 'block text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] mb-2';
 
   const Spinner = () => (
     <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
@@ -118,7 +118,7 @@ export default function ForgotPasswordPage() {
             <h2 className="text-3xl font-extrabold text-[#0F172A] tracking-tight">
               {step === 'mobile' ? 'Forgot Password' : step === 'otp' ? 'Verify OTP' : 'New Password'}
             </h2>
-            <p className="text-sm text-[#5f5e5e] mt-2 font-medium">
+            <p className="text-sm text-[#64748B] mt-2 font-medium">
               {step === 'mobile' ? 'Enter your registered mobile number' : step === 'otp' ? `We sent a code to +91 ${mobile}` : 'Choose a strong new password'}
             </p>
           </div>
@@ -128,7 +128,7 @@ export default function ForgotPasswordPage() {
               <div>
                 <label className={labelCls}>Mobile Number</label>
                 <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#5f5e5e] text-sm font-semibold">+91</span>
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#64748B] text-sm font-semibold">+91</span>
                   <input type="tel" maxLength={10} value={mobile} onChange={(e) => setMobile(e.target.value.replace(/\D/g, ''))} placeholder="Enter 10-digit mobile" className={`${inputCls} pl-14`} autoFocus />
                 </div>
               </div>
@@ -159,7 +159,7 @@ export default function ForgotPasswordPage() {
                 <label className={labelCls}>New Password</label>
                 <div className="relative">
                   <input type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min. 6 characters" className={`${inputCls} pr-12`} autoFocus />
-                  <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-[#5f5e5e] hover:text-[#0F172A] transition-colors">
+                  <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-[#64748B] hover:text-[#0F172A] transition-colors">
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       {showPassword ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M3 3l18 18" /> : <><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></>}
                     </svg>
@@ -178,11 +178,11 @@ export default function ForgotPasswordPage() {
           )}
 
           <div className="mt-6 text-center">
-            <p className="text-sm text-[#5f5e5e] font-medium">
+            <p className="text-sm text-[#64748B] font-medium">
               Remember your password?{' '}<Link to="/login" className="text-[#2563EB] font-bold hover:underline">Sign In</Link>
             </p>
           </div>
-          <div className="mt-8 text-center"><p className="text-[10px] text-[#5f5e5e] font-medium">O3 Car Spaa v1.0 · Anand, Gujarat</p></div>
+          <div className="mt-8 text-center"><p className="text-[10px] text-[#64748B] font-medium">O3 Car Spaa v1.0 · Anand, Gujarat</p></div>
         </div>
       </div>
     </div>

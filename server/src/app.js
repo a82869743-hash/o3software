@@ -1,3 +1,6 @@
+// The studio runs on India time: scheduled jobs (reminders, expiry, slot top-up) and dates use IST
+// even when the VPS clock is set to UTC.
+process.env.TZ = process.env.TZ || 'Asia/Kolkata';
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const validateEnv = require('./config/validateEnv');
@@ -20,6 +23,8 @@ const { Server } = require('socket.io');
 const pool = require('./config/db');
 
 const app = express();
+// Behind Nginx: use the real client IP (X-Forwarded-For) so rate limits apply per user, not to everyone at once
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 const server = http.createServer(app);
 
 // ─── Allowed Origins ────────────────────────────────
@@ -30,6 +35,9 @@ const allowedOrigins = [
   'http://localhost:5175',
   'http://127.0.0.1:5173',
   'http://127.0.0.1:5174',
+  // Play Store / App Store app (Capacitor): Android serves from https://localhost, iOS from capacitor://localhost
+  'https://localhost',
+  'capacitor://localhost',
 ].filter(Boolean);
 
 const isAllowedOrigin = (origin, callback) => {
@@ -58,7 +66,8 @@ app.use(cors({
   origin: isAllowedOrigin,
   credentials: true,
 }));
-app.use(express.json({ limit: '10mb' }));
+// keep the raw body so the WhatsApp webhook can verify Meta's X-Hub-Signature-256
+app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { if (req.originalUrl && req.originalUrl.includes('/webhook')) req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Serve uploaded product images ──────────────────
@@ -77,6 +86,25 @@ app.use('/uploads', express.static(uploadsPath));
 // ─── Request Logging & Structured Observability ─────
 const { requestLogger } = require('./middleware/requestLogger');
 app.use(requestLogger);
+// strict phone + number-plate formats on every request
+app.use(require('./middleware/fieldFormats'));
+
+// Unexpected (5xx) failures: in production show customers a friendly message, keep the real one in the log.
+// Expected problems (wrong input, not found, no access) are 4xx and pass through unchanged.
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode >= 500 && body && typeof body === 'object' && (body.error || body.message)) {
+        console.error(`[5xx] ${req.method} ${req.originalUrl}: ${body.error || body.message}`);
+        const friendly = 'Something went wrong on our side. Please try again in a moment.';
+        body = { ...body, ...(body.error && { error: friendly }), ...(body.message && { message: friendly }) };
+      }
+      return json(body);
+    };
+    next();
+  });
+}
 
 // ─── Health check (Liveness / Readiness Probe) ──────
 const healthHandler = async (req, res) => {
@@ -94,9 +122,18 @@ const healthHandler = async (req, res) => {
     dbStatus = `error: ${err.message}`;
   }
 
+  // last good backup (written by scripts/backup.sh); "stale" after 26 hours so an uptime monitor can alert
+  let backup = 'unknown';
+  try {
+    const f = require('path').join(__dirname, '..', '..', 'backups', 'LAST_BACKUP_OK');
+    const st = require('fs').statSync(f);
+    backup = (Date.now() - st.mtimeMs) < 26 * 3600 * 1000 ? 'ok' : 'stale';
+  } catch (_) { /* no backup yet */ }
+
   const mem = process.memoryUsage();
   const payload = {
     status: healthy ? 'healthy' : 'degraded',
+    backup,
     message: 'O3 Car Spaa API is running',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
@@ -125,8 +162,14 @@ app.get('/api/v1/health', healthHandler);
 const { apiLimiter, notificationLimiter } = require('./middleware/rateLimiter');
 app.use('/api', apiLimiter);
 
+// Live updates: every successful change tells all open apps to refresh what they show (see services/liveEvents.js)
+const liveEvents = require('./services/liveEvents');
+app.use('/api', liveEvents.middleware);
+liveEvents.start(io);
+
 // ─── Routes ─────────────────────────────────────────
 const authRoutes = require('./routes/auth');
+app.use('/api/auth/dev-login', require('./routes/devLogin'));
 app.use('/api/auth', authRoutes);
 const jobCartsRoutes = require('./routes/jobCarts');
 app.use('/api/job-carts', jobCartsRoutes);
@@ -182,6 +225,7 @@ const rewardsRoutes = require('./routes/customerRewards');
 app.use('/api/customer-rewards', rewardsRoutes);
 app.use('/api/rewards', rewardsRoutes); // Route alias
 app.use('/api/referrals',     require('./routes/referrals'));
+app.use('/api/integrations',  notificationLimiter, require('./routes/integrations'));
 app.use('/api/pickup-requests', require('./routes/pickup'));
 app.use('/api/pickups',         require('./routes/pickup')); // Route alias
 app.use('/api/products',      require('./routes/products'));
@@ -213,6 +257,30 @@ io.use((socket, next) => {
 });
 
 io.on('connection', (socket) => {
+  // Private rooms: internal users per franchise, customers per user. Never broadcast PII to everyone.
+  const su = socket.user || {};
+  if (['super_admin', 'admin', 'manager', 'staff'].includes(su.role)) {
+    socket.join('internal');
+    socket.join(`franchise_${su.franchise_id || 1}`);
+  }
+  if (su.id > 0) socket.join(`user_${su.id}`);
+
+  // Live job tracking: internal users, the owning customer, or anyone holding the public tracking token
+  socket.on('join_job', async ({ jobId, token }) => {
+    try {
+      const [rows] = await pool.query(
+        'SELECT jc.id, jc.public_token, v.customer_id FROM job_carts jc JOIN vehicles v ON v.id = jc.vehicle_id WHERE jc.id = ? OR jc.public_token = ? LIMIT 1',
+        [parseInt(jobId, 10) || 0, token || '__none__']
+      );
+      if (!rows.length) return;
+      const r = rows[0];
+      const internal = ['super_admin', 'admin', 'manager', 'staff'].includes(su.role);
+      if (internal || su.id === r.customer_id || (token && token === r.public_token)) {
+        socket.join(`job_${r.id}`);
+      }
+    } catch { /* ignore */ }
+  });
+
   socket.on('join_delivery', async ({ deliveryId }) => {
     try {
       const [rows] = await pool.query(
@@ -221,7 +289,7 @@ io.on('connection', (socket) => {
       );
       if (!rows.length) return socket.emit('error', { message: 'Delivery not found' });
       const delivery = rows[0];
-      if (socket.user.role !== 'admin' && socket.user.id !== delivery.staff_id && socket.user.id !== delivery.customer_id) {
+      if (!['super_admin', 'admin', 'manager'].includes(socket.user.role) && socket.user.id !== delivery.staff_id && socket.user.id !== delivery.customer_id) {
         return socket.emit('error', { message: 'Not authorized' });
       }
       socket.join(`delivery_${deliveryId}`);
@@ -242,7 +310,7 @@ io.on('connection', (socket) => {
         [deliveryId]
       );
       if (!rows.length) return;
-      if (socket.user.role !== 'admin' && socket.user.id !== rows[0].staff_id) return;
+      if (!['super_admin', 'admin', 'manager'].includes(socket.user.role) && socket.user.id !== rows[0].staff_id) return;
 
       // Persist to database
       await pool.query(
@@ -315,8 +383,8 @@ server.listen(PORT, () => {
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`   Allowed origins: ${allowedOrigins.join(', ')}\n`);
 
-  if (!process.env.MSG91_AUTH_KEY) {
-    console.warn('[WARNING] MSG91_AUTH_KEY not set — messaging in mock mode');
+  if (!require('./utils/sendOtp').otpConfigured()) {
+    console.warn('[WARNING] No SMS key and WhatsApp not enabled — login codes cannot be sent');
   }
   if (!process.env.JWT_SECRET) {
     console.error('[FATAL] JWT_SECRET not set — authentication will fail');
@@ -331,19 +399,23 @@ server.listen(PORT, () => {
   notificationQueue.setIo(io);
   notificationQueue.startWorker(15000);
 
-  // Phase 5: Initialize Baileys WhatsApp engine (free, auto-reconnecting)
-  const baileys = require('./services/whatsappBaileys');
-  baileys.setIo(io);
-  baileys.connect().catch(err => {
-    // Non-fatal: server still boots; admin can trigger reconnect from UI
-    console.warn('[Baileys] Initial connect deferred:', err.message);
-  });
+  // Unofficial Baileys WhatsApp demo engine — only when explicitly enabled (never in production)
+  if (process.env.ENABLE_BAILEYS_DEMO === 'true') {
+    const baileys = require('./services/whatsappBaileys');
+    baileys.setIo(io);
+    baileys.connect().catch(err => {
+      // Non-fatal: server still boots; admin can trigger reconnect from UI
+      console.warn('[Baileys] Initial connect deferred:', err.message);
+    });
+  }
 
   // Ensure all database schema columns & tables exist on startup
   const { runStartupMigrations } = require('../scripts/migrate_columns');
-  runStartupMigrations(pool).catch((err) => {
-    console.warn('[MIGRATIONS] Notice during startup migrations:', err.message);
-  });
+  runStartupMigrations(pool)
+    .catch((err) => console.warn('[MIGRATIONS] Notice during startup migrations:', err.message))
+    .then(() => require('../scripts/phase1_schema').runPhase1Schema(pool))
+    .then(() => { require('./services/invoiceService').warmUp(); })
+    .catch((err) => console.error('[PHASE1 SCHEMA] Failed:', err.message));
 });
 
 module.exports = { app, io };

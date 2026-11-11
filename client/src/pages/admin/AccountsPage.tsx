@@ -17,7 +17,8 @@ import { useJobCarts } from '../../api/hooks/useJobCarts';
 import { useBuySellList, useCompleteBuySell, useCreateBuySell } from '../../api/hooks/useBuySell';
 import { useInventory } from '../../api/hooks/useInventory';
 import StatusBadge from '../../components/shared/StatusBadge';
-import { formatINR, formatDate } from '../../utils/formatters';
+import { formatINR, formatDate, ymd } from '../../utils/formatters';
+import Dropdown from '../../components/ui/Dropdown';
 
 export default function AccountsPage() {
   const toast = useUIStore(s => s.toast);
@@ -25,8 +26,8 @@ export default function AccountsPage() {
   const [activeTab, setActiveTab] = useState('summary');
   
   const [dateFilter, setDateFilter] = useState({
-    from_date: new Date(new Date().setDate(1)).toISOString().slice(0, 10),
-    to_date: new Date().toISOString().slice(0, 10),
+    from_date: ymd(new Date(new Date().setDate(1))),
+    to_date: ymd(),
   });
 
   const { data: summary, isLoading: isSummaryLoading, refetch: refetchSummary } = useAccountSummary(dateFilter);
@@ -37,8 +38,8 @@ export default function AccountsPage() {
 
   const [showExport, setShowExport] = useState(false);
   const [exportForm, setExportForm] = useState({ 
-    from_date: new Date(new Date().setDate(1)).toISOString().slice(0,10), 
-    to_date: new Date().toISOString().slice(0,10), 
+    from_date: ymd(new Date(new Date().setDate(1))), 
+    to_date: ymd(), 
     format: 'excel' as 'excel' | 'pdf' 
   });
 
@@ -80,7 +81,7 @@ export default function AccountsPage() {
   // Purchase Form State
   const [purchaseForm, setPurchaseForm] = useState({
     vendor_id: '',
-    purchase_date: new Date().toISOString().slice(0, 10),
+    purchase_date: ymd(),
     invoice_number: '',
     tax_amount: '0',
     notes: '',
@@ -113,7 +114,7 @@ export default function AccountsPage() {
     product_id: '',
     quantity: '1',
     unit_price: '0',
-    transaction_date: new Date().toISOString().slice(0, 10),
+    transaction_date: ymd(),
     notes: ''
   });
 
@@ -146,7 +147,7 @@ export default function AccountsPage() {
         product_id: '',
         quantity: '1',
         unit_price: '0',
-        transaction_date: new Date().toISOString().slice(0, 10),
+        transaction_date: ymd(),
         notes: ''
       });
       refetchSummary();
@@ -214,7 +215,7 @@ export default function AccountsPage() {
       setPurchaseModalOpen(false);
       setPurchaseForm({
         vendor_id: '',
-        purchase_date: new Date().toISOString().slice(0, 10),
+        purchase_date: ymd(),
         invoice_number: '',
         tax_amount: '0',
         notes: '',
@@ -903,7 +904,7 @@ export default function AccountsPage() {
               <p className="text-xs text-gray-500">View GSTR-1 & GSTR-2 aggregates and export monthly summaries.</p>
             </div>
             <div className="flex items-center gap-2">
-              <select
+              <Dropdown
                 className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
                 value={gstMonth}
                 onChange={e => setGstMonth(Number(e.target.value))}
@@ -913,8 +914,8 @@ export default function AccountsPage() {
                     {new Date(2000, i).toLocaleString('default', { month: 'long' })}
                   </option>
                 ))}
-              </select>
-              <select
+              </Dropdown>
+              <Dropdown
                 className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
                 value={gstYear}
                 onChange={e => setGstYear(Number(e.target.value))}
@@ -922,7 +923,7 @@ export default function AccountsPage() {
                 {[2025, 2026, 2027, 2028].map(y => (
                   <option key={y} value={y}>{y}</option>
                 ))}
-              </select>
+              </Dropdown>
               <button
                 onClick={downloadGstCsv}
                 className="px-3.5 py-1.5 border border-emerald-200 text-emerald-700 hover:bg-emerald-50 text-xs font-bold rounded-xl transition flex items-center gap-1 shadow-sm"

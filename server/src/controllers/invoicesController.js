@@ -6,11 +6,12 @@ exports.listAll = async (req, res) => {
     const { type = 'all', from_date, to_date, search, page = 1, limit = 30 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const results = [];
+    const fid = Number(req.franchiseId || req.user?.franchise_id || 1);
 
     // ── 1. Job Carts ──────────────────────────────────────────────────────
     if (type === 'all' || type === 'job_cart') {
-      let where = "jc.status = 'complete'";
-      const params = [];
+      let where = "jc.status = 'complete' AND jc.franchise_id = ?";
+      const params = [fid];
       if (from_date) { where += ' AND DATE(jc.completed_at) >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND DATE(jc.completed_at) <= ?'; params.push(to_date); }
       if (search)    { where += ' AND (u.name LIKE ? OR v.registration_no LIKE ? OR jc.invoice_number LIKE ?)'; const s = `%${search}%`; params.push(s,s,s); }
@@ -23,11 +24,7 @@ exports.listAll = async (req, res) => {
           u.name AS party_name,
           u.mobile AS party_mobile,
           COALESCE(jc.completed_at, jc.created_at) AS date,
-          COALESCE(
-            (SELECT SUM(js.service_price + js.labor_charges) FROM job_services js WHERE js.job_cart_id = jc.id)
-            + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0),
-            0
-          ) AS amount,
+          COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0))) AS amount,
           v.registration_no,
           jc.discount_type,
           jc.discount_value
@@ -42,8 +39,8 @@ exports.listAll = async (req, res) => {
 
     // ── 2. Manual Bills ───────────────────────────────────────────────────
     if (type === 'all' || type === 'manual_bill') {
-      let where = "mb.status != 'voided'";
-      const params = [];
+      let where = "mb.status != 'voided' AND mb.franchise_id = ?";
+      const params = [fid];
       if (from_date) { where += ' AND DATE(mb.created_at) >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND DATE(mb.created_at) <= ?'; params.push(to_date); }
       if (search)    { where += ' AND (mb.customer_name LIKE ? OR mb.customer_mobile LIKE ? OR mb.vehicle_reg_no LIKE ?)'; const s = `%${search}%`; params.push(s,s,s); }
@@ -69,8 +66,8 @@ exports.listAll = async (req, res) => {
 
     // ── 3. Staff Salary ───────────────────────────────────────────────────
     if (type === 'all' || type === 'salary') {
-      let where = '1=1';
-      const params = [];
+      let where = '1=1' + ' AND ss.franchise_id = ?';
+      const params = [fid];
       if (from_date) { where += ' AND ss.created_at >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND ss.created_at <= ?'; params.push(to_date); }
       if (search)    { where += ' AND u.name LIKE ?'; params.push(`%${search}%`); }
@@ -97,8 +94,8 @@ exports.listAll = async (req, res) => {
 
     // ── 4. Buy & Sell ─────────────────────────────────────────────────────
     if (type === 'all' || type === 'buy_sell') {
-      let where = '1=1';
-      const params = [];
+      let where = '1=1' + ' AND bs.franchise_id = ?';
+      const params = [fid];
       if (from_date) { where += ' AND DATE(bs.transaction_date) >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND DATE(bs.transaction_date) <= ?'; params.push(to_date); }
       if (search)    { where += ' AND (bs.party_name LIKE ? OR bs.product_name LIKE ?)'; const s = `%${search}%`; params.push(s,s); }
@@ -124,8 +121,8 @@ exports.listAll = async (req, res) => {
 
     // ── 5. Package Purchases ──────────────────────────────────────────────
     if (type === 'all' || type === 'package_purchase') {
-      let where = "pr.status = 'approved'";
-      const params = [];
+      let where = "pr.status = 'approved'" + ' AND pr.franchise_id = ?';
+      const params = [fid];
       if (from_date) { where += ' AND DATE(pr.approved_at) >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND DATE(pr.approved_at) <= ?'; params.push(to_date); }
       if (search)    { where += ' AND (u.name LIKE ? OR v.registration_no LIKE ?)'; const s = `%${search}%`; params.push(s,s); }
@@ -153,8 +150,8 @@ exports.listAll = async (req, res) => {
 
     // ── 6. Quick Washes ──────────────────────────────────────────────
     if (type === 'all' || type === 'quick_wash') {
-      let where = "b.job_type = 'quick_wash' AND b.status = 'completed'";
-      const params = [];
+      let where = "b.job_type = 'quick_wash' AND b.status = 'completed'" + ' AND b.franchise_id = ?';
+      const params = [fid];
       if (from_date) { where += ' AND DATE(b.completed_at) >= ?'; params.push(from_date); }
       if (to_date)   { where += ' AND DATE(b.completed_at) <= ?'; params.push(to_date); }
       if (search)    { where += ' AND (u.name LIKE ? OR COALESCE(v.registration_no, b.vehicle_reg_no) LIKE ?)'; const s = `%${search}%`; params.push(s,s); }
@@ -222,32 +219,12 @@ exports.exportPdf = async (req, res) => {
         invoiceData = { ...mb, customer_name: mb.customer_name || 'Walk-in', title: 'Manual Bill', reference: `MB-${mb.id}`, date: mb.created_at, items: items.map(i => ({ name: i.item_name, price: Number(i.quantity) * Number(i.rate) })) };
       }
     } else if (type === 'quick_wash') {
-      const [rows] = await pool.query(`
-        SELECT b.*,
-               COALESCE(b.customer_id, v.customer_id) as customer_id,
-               COALESCE(u.name, 'Walk-in Customer') as customer_name,
-               COALESCE(u.mobile, 'N/A') as customer_mobile,
-               COALESCE(v.registration_no, b.vehicle_reg_no) as registration_no,
-               COALESCE(v.brand, b.vehicle_brand) as brand,
-               COALESCE(v.model, b.vehicle_model) as model,
-               s.name as service_name,
-               COALESCE(b.amount, s.price_sedan, s.price_hatchback, 0) as service_price
-        FROM bookings b
-        LEFT JOIN vehicles v ON b.vehicle_id = v.id
-        LEFT JOIN users u ON (b.customer_id = u.id OR v.customer_id = u.id)
-        LEFT JOIN services s ON b.service_id = s.id
-        WHERE b.id = ? AND b.job_type = 'quick_wash'
-      `, [id]);
-      if (rows.length) {
-        const b = rows[0];
-        invoiceData = {
-          ...b,
-          title: 'Quick Wash Receipt',
-          reference: `QW-${b.id}`,
-          date: b.completed_at || b.created_at,
-          items: [{ name: b.service_name || 'Quick Wash', price: Number(b.service_price || 0) }]
-        };
-      }
+      // only who owns it is needed here (the PDF itself is built by invoiceService)
+      const [rows] = await pool.query(
+        `SELECT b.id, COALESCE(b.customer_id, v.customer_id) AS customer_id, b.created_at
+           FROM bookings b LEFT JOIN vehicles v ON b.vehicle_id = v.id
+          WHERE b.id = ? AND b.job_type = 'quick_wash'`, [id]);
+      if (rows.length) invoiceData = { ...rows[0], title: 'Quick Wash Receipt', reference: `QW-${rows[0].id}` };
     }
 
     if (!invoiceData) return res.status(404).json({ success: false, error: 'Invoice not found' });
@@ -260,47 +237,11 @@ exports.exportPdf = async (req, res) => {
       }
     }
 
-    const PDFDocument = require('pdfkit');
-    const doc = new PDFDocument({ margin: 50 });
-    
+    const inv = require('../services/invoiceService');
+    const { pdfBuffer } = type === 'manual_bill' ? await inv.generateManualBillPDF(id) : await inv.generateQuickWashInvoicePDF(id);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=Invoice_${invoiceData.reference}.pdf`);
-    doc.pipe(res);
-
-    doc.fontSize(20).text('O3 Car Spaa', { align: 'center' });
-    doc.fontSize(10).text('Premium Car Detailing Studio', { align: 'center' });
-    doc.moveDown();
-    
-    doc.fontSize(14).text(invoiceData.title, { underline: true });
-    doc.fontSize(10).text(`Reference: ${invoiceData.reference}`);
-    doc.text(`Date: ${new Date(invoiceData.date || invoiceData.completed_at || invoiceData.created_at).toLocaleDateString()}`);
-    doc.moveDown();
-    
-    doc.text(`Customer: ${invoiceData.customer_name || 'Walk-in Customer'}`);
-    if (invoiceData.customer_mobile) doc.text(`Mobile: ${invoiceData.customer_mobile}`);
-    if (invoiceData.registration_no) doc.text(`Vehicle: ${invoiceData.registration_no} ${invoiceData.brand ? `(${invoiceData.brand} ${invoiceData.model})` : ''}`);
-    doc.moveDown();
-    
-    doc.text('---------------------------------------------------------');
-    let total = 0;
-    invoiceData.items.forEach(item => {
-      doc.text(`${item.name} - INR ${item.price.toFixed(2)}`);
-      total += item.price;
-    });
-    doc.text('---------------------------------------------------------');
-    
-    if (invoiceData.discount_value > 0) {
-      doc.text(`Subtotal: INR ${total.toFixed(2)}`, { align: 'right' });
-      let discountAmount = invoiceData.discount_type === 'percentage' ? (total * invoiceData.discount_value / 100) : invoiceData.discount_value;
-      doc.text(`Discount: INR -${Number(discountAmount).toFixed(2)}`, { align: 'right' });
-      total -= discountAmount;
-    }
-    
-    doc.fontSize(12).text(`Total Amount: INR ${total.toFixed(2)}`, { align: 'right' });
-    doc.moveDown(2);
-    doc.fontSize(10).text('Thank you for your business!', { align: 'center' });
-    
-    doc.end();
+    res.send(pdfBuffer);
 
   } catch (err) {
     console.error('Export PDF error:', err);

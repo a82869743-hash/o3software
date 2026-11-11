@@ -61,8 +61,8 @@ async function cleanDatabase() {
     await conn.query('SET FOREIGN_KEY_CHECKS = 1');
     console.log('\n✓ Database content cleared successfully.');
 
-    // ─── Seed Solo Admin for O3 Car Spa ─────────────────────────
-    console.log('\nSeeding O3 Car Spa Solo Admin...');
+    // ─── Seed Solo Admin for O3 Car Spaa ─────────────────────────
+    console.log('\nSeeding O3 Car Spaa Solo Admin...');
     const adminHash = await bcrypt.hash('12345', 10);
 
     const [adminResult] = await conn.query(`
@@ -77,24 +77,24 @@ async function cleanDatabase() {
     console.log(`  - Password: 12345`);
     console.log(`  - Role:     admin (ID: ${adminResult.insertId})`);
 
-    // ─── Seed Initial Settings for O3 Car Spa ───────────────────
+    // ─── Seed Initial Settings for O3 Car Spaa ───────────────────
     await conn.query(`
       INSERT INTO settings (key_name, value) VALUES
-        ('studio_name', 'O3 Car Spa'),
+        ('studio_name', 'O3 Car Spaa'),
         ('tagline', 'Premium Car Detailing Studio'),
         ('mobile', '7225030303'),
         ('email', 'o3carspavvn@gmail.com'),
         ('address', 'Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Vitthal Udyognagar, Anand, Gujarat (388121)'),
         ('upi_id', '7225030303@paytm'),
         ('upi_number', '7225030303'),
-        ('upi_name', 'O3 Car Spa')
+        ('upi_name', 'O3 Car Spaa')
       ON DUPLICATE KEY UPDATE value = VALUES(value)
     `);
-    console.log('  ✓ Initial O3 Car Spa settings configured');
+    console.log('  ✓ Initial O3 Car Spaa settings configured');
 
     await conn.end();
     console.log('\n=============================================');
-    console.log('  DATABASE CLEANED & O3 CAR SPA ADMIN READY');
+    console.log('  DATABASE CLEANED & O3 CAR SPAA ADMIN READY');
     console.log('=============================================\n');
 
   } catch (err) {

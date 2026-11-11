@@ -39,7 +39,7 @@ export default function FranchiseSwitcher() {
     } catch {
       // Fallback defaults
       setFranchises([
-        { id: 1, name: 'O3 Car Spaaa - Main Studio', code: 'o3_main' },
+        { id: 1, name: 'O3 Car Spaa - Main Studio', code: 'o3_main' },
         { id: 2, name: 'O3 Lite - Express Studio', code: 'o3_lite' },
       ]);
     }
@@ -51,7 +51,7 @@ export default function FranchiseSwitcher() {
 
   const activeFranchise = franchises.find((f) => f.id === activeId) || franchises[0] || {
     id: 1,
-    name: 'O3 Car Spaaa - Main Studio',
+    name: 'O3 Car Spaa - Main Studio',
     code: 'o3_main',
   };
 

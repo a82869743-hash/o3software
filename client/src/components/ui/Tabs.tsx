@@ -20,7 +20,7 @@ export default function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
           className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all duration-200 whitespace-nowrap relative ${
             activeTab === tab.key
               ? 'bg-gradient-to-br from-[#1D4ED8] to-[#2563EB] text-white shadow-md shadow-[#2563EB]/20'
-              : 'bg-[#f6f3f2] text-[#5f5e5e] hover:bg-[#ebe7e7] hover:text-[#0F172A]'
+              : 'bg-[#F1F5F9] text-[#64748B] hover:bg-[#ebe7e7] hover:text-[#0F172A]'
           }`}
         >
           {tab.label}

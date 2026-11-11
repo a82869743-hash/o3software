@@ -187,16 +187,20 @@ export default function RoleManagementPage() {
                     <div>
                       <div className="font-semibold text-sm text-[#0F172A] flex items-center gap-2">
                         {role.role_name}
-                        {role.is_system_role === 1 && (
+                        {role.is_template && (
                           <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
-                            System
+                            Default
                           </span>
                         )}
+                        {role.franchise_name && !role.is_template && (
+                          <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">{role.franchise_name}</span>
+                        )}
+                        <span className="text-[10px] text-gray-400">{role.user_count || 0} user(s)</span>
                       </div>
                       <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{role.description}</p>
                     </div>
 
-                    {role.is_system_role === 0 && (
+                    {role.editable && !role.is_template && (
                       <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleOpenEdit(role)}
@@ -232,9 +236,9 @@ export default function RoleManagementPage() {
                     {selectedRole?.description || 'Assign specific capabilities for this user role.'}
                   </p>
                 </div>
-                {selectedRole?.is_system_role === 1 ? (
+                {!selectedRole?.editable ? (
                   <div className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-100">
-                    <Info size={14} /> System roles possess default static permissions.
+                    <Info size={14} /> Default role — set by the Super Admin. Create your own role to customise.
                   </div>
                 ) : (
                   <RippleButton
@@ -259,12 +263,12 @@ export default function RoleManagementPage() {
                   {Object.keys(groupedPermissions).map((module) => (
                     <div key={module} className="border border-gray-50 rounded-xl p-4 bg-gray-50/20">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-3">
-                        {module} Module
+                        {groupedPermissions[module][0]?.module_name || module}
                       </h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {groupedPermissions[module].map((perm: any) => {
                           const isChecked = checkedPerms.includes(perm.id);
-                          const isDisabled = selectedRole?.is_system_role === 1;
+                          const isDisabled = !selectedRole?.editable;
 
                           return (
                             <div

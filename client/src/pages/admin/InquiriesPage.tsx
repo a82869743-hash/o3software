@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Instagram, Facebook, Footprints, UserRound, PhoneCall } from 'lucide-react';
 import { HelpCircle, Phone, Mail, Car, MessageCircle, ArrowRight, Plus, Search, Filter, Share2, Users, Globe, Smartphone, Loader2 } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import { useNavigate } from 'react-router-dom';
@@ -7,6 +8,8 @@ import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { useUIStore } from '../../store/uiStore';
 import Modal from '../../components/ui/Modal';
 import Input from '../../components/ui/Input';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface Inquiry {
   id: number;
@@ -117,6 +120,7 @@ export default function InquiriesPage() {
     }
   };
 
+  useLiveReload(() => { fetchInquiries(); }); // reload when anything changes elsewhere
   useEffect(() => { fetchInquiries(); }, []);
 
   const handleCreateInquiry = async (e: React.FormEvent) => {
@@ -127,8 +131,8 @@ export default function InquiriesPage() {
     }
     setAdding(true);
     try {
-      await api.post('/inquiries', addForm);
-      toast('success', 'New inquiry created successfully!');
+      const r = await api.post('/inquiries', addForm);
+      toast('success', r.data?.data?.type === 'lead' ? 'New person, so this was added to Leads' : 'Inquiry added');
       setAddModalOpen(false);
       setAddForm({
         name: '',
@@ -203,73 +207,36 @@ export default function InquiriesPage() {
         }
       />
 
-      {/* ── Subsections Summary KPI Cards ──────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-        {[
-          { key: 'instagram', label: 'Instagram Ads', icon: '📸', color: 'border-pink-200 bg-pink-50/70 text-pink-900' },
-          { key: 'facebook', label: 'Facebook Ads', icon: '📘', color: 'border-blue-200 bg-blue-50/70 text-blue-900' },
-          { key: 'website', label: 'Website Intake', icon: '🌐', color: 'border-indigo-200 bg-indigo-50/70 text-indigo-900' },
-          { key: 'walk_in', label: 'Walk-In Customer', icon: '🚶', color: 'border-emerald-200 bg-emerald-50/70 text-emerald-900' },
-          { key: 'staff', label: 'Staff Reference', icon: '👤', color: 'border-purple-200 bg-purple-50/70 text-purple-900' },
-          { key: 'manual_intake', label: 'Phone / Manual', icon: '📞', color: 'border-amber-200 bg-amber-50/70 text-amber-900' },
-        ].map((s) => {
-          const count = inquiries.filter(i => (i.source || 'website') === s.key).length;
-          const isSelected = selectedSource === s.key;
+      {/* ── Lead sources: brand-coloured tiles ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mb-6">
+        {([
+          { key: 'instagram', label: 'Instagram', Icon: Instagram, bg: 'linear-gradient(135deg,#F58529,#DD2A7B 55%,#8134AF)' },
+          { key: 'facebook', label: 'Facebook', Icon: Facebook, bg: 'linear-gradient(135deg,#1877F2,#0B5BD3)' },
+          { key: 'website', label: 'Website', Icon: Globe, bg: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
+          { key: 'walk_in', label: 'Walk-in', Icon: Footprints, bg: 'linear-gradient(135deg,#059669,#10B981)' },
+          { key: 'staff', label: 'Staff referral', Icon: UserRound, bg: 'linear-gradient(135deg,#7C3AED,#A855F7)' },
+          { key: 'manual_intake', label: 'Phone / manual', Icon: PhoneCall, bg: 'linear-gradient(135deg,#D97706,#F59E0B)' },
+        ] as const).map((src) => {
+          const count = inquiries.filter(i => (i.source || 'website') === src.key).length;
+          const isSelected = selectedSource === src.key;
           return (
-            <div
-              key={s.key}
-              onClick={() => setSelectedSource(isSelected ? 'all' : s.key)}
-              className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${s.color} ${
-                isSelected ? 'ring-2 ring-offset-2 ring-blue-500 scale-[1.02] shadow-sm' : 'hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-base">{s.icon}</span>
-                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/90">
-                  {count}
-                </span>
-              </div>
-              <p className="text-lg font-black">{count}</p>
-              <p className="text-[11px] font-extrabold truncate">{s.label}</p>
-            </div>
+            <button key={src.key} type="button" onClick={() => setSelectedSource(isSelected ? 'all' : src.key)}
+              className={`relative overflow-hidden rounded-2xl p-3.5 text-left text-white shadow-sm transition ${isSelected ? 'ring-2 ring-offset-2 ring-[#2563EB]' : 'hover:-translate-y-0.5'}`}
+              style={{ background: src.bg }}>
+              <src.Icon className="absolute -right-3 -bottom-3 w-16 h-16 text-white/15" />
+              <span className="w-9 h-9 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center"><src.Icon size={19} /></span>
+              <p className="text-2xl font-black mt-2 leading-none">{count}</p>
+              <p className="text-[11.5px] font-bold text-white/90 mt-1">{src.label}</p>
+            </button>
           );
         })}
       </div>
 
       {/* ── Subsections Tab Bar & Search ──────────────── */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-          <button
-            onClick={() => setSelectedSource('all')}
-            className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all whitespace-nowrap ${
-              selectedSource === 'all' ? 'bg-[#2563EB] text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            All Subsections ({inquiries.length})
-          </button>
-          {['instagram', 'facebook', 'website', 'walk_in', 'staff', 'manual_intake'].map((srcKey) => {
-            const count = inquiries.filter(i => (i.source || 'website') === srcKey).length;
-            const cfg = SOURCE_CONFIG[srcKey] || SOURCE_CONFIG.website;
-            return (
-              <button
-                key={srcKey}
-                onClick={() => setSelectedSource(srcKey)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                  selectedSource === srcKey
-                    ? 'bg-[#2563EB] text-white shadow-md'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <span>{cfg.icon}</span>
-                <span>{cfg.label}</span>
-                <span className="px-1.5 py-0.2 bg-white/30 rounded-full text-[10px] font-bold">
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
+        {selectedSource !== 'all' && (
+          <button onClick={() => setSelectedSource('all')} className="self-start px-3 py-1.5 rounded-full text-xs font-bold bg-[#2563EB] text-white">Showing {SOURCE_CONFIG[selectedSource]?.label || selectedSource} · show all ✕</button>
+        )}
         <div className="relative w-full sm:w-72">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
@@ -277,7 +244,7 @@ export default function InquiriesPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by customer name or phone..."
-            className="w-full pl-9 pr-4 py-2 bg-[#f6f3f2] border border-transparent rounded-xl text-sm font-medium text-slate-900 focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white placeholder:text-slate-400 transition-all"
+            className="w-full pl-9 pr-4 py-2 bg-[#F1F5F9] border border-transparent rounded-xl text-sm font-medium text-slate-900 focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white placeholder:text-slate-400 transition-all"
           />
         </div>
       </div>
@@ -399,10 +366,10 @@ export default function InquiriesPage() {
             <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1.5">
               Inquiry Origin / Source Subsection *
             </label>
-            <select
+            <Dropdown
               value={addForm.source}
               onChange={(e) => setAddForm(p => ({ ...p, source: e.target.value }))}
-              className="w-full px-4 py-3 bg-[#f6f3f2] border border-slate-300 rounded-xl text-slate-900 font-bold text-sm focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white"
+              className="w-full px-4 py-3 bg-[#F1F5F9] border border-slate-300 rounded-xl text-slate-900 font-bold text-sm focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white"
             >
               <option value="instagram">📸 Instagram Ads / DM</option>
               <option value="facebook">📘 Facebook Ads / Message</option>
@@ -410,7 +377,7 @@ export default function InquiriesPage() {
               <option value="walk_in">🚶 Walk-In Customer</option>
               <option value="staff">👤 Staff Reference</option>
               <option value="manual_intake">📞 Phone Call / Manual</option>
-            </select>
+            </Dropdown>
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
@@ -443,10 +410,10 @@ export default function InquiriesPage() {
             <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1.5">
               Confirm Source Subsection
             </label>
-            <select
+            <Dropdown
               value={convertSource}
               onChange={(e) => setConvertSource(e.target.value)}
-              className="w-full px-4 py-3 bg-[#f6f3f2] border border-slate-300 rounded-xl text-slate-900 font-bold text-sm focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white"
+              className="w-full px-4 py-3 bg-[#F1F5F9] border border-slate-300 rounded-xl text-slate-900 font-bold text-sm focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white"
             >
               <option value="instagram">📸 Instagram Ads / DM</option>
               <option value="facebook">📘 Facebook Ads / Message</option>
@@ -454,7 +421,7 @@ export default function InquiriesPage() {
               <option value="walk_in">🚶 Walk-In Customer</option>
               <option value="staff">👤 Staff Reference</option>
               <option value="manual_intake">📞 Phone Call / Manual</option>
-            </select>
+            </Dropdown>
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
@@ -502,21 +469,23 @@ function InquiryCard({ inquiry, onStatusChange, onConvert }: { inquiry: Inquiry;
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-5 hover:shadow-md transition-all flex flex-col justify-between group hover:border-blue-300">
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase px-2.5 py-1 rounded-full ${cfg.badgeBg}`}>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <span className={`inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-black uppercase px-2.5 py-1 rounded-full ${cfg.badgeBg}`}>
             <span>{cfg.icon}</span>
             <span>{cfg.label}</span>
           </span>
-          <select
+          <Dropdown
             value={inquiry.status}
             onChange={(e) => onStatusChange(inquiry.id, e.target.value)}
-            className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg border border-slate-300 bg-white text-slate-800 shadow-xs focus:ring-2 focus:ring-blue-500/20"
+            className="w-32 shrink-0 text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:ring-2 focus:ring-blue-500/20"
           >
             <option value="new">New</option>
-            <option value="followed_up">Followed Up</option>
+            <option value="open">Open</option>
+            <option value="followed_up">Followed up</option>
+            <option value="answered">Answered</option>
             <option value="converted">Converted</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+            <option value="closed">Closed</option>
+          </Dropdown>
         </div>
 
         <h3 className="font-black text-slate-900 text-base group-hover:text-[#2563EB] transition-colors">{inquiry.name}</h3>

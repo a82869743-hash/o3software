@@ -24,7 +24,7 @@ export const useStaffDetail = (id: number | undefined) =>
 export const useCreateStaff = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (payload: { name: string; mobile: string; password: string; specialisations?: string; email?: string }) => {
+    mutationFn: async (payload: Record<string, any>) => {
       const res = await api.post('/staff', payload);
       return res.data;
     },
@@ -99,15 +99,6 @@ export const useCompletePayment = () => {
   });
 };
 
-export const useMyPayments = () =>
-  useQuery({
-    queryKey: ['my-payments'],
-    queryFn: async () => {
-      const res = await api.get('/staff/my-payments');
-      return res.data;
-    },
-  });
-
 export const useMyAttendance = (params?: { from_date?: string; to_date?: string }) =>
   useQuery({
     queryKey: ['my-attendance', params],
@@ -117,24 +108,11 @@ export const useMyAttendance = (params?: { from_date?: string; to_date?: string 
     },
   });
 
-export const useCheckIn = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      const res = await api.post('/staff/check-in');
-      return res.data;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['my-attendance'] });
-    },
-  });
-};
-
 export const useCheckOut = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const res = await api.post('/staff/check-out');
+    mutationFn: async (loc?: { latitude: number; longitude: number; accuracy?: number }) => {
+      const res = await api.post('/staff/check-out', loc || {});
       return res.data;
     },
     onSuccess: () => {

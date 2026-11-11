@@ -8,7 +8,9 @@ import {
 import toast from 'react-hot-toast';
 
 import api from '../../api/axiosInstance';
+import AdminHero from '../../components/admin/AdminHero';
 import ConfirmModal from '../../components/ui/ConfirmModal';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 type BillType = 'all' | 'job_cart' | 'manual_bill' | 'salary' | 'buy_sell_buy' | 'buy_sell_sell';
 
@@ -99,6 +101,7 @@ export default function AllInvoicesPage() {
   }, [page, apiType, activeType, search, fromDate, toDate]);
 
   useEffect(() => { setPage(1); }, [activeType, search, fromDate, toDate]);
+  useLiveReload(() => { fetchRecords(); }); // reload when anything changes elsewhere
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
 
   const downloadInvoice = async (rec: InvoiceRecord) => {
@@ -164,17 +167,14 @@ export default function AllInvoicesPage() {
   };
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', sans-serif", minHeight: '100vh' }}>
+    <div style={{ fontFamily: "'Manrope', sans-serif", minHeight: '100vh' }}>
+      <AdminHero title={'All Invoices & Bills'} subtitle={'Unified view of all financial records — newest first'} />
       {/* ─── Page Header ─── */}
       <div style={{ marginBottom: '28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
           <div>
-            <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#0F172A', margin: 0, letterSpacing: '-0.5px' }}>
-              All Invoices & Bills
-            </h1>
-            <p style={{ color: '#5f5e5e', fontSize: '13px', marginTop: '4px' }}>
-              Unified view of all financial records — newest first
-            </p>
+            
+            
           </div>
           <button
             onClick={fetchRecords}
@@ -198,8 +198,8 @@ export default function AllInvoicesPage() {
               style={{
                 display: 'flex', alignItems: 'center', gap: '6px',
                 padding: '8px 16px', borderRadius: '20px', border: 'none',
-                background: active ? '#2563EB' : '#f6f3f2',
-                color: active ? 'white' : '#5f5e5e',
+                background: active ? '#2563EB' : '#F1F5F9',
+                color: active ? 'white' : '#64748B',
                 fontWeight: active ? 700 : 500,
                 fontSize: '13px', cursor: 'pointer',
                 transition: 'all 0.15s ease',
@@ -352,9 +352,9 @@ export default function AllInvoicesPage() {
 
               {/* Reference */}
               <div>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0F172A', fontFamily: 'monospace' }}>{rec.reference}</div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0F172A', fontFamily: 'Manrope, sans-serif' }}>{rec.reference}</div>
                 {rec.registration_no && (
-                  <div style={{ fontSize: '11px', color: '#9e9e9e', marginTop: '2px' }}>🚗 {rec.registration_no}</div>
+                  <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px', fontWeight: 600 }}>{rec.registration_no}</div>
                 )}
               </div>
 
@@ -367,7 +367,7 @@ export default function AllInvoicesPage() {
               </div>
 
               {/* Date */}
-              <div style={{ fontSize: '12px', color: '#5f5e5e', fontWeight: 500 }}>
+              <div style={{ fontSize: '12px', color: '#64748B', fontWeight: 500 }}>
                 {formatDate(rec.date)}
               </div>
 
@@ -378,7 +378,7 @@ export default function AllInvoicesPage() {
                 </div>
                 {rec.discount_type && rec.discount_value && Number(rec.discount_value) > 0 && (
                   <div style={{ fontSize: '10px', color: '#9e9e9e', marginTop: '2px' }}>
-                    -{rec.discount_type === 'percentage' ? `${rec.discount_value}%` : `₹${formatINR(Number(rec.discount_value))}`} disc
+                    after {rec.discount_type === 'percentage' ? `${rec.discount_value}%` : `₹${formatINR(Number(rec.discount_value))}`} discount
                   </div>
                 )}
               </div>
@@ -393,7 +393,7 @@ export default function AllInvoicesPage() {
                     display: 'flex', alignItems: 'center', gap: '6px',
                     padding: '7px 14px', borderRadius: '8px',
                     border: '1.5px solid #2563EB',
-                    background: isDownloading ? '#f6f3f2' : 'white',
+                    background: isDownloading ? '#F1F5F9' : 'white',
                     color: '#2563EB', fontSize: '12px', fontWeight: 700,
                     cursor: isDownloading ? 'not-allowed' : 'pointer',
                     transition: 'all 0.15s',
@@ -449,7 +449,7 @@ export default function AllInvoicesPage() {
           >
             <ChevronLeft size={16} /> Prev
           </button>
-          <span style={{ fontSize: '13px', color: '#5f5e5e', fontWeight: 600 }}>
+          <span style={{ fontSize: '13px', color: '#64748B', fontWeight: 600 }}>
             Page {page} of {totalPages}
           </span>
           <button

@@ -1,61 +1,63 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 
 // ─── SUMMARY (KPI Cards) ───────────────────
 exports.summary = async (req, res) => {
   try {
-    const defaultToday = new Date().toISOString().slice(0, 10);
+    const defaultToday = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const defaultMonthStart = defaultToday.slice(0, 8) + '01';
     
     const from_date = req.query.from_date || defaultMonthStart;
     const to_date = req.query.to_date || defaultToday;
+    const S = scopeOf(req);
 
     // Today's revenue (all IN)
     const [todayRev] = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
-       WHERE direction = 'in' AND transaction_date = ?`, [defaultToday]
+       WHERE direction = 'in' AND transaction_date = ?${S.and()}`, [defaultToday]
     );
 
     // Filtered revenue (all IN inside from_date and to_date)
     const [monthRev] = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
        WHERE direction = 'in'
-       AND transaction_date >= ? AND transaction_date <= ?`, [from_date, to_date]
+       AND transaction_date >= ? AND transaction_date <= ?${S.and()}`, [from_date, to_date]
     );
 
     // Total purchases in date range
     const [purchases] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
        WHERE type = 'buy'
-       AND transaction_date >= ? AND transaction_date <= ?`, [from_date, to_date]
+       AND transaction_date >= ? AND transaction_date <= ?${S.and()}`, [from_date, to_date]
     );
 
     // B2B sales in date range
     const [b2bSales] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
        WHERE type = 'sell_b2b'
-       AND transaction_date >= ? AND transaction_date <= ?`, [from_date, to_date]
+       AND transaction_date >= ? AND transaction_date <= ?${S.and()}`, [from_date, to_date]
     );
 
     // B2C sales in date range
     const [b2cSales] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
        WHERE type = 'sell_b2c'
-       AND transaction_date >= ? AND transaction_date <= ?`, [from_date, to_date]
+       AND transaction_date >= ? AND transaction_date <= ?${S.and()}`, [from_date, to_date]
     );
 
     // Pending staff payments
     const [pendingPay] = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) AS total FROM staff_payments WHERE status = 'pending'`
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM staff_payments WHERE status = 'pending'${S.and()}`
     );
 
     // Open job carts
     const [openCarts] = await pool.query(
-      `SELECT COUNT(*) AS total FROM job_carts WHERE status = 'open'`
+      `SELECT COUNT(*) AS total FROM job_carts WHERE status = 'open'${S.and()}`
     );
 
     // Low stock items
     const [lowStock] = await pool.query(
-      `SELECT COUNT(*) AS total FROM inventory WHERE quantity <= low_stock_threshold AND is_deleted = 0`
+      `SELECT COUNT(*) AS total FROM inventory WHERE (low_stock_threshold > 0 AND quantity <= low_stock_threshold) AND is_deleted = 0${S.and()}`
     );
 
     res.json({
@@ -82,7 +84,7 @@ exports.transactions = async (req, res) => {
   try {
     const { type, direction, from_date, to_date, page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    let where = '1=1';
+    let where = '1=1' + scopeOf(req).and('t.franchise_id');
     const params = [];
 
     if (type) { where += ' AND type = ?'; params.push(type); }
@@ -90,7 +92,7 @@ exports.transactions = async (req, res) => {
     if (from_date) { where += ' AND transaction_date >= ?'; params.push(from_date); }
     if (to_date) { where += ' AND transaction_date <= ?'; params.push(to_date); }
 
-    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM transactions WHERE ${where}`, params);
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM transactions t WHERE ${where}`, params);
 
     const [rows] = await pool.query(
       `SELECT t.*, u.name AS created_by_name
@@ -124,16 +126,16 @@ exports.report = async (req, res) => {
     const reportService = require('../services/reportService');
 
     if (format === 'pdf') {
-      const pdfBuffer = await reportService.generatePDFReport(from_date, to_date);
+      const pdfBuffer = await reportService.generatePDFReport(from_date, to_date, scopeOf(req));
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=GKAutoHerb_Report_${from_date}_to_${to_date}.pdf`);
+      res.setHeader('Content-Disposition', `attachment; filename=O3CarSpaa_Report_${from_date}_to_${to_date}.pdf`);
       return res.send(pdfBuffer);
     }
 
     // Default: Excel
-    const buffer = await reportService.generateExcelReport(from_date, to_date);
+    const buffer = await reportService.generateExcelReport(from_date, to_date, scopeOf(req));
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=GKAutoHerb_Report_${from_date}_to_${to_date}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=O3CarSpaa_Report_${from_date}_to_${to_date}.xlsx`);
     res.send(buffer);
   } catch (err) {
     console.error('Report generation error:', err);
@@ -144,73 +146,66 @@ exports.report = async (req, res) => {
 // ─── KPIs (Server-side aggregations for all Accounts tabs) ─────
 exports.kpis = async (req, res) => {
   try {
-    const defaultToday = new Date().toISOString().slice(0, 10);
+    const defaultToday = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const defaultMonthStart = defaultToday.slice(0, 8) + '01';
     const from_date = req.query.from_date || defaultMonthStart;
     const to_date = req.query.to_date || defaultToday;
+    const S = scopeOf(req);
 
     // ── Ledger KPIs (transactions table — all records, not paginated) ──
     const [ledgerIn] = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
-       WHERE direction = 'in' AND transaction_date >= ? AND transaction_date <= ?`,
+       WHERE direction = 'in' AND transaction_date >= ? AND transaction_date <= ?${S.and()}`,
       [from_date, to_date]
     );
     const [ledgerOut] = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
-       WHERE direction = 'out' AND transaction_date >= ? AND transaction_date <= ?`,
+       WHERE direction = 'out' AND transaction_date >= ? AND transaction_date <= ?${S.and()}`,
       [from_date, to_date]
     );
 
     // ── Buy & Sell KPIs (buy_sell table — all records) ──
     const [bsPurchases] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
-       WHERE type = 'buy' AND transaction_date >= ? AND transaction_date <= ?`,
+       WHERE type = 'buy' AND transaction_date >= ? AND transaction_date <= ?${S.and()}`,
       [from_date, to_date]
     );
     const [bsSales] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
-       WHERE type IN ('sell_b2b', 'sell_b2c') AND transaction_date >= ? AND transaction_date <= ?`,
+       WHERE type IN ('sell_b2b', 'sell_b2c') AND transaction_date >= ? AND transaction_date <= ?${S.and()}`,
       [from_date, to_date]
     );
     const [bsPending] = await pool.query(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
-       WHERE status = 'pending' AND transaction_date >= ? AND transaction_date <= ?`,
+       WHERE status = 'pending' AND transaction_date >= ? AND transaction_date <= ?${S.and()}`,
       [from_date, to_date]
     );
 
     // ── Job Cart KPIs ──
     const [jcTotalValue] = await pool.query(
-      `SELECT COALESCE(SUM(
-        (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0)
-         + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)
-         FROM job_services js WHERE js.job_cart_id = jc.id)
-      ), 0) AS total
-      FROM job_carts jc WHERE jc.visit_date >= ? AND jc.visit_date <= ?`,
+      `SELECT COALESCE(SUM(COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0)))), 0) AS total
+      FROM job_carts jc WHERE jc.visit_date >= ? AND jc.visit_date <= ?${S.and('jc.franchise_id')}`,
       [from_date, to_date]
     );
     const [jcCompletedValue] = await pool.query(
-      `SELECT COALESCE(SUM(
-        (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0)
-         + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)
-         FROM job_services js WHERE js.job_cart_id = jc.id)
-      ), 0) AS total
-      FROM job_carts jc WHERE jc.status = 'complete' AND jc.visit_date >= ? AND jc.visit_date <= ?`,
+      `SELECT COALESCE(SUM(COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0)))), 0) AS total
+      FROM job_carts jc WHERE jc.status = 'complete' AND jc.visit_date >= ? AND jc.visit_date <= ?${S.and('jc.franchise_id')}`,
       [from_date, to_date]
     );
     const [jcOpenCount] = await pool.query(
-      `SELECT COUNT(*) AS total FROM job_carts WHERE status = 'open' AND visit_date >= ? AND visit_date <= ?`,
+      `SELECT COUNT(*) AS total FROM job_carts WHERE status = 'open' AND visit_date >= ? AND visit_date <= ?${S.and()}`,
       [from_date, to_date]
     );
 
     // ── Inventory KPIs (no date filter — snapshot) ──
     const [invTotal] = await pool.query(
-      `SELECT COUNT(*) AS total FROM inventory WHERE is_deleted = 0`
+      `SELECT COUNT(*) AS total FROM inventory WHERE is_deleted = 0${S.and()}`
     );
     const [invTotalUnits] = await pool.query(
-      `SELECT COALESCE(SUM(quantity), 0) AS total FROM inventory WHERE is_deleted = 0`
+      `SELECT COALESCE(SUM(quantity), 0) AS total FROM inventory WHERE is_deleted = 0${S.and()}`
     );
     const [invLowStock] = await pool.query(
-      `SELECT COUNT(*) AS total FROM inventory WHERE quantity <= low_stock_threshold AND is_deleted = 0`
+      `SELECT COUNT(*) AS total FROM inventory WHERE (low_stock_threshold > 0 AND quantity <= low_stock_threshold) AND is_deleted = 0${S.and()}`
     );
 
     res.json({
@@ -249,17 +244,30 @@ exports.createReturn = async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const { original_bill_id, return_type, amount, reason } = req.body;
-
-    if (!original_bill_id || !return_type || !amount) {
-      return res.status(400).json({ success: false, error: 'Original Bill ID, return type, and amount are required' });
+    const { original_bill_id, return_type, reason } = req.body;
+    const amount = Math.round(Number(req.body.amount) * 100) / 100;
+    const bad = (code, error) => { connection.rollback().catch(() => {}); return res.status(code).json({ success: false, error }); };
+    if (!original_bill_id || !return_type || !req.body.amount) return bad(400, 'Original Bill ID, return type, and amount are required');
+    if (!['sales_return', 'purchase_return'].includes(return_type)) return bad(400, 'Return type must be sales_return or purchase_return');
+    if (!(amount > 0)) return bad(400, 'Return amount must be more than 0');
+    // the bill must exist in this studio, and all returns on it together cannot be more than the bill
+    const fidR = Number(req.franchiseId) || Number(req.user?.franchise_id) || 1;
+    const allStudios = req.user?.role === 'super_admin' && !req.franchiseId;
+    const [[bill]] = return_type === 'sales_return'
+      ? await connection.query("SELECT id, total_amount, franchise_id FROM job_carts WHERE id = ? AND status = 'complete' FOR UPDATE", [original_bill_id])
+      : await connection.query('SELECT id, total_amount, franchise_id FROM v2_purchases WHERE id = ? FOR UPDATE', [original_bill_id]);
+    if (!bill || (!allStudios && Number(bill.franchise_id || 1) !== fidR)) {
+      return bad(404, return_type === 'sales_return' ? `No finished job card bill #${original_bill_id} in this studio` : `No purchase bill #${original_bill_id} in this studio`);
     }
+    const [[done]] = await connection.query('SELECT COALESCE(SUM(amount), 0) AS s FROM return_bills WHERE original_bill_id = ? AND return_type = ?', [original_bill_id, return_type]);
+    const leftR = Math.round((Number(bill.total_amount || 0) - Number(done.s || 0)) * 100) / 100;
+    if (amount > leftR + 0.005) return bad(400, leftR > 0 ? `Only ₹${leftR.toFixed(2)} of this bill can still be returned` : 'This bill is already fully returned');
 
     // 1. Insert into return_bills
     const [result] = await connection.query(
-      `INSERT INTO return_bills (original_bill_id, return_type, amount, reason)
-       VALUES (?, ?, ?, ?)`,
-      [original_bill_id, return_type, amount, reason || '']
+      `INSERT INTO return_bills (original_bill_id, return_type, amount, reason, franchise_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [original_bill_id, return_type, amount, reason || '', (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     // 2. Insert into transactions
@@ -271,9 +279,9 @@ exports.createReturn = async (req, res) => {
 
     try {
       await connection.query(
-        `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by)
-         VALUES (?, ?, ?, ?, ?, CURDATE(), ?)`,
-        [txnType, original_bill_id, amount, direction, note, req.user ? req.user.id : null]
+        `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by, franchise_id)
+         VALUES (?, ?, ?, ?, ?, CURDATE(), ?, ?)`,
+        [txnType, original_bill_id, amount, direction, note, req.user ? req.user.id : null, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
     } catch (txnErr) {
       console.warn('Notice: logging transaction failed, proceeding with return bill:', txnErr.message);
@@ -293,7 +301,7 @@ exports.createReturn = async (req, res) => {
 // ─── LIST RETURNS (Update 29) ─────────────────────────
 exports.listReturns = async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM return_bills ORDER BY created_at DESC');
+    const [rows] = await pool.query(`SELECT * FROM return_bills${scopeOf(req).where()} ORDER BY created_at DESC`);
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Failed to fetch returns list' });

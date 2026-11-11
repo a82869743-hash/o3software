@@ -1,3 +1,4 @@
+import MyPackages from '../../components/customer/MyPackages';
 import { useState } from 'react';
 import { ClipboardList, ChevronDown, ChevronUp, Download, Calendar, Car, Hash } from 'lucide-react';
 import { useJobCarts } from '../../api/hooks/useJobCarts';
@@ -8,8 +9,12 @@ import ErrorState from '../../components/shared/ErrorState';
 import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { formatINR, formatDate } from '../../utils/formatters';
 import type { JobPhoto } from '../../types';
+import PhotoBanner from '../../components/customer/PhotoBanner';
+import { PHOTOS as BANNER_PHOTOS } from '../../components/customer/serviceVisuals';
+import { API_BASE } from '../../utils/endpoints';
 
-export default function CustomerJobCartsPage() {
+/** hidePackages: set when this list is shown inside My bookings, which already shows the packages. */
+export default function CustomerJobCartsPage({ hidePackages = false }: { hidePackages?: boolean } = {}) {
   const { data, isLoading, isError, refetch } = useJobCarts({ page: 1, limit: 100 });
   const [expanded, setExpanded] = useState<number | null>(null);
   const token = useAuthStore((s) => s.token);
@@ -17,7 +22,7 @@ export default function CustomerJobCartsPage() {
   if (isError) {
     return (
       <div className="pt-4">
-        <h2 className="text-2xl font-extrabold text-[#0F172A] tracking-tight mb-6">My Job Cards</h2>
+        <h2 className="sr-only">My Job Cards</h2>
         <ErrorState
           message="Failed to load job cards. Please check your connection and try again."
           onRetry={() => refetch()}
@@ -29,7 +34,7 @@ export default function CustomerJobCartsPage() {
   if (isLoading) {
     return (
       <div className="space-y-4 pt-4">
-        <h2 className="text-2xl font-extrabold text-[#0F172A] tracking-tight">My Job Cards</h2>
+        <h2 className="sr-only">My Job Cards</h2>
         <div className="grid gap-4">{[1, 2, 3].map(i => <SkeletonCard key={i} />)}</div>
       </div>
     );
@@ -40,7 +45,8 @@ export default function CustomerJobCartsPage() {
   if (!carts.length) {
     return (
       <div className="pt-4">
-        <h2 className="text-2xl font-extrabold text-[#0F172A] tracking-tight mb-6">My Job Cards</h2>
+        <h2 className="sr-only">My Job Cards</h2>
+        {!hidePackages && <MyPackages />}
         <EmptyState
           icon={ClipboardList}
           title="No Job Cards Yet"
@@ -51,7 +57,7 @@ export default function CustomerJobCartsPage() {
   }
 
   const handleDownloadInvoice = (cartId: number) => {
-    const apiBase = import.meta.env.VITE_API_URL || '/api';
+    const apiBase = API_BASE;
     window.open(
       `${apiBase}/job-carts/${cartId}/invoice?token=${token}`,
       '_blank'
@@ -60,7 +66,10 @@ export default function CustomerJobCartsPage() {
 
   return (
     <div className="pt-4">
-      <h2 className="text-2xl font-extrabold text-[#0F172A] tracking-tight mb-6">My Job Cards</h2>
+      <PhotoBanner img={BANNER_PHOTOS.polish} kicker="Service history" line="Every service, photo and invoice" />
+      <h2 className="sr-only">My Job Cards</h2>
+      {!hidePackages && <MyPackages />}
+      <h3 className="text-[15px] font-extrabold text-slate-900 mb-2">Service history</h3>
 
       <div className="space-y-3">
         {carts.map((cart: any, idx: number) => {
@@ -85,7 +94,7 @@ export default function CustomerJobCartsPage() {
                         <span className="text-sm font-extrabold text-[#0F172A] tracking-wide">{cart.registration_no}</span>
                         <StatusBadge status={cart.status} />
                       </div>
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#5f5e5e]">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#64748B]">
                         <span className="flex items-center gap-1"><Car size={12} /> {cart.brand} {cart.model}</span>
                         <span className="flex items-center gap-1"><Calendar size={12} /> {formatDate(cart.visit_date)}</span>
                         <span className="flex items-center gap-1"><Hash size={12} /> Visit #{cart.visit_number}</span>
@@ -104,7 +113,7 @@ export default function CustomerJobCartsPage() {
                   {isOpen && (
                     <div className="px-5 pb-5 border-t border-gray-100 animate-fade-in">
                       <div className="py-3">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Services Performed</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2">Services Performed</p>
                         {cart.services && cart.services.length > 0 ? (
                           <div className="space-y-1.5 mb-2">
                             {cart.services.map((s: any, sIdx: number) => (
@@ -124,7 +133,7 @@ export default function CustomerJobCartsPage() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-[#5f5e5e]">{cart.services_count || 1} service(s) · Total: {formatINR(cart.total_amount)}</p>
+                          <p className="text-sm text-[#64748B]">{cart.services_count || 1} service(s) · Total: {formatINR(cart.total_amount)}</p>
                         )}
 
                         {cart.discount_amount > 0 && (

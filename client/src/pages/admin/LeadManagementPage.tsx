@@ -31,7 +31,10 @@ import api from '../../api/axiosInstance';
 import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
 import { useUIStore } from '../../store/uiStore';
 import Modal from '../../components/ui/Modal';
+import LeadsPipeline from '../../components/admin/LeadsPipeline';
 import Input from '../../components/ui/Input';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface Inquiry {
   id: number;
@@ -193,6 +196,7 @@ export default function LeadManagementPage() {
     }
   };
 
+  useLiveReload(() => { fetchAISettings(); fetchInbox(); fetchKB(); fetchLeads(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchLeads();
     fetchInbox();
@@ -336,17 +340,10 @@ export default function LeadManagementPage() {
     <>
       <AdminTopBar
         title="Leads & AI Inbound Agent"
-        subtitle="Manage Meta Ads, WhatsApp Inquiries, AI Unified Inbox & Knowledge Base"
+        subtitle="New business from every source — WhatsApp AI agent, website, Instagram/Facebook/Google, walk-ins, calls, imports"
         actions={
           <div className="flex items-center gap-2">
-            {activeTab === 'pipeline' && (
-              <button
-                onClick={() => setAddModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition shadow-sm"
-              >
-                <Plus size={16} /> Add New Lead
-              </button>
-            )}
+
             {activeTab === 'kb' && (
               <button
                 onClick={() => {
@@ -418,145 +415,8 @@ export default function LeadManagementPage() {
       </div>
 
       {/* TAB 1: PIPELINE & FUNNEL */}
-      {activeTab === 'pipeline' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-4">
-              {[
-                { key: 'facebook', label: 'Facebook Ads', icon: FacebookIcon, bg: 'bg-blue-50 border-blue-200 text-blue-700' },
-                { key: 'instagram', label: 'Instagram Ads', icon: InstagramIcon, bg: 'bg-pink-50 border-pink-200 text-pink-700' },
-                { key: 'whatsapp_inbound', label: 'WhatsApp Inbound', icon: MessageCircle, bg: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-                { key: 'walk_in', label: 'Walk-In Customer', icon: Users, bg: 'bg-teal-50 border-teal-200 text-teal-700' },
-                { key: 'website', label: 'Website Intake', icon: Mail, bg: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
-                { key: 'staff', label: 'Staff Created', icon: Users, bg: 'bg-purple-50 border-purple-200 text-purple-700' },
-              ].map((s) => {
-                const count = stats?.by_source?.find((b: any) => b.source === s.key)?.total || 0;
-                const Icon = s.icon;
-                return (
-                  <div
-                    key={s.key}
-                    onClick={() => setSelectedSource(selectedSource === s.key ? 'all' : s.key)}
-                    className={`p-4 rounded-2xl border transition-all cursor-pointer ${s.bg} ${
-                      selectedSource === s.key ? 'ring-2 ring-offset-2 ring-blue-500 scale-[1.02]' : 'hover:shadow-sm'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="p-2 rounded-xl bg-white shadow-xs">
-                        <Icon />
-                      </div>
-                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/80">
-                        Source
-                      </span>
-                    </div>
-                    <p className="text-2xl font-black">{count}</p>
-                    <p className="text-xs font-bold mt-1 opacity-90">{s.label}</p>
-                  </div>
-                );
-              })}
-            </div>
+      {activeTab === 'pipeline' && <LeadsPipeline />}
 
-            <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col justify-between">
-              <h3 className="font-extrabold text-slate-900 text-sm mb-2">Lead Source Distribution</h3>
-              {pieData.length > 0 ? (
-                <div className="h-44 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={45}
-                        outerRadius={70}
-                        paddingAngle={3}
-                        dataKey="value"
-                      >
-                        {pieData.map((entry: any, index: number) => (
-                          <Cell key={`cell-${index}`} fill={SOURCE_COLORS[entry.sourceKey] || '#64748B'} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <div className="h-44 flex items-center justify-center text-slate-400 text-xs">
-                  No source distribution data available
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden p-6">
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-              <div className="relative w-full sm:w-80">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Search leads by name, phone, car..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500/20"
-                />
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-600">
-                <thead>
-                  <tr className="border-b border-slate-100 text-[11px] font-black uppercase tracking-wider text-slate-400">
-                    <th className="py-3 px-4">Customer</th>
-                    <th className="py-3 px-4">Contact</th>
-                    <th className="py-3 px-4">Vehicle</th>
-                    <th className="py-3 px-4">Service</th>
-                    <th className="py-3 px-4">Source</th>
-                    <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredLeads.map((lead) => (
-                    <tr key={lead.id} className="hover:bg-slate-50/60 transition">
-                      <td className="py-3 px-4 font-bold text-slate-900">{lead.name}</td>
-                      <td className="py-3 px-4 font-mono">+{lead.mobile}</td>
-                      <td className="py-3 px-4 font-medium">{lead.vehicle_brand} {lead.vehicle_model || '—'}</td>
-                      <td className="py-3 px-4">{lead.services_interested || 'General Detailing'}</td>
-                      <td className="py-3 px-4">
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-extrabold capitalize bg-slate-100 text-slate-700">
-                          {getSourceIcon(lead.source)}
-                          <span>{SOURCE_LABELS[lead.source] || lead.source}</span>
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="font-bold uppercase text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                          {lead.status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handleSendLeadWhatsApp(lead)}
-                            className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition"
-                            title="Send WhatsApp Welcome"
-                          >
-                            <MessageCircle size={14} />
-                          </button>
-                          <button
-                            onClick={() => handleConvertLead(lead.id)}
-                            className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold text-[11px] transition"
-                          >
-                            Create Job
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 2: UNIFIED WHATSAPP INBOX */}
       {activeTab === 'inbox' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm min-h-[600px]">
           {/* Conversation List (Left 4 cols) */}
@@ -841,7 +701,7 @@ export default function LeadManagementPage() {
         <form onSubmit={handleSaveKB} className="space-y-4">
           <div>
             <label className="text-xs font-bold text-slate-700 block mb-1">Category</label>
-            <select
+            <Dropdown
               value={kbForm.category}
               onChange={(e) => setKbForm({ ...kbForm, category: e.target.value })}
               className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs"
@@ -851,7 +711,7 @@ export default function LeadManagementPage() {
               <option value="operating_hours">Operating Hours & Location</option>
               <option value="policies">Policies & Discounts</option>
               <option value="faqs">FAQs</option>
-            </select>
+            </Dropdown>
           </div>
           <Input label="Article Title *" value={kbForm.title} onChange={(e) => setKbForm({ ...kbForm, title: e.target.value })} placeholder="e.g. Ceramic 9H Warranty Terms" required />
           <div>

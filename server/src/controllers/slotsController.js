@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const jwt = require('jsonwebtoken');
+const { studioNow, isSlotPast, matchClosure, loadClosures } = require('../utils/slotRules');
 
 const tryParseUser = (req) => {
   let token = null;
@@ -38,6 +39,15 @@ function normalizeDateStr(str) {
 
 // ─── LIST SLOTS ─────────────────────────────
 // ─── LIST SLOTS ─────────────────────────────
+// The studio an admin action works on. The x-franchise-id header is honoured only for the Super Admin,
+// so a studio admin can never create, block or delete another studio's slots.
+function actingFid(req) {
+  const hdr = parseInt(req.headers['x-franchise-id'], 10);
+  if (req.user?.role === 'super_admin' && hdr) return hdr;
+  return Number(req.franchiseId) || Number(req.user?.franchise_id) || 1;
+}
+const slotInStudio = (req, slot) => req.user?.role === 'super_admin' || Number(slot.franchise_id || 1) === actingFid(req);
+
 exports.list = async (req, res) => {
   try {
     let { date, from_date, to_date, hide_blocked } = req.query;
@@ -67,19 +77,12 @@ exports.list = async (req, res) => {
 
     // Filter out deleted slots unless admin specifically requests include_deleted
     const includeDeleted = req.query.include_deleted === 'true' || req.query.include_deleted === '1';
-    if (!user || user.role !== 'admin' || !includeDeleted) {
+    if (!user || !['admin', 'super_admin', 'manager', 'staff'].includes(user.role) || !includeDeleted) {
       where += ' AND (s.is_deleted = 0 OR s.is_deleted IS NULL)';
     }
 
     // Fetch active closures and holidays for this franchise (or global)
-    const [closures] = await pool.query(
-      `SELECT id, franchise_id, DATE_FORMAT(start_date, '%Y-%m-%d') as start_date, 
-              DATE_FORMAT(end_date, '%Y-%m-%d') as end_date, 
-              slot_time, reason, closure_type, is_recurring, recurrence_type, recurrence_day, title
-       FROM slot_closures 
-       WHERE (franchise_id = ? OR franchise_id IS NULL OR franchise_id = 0)`,
-      [franchiseId]
-    );
+    const closures = await loadClosures(pool, franchiseId);
 
     const sql = `
       SELECT s.*, DATE_FORMAT(s.slot_date, '%Y-%m-%d') as slot_date, 
@@ -91,47 +94,27 @@ exports.list = async (req, res) => {
     `;
 
     const [rows] = await pool.query(sql, params);
+    const isStudio = !!(user && user.role !== 'customer');
 
     // Enrich slots with closure matching, reasons, and availability
     const enriched = rows.map(r => {
       const slotDateStr = r.slot_date;
       const slotTimeStr = r.start_time;
 
-      let matchingClosure = null;
-      if (closures && closures.length > 0) {
-        // Parse slot date parts
-        const [sy, sm, sd] = slotDateStr.split('-').map(Number);
-        const slotDayOfWeek = new Date(sy, sm - 1, sd).getDay(); // 0 = Sun, 1 = Mon ...
-
-        matchingClosure = closures.find(c => {
-          // Check slot_time condition
-          if (c.slot_time && c.slot_time !== slotTimeStr) return false;
-
-          if (c.is_recurring) {
-            if (c.recurrence_type === 'weekly') {
-              return slotDayOfWeek === parseInt(c.recurrence_day, 10);
-            }
-            if (c.recurrence_type === 'yearly' && c.start_date) {
-              const [cy, cm, cd] = c.start_date.split('-').map(Number);
-              return sm === cm && sd === cd;
-            }
-          } else {
-            // One-time closure
-            return slotDateStr >= c.start_date && slotDateStr <= c.end_date;
-          }
-          return false;
-        });
-      }
+      const matchingClosure = matchClosure(closures, slotDateStr, slotTimeStr);
+      // Customers can't take a slot that has started; the studio can until it ends
+      const isPast = isSlotPast(slotDateStr, isStudio ? r.end_time : r.start_time);
 
       const isBlocked = !!(r.is_blocked || r.v2_blocked_id || matchingClosure);
       const blockedReason = matchingClosure
         ? (matchingClosure.title ? `${matchingClosure.title}: ${matchingClosure.reason || 'Closed'}` : (matchingClosure.reason || 'Studio Closed'))
         : (r.v2_blocked_reason || (r.is_blocked ? 'Walk-in Reserved / Blocked' : null));
 
-      const isAvailable = !isBlocked && (r.booked_count < r.max_capacity) && (!r.is_deleted);
+      const isAvailable = !isBlocked && !isPast && (r.booked_count < r.max_capacity) && (!r.is_deleted);
 
       return {
         ...r,
+        is_past: isPast,
         is_blocked: isBlocked,
         blocked_reason: blockedReason,
         is_available: isAvailable,
@@ -141,7 +124,7 @@ exports.list = async (req, res) => {
       };
     });
 
-    const finalData = (hide_blocked === 'true' && (!user || user.role !== 'admin'))
+    const finalData = (hide_blocked === 'true' && (!user || !['admin', 'super_admin', 'manager', 'staff'].includes(user.role)))
       ? enriched.filter(s => !s.is_blocked)
       : enriched;
 
@@ -164,10 +147,20 @@ exports.create = async (req, res) => {
     if (!slot_date || !start_time || !end_time) {
       return res.status(400).json({ success: false, error: 'Date, start time, and end time are required' });
     }
+    if (String(end_time).slice(0, 5) <= String(start_time).slice(0, 5)) {
+      return res.status(400).json({ success: false, error: 'End time must be after start time' });
+    }
+    if (slot_date < studioNow().date) {
+      return res.status(400).json({ success: false, error: 'That date is in the past — pick today or later' });
+    }
+    max_capacity = parseInt(max_capacity, 10);
+    if (!(max_capacity >= 1)) {
+      return res.status(400).json({ success: false, error: 'Capacity must be at least 1' });
+    }
 
     const [result] = await pool.query(
-      'INSERT INTO slots (slot_date, start_time, end_time, max_capacity) VALUES (?, ?, ?, ?)',
-      [slot_date, start_time, end_time, max_capacity]
+      'INSERT INTO slots (franchise_id, slot_date, start_time, end_time, max_capacity) VALUES (?, ?, ?, ?, ?)',
+      [actingFid(req), slot_date, start_time, end_time, max_capacity]
     );
     res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Slot created' });
   } catch (err) {
@@ -192,16 +185,33 @@ exports.bulkCreate = async (req, res) => {
     if (duration <= 0 || duration > 480) {
       return res.status(400).json({ success: false, error: 'Slot duration must be between 1 and 480 minutes' });
     }
+    if (String(end_time).slice(0, 5) <= String(start_time).slice(0, 5)) {
+      return res.status(400).json({ success: false, error: 'End time must be after start time' });
+    }
+    if (to_date < from_date) {
+      return res.status(400).json({ success: false, error: 'To date must be on or after from date' });
+    }
+    if (!(parseInt(max_capacity, 10) >= 1)) {
+      return res.status(400).json({ success: false, error: 'Capacity must be at least 1' });
+    }
+
+    // never create slots for days that are already over
+    const now = new Date(Date.now() + 5.5 * 3600 * 1000); // IST
+    const todayStr = now.toISOString().slice(0, 10);
+    if (to_date < todayStr) return res.status(400).json({ success: false, error: 'Those dates are in the past — pick today or later' });
+    if (from_date < todayStr) from_date = todayStr;
 
     // Safely clear existing unbooked slots that are NOT referenced in bookings table
     try {
       await pool.query(
         `DELETE FROM slots 
          WHERE slot_date BETWEEN ? AND ? 
-           AND start_time >= ? AND start_time < ? 
-           AND booked_count = 0 
+           AND start_time >= ? AND start_time < ?
+           AND franchise_id = ?
+           AND booked_count = 0
+           AND is_blocked = 0
            AND id NOT IN (SELECT DISTINCT slot_id FROM bookings WHERE slot_id IS NOT NULL)`,
-        [from_date, to_date, start_time, end_time]
+        [from_date, to_date, start_time, end_time, actingFid(req)]
       );
     } catch (delErr) {
       console.warn('Notice: Skipped deleting referenced slots during bulk creation:', delErr.message);
@@ -223,8 +233,8 @@ exports.bulkCreate = async (req, res) => {
 
     // FIX: Pre-fetch existing slots in the date range to prevent duplication
     const [existingSlots] = await pool.query(
-      'SELECT DATE_FORMAT(slot_date, \'%Y-%m-%d\') as slot_date, start_time FROM slots WHERE slot_date BETWEEN ? AND ?',
-      [from_date, to_date]
+      'SELECT DATE_FORMAT(slot_date, \'%Y-%m-%d\') as slot_date, start_time FROM slots WHERE slot_date BETWEEN ? AND ? AND franchise_id = ?',
+      [from_date, to_date, actingFid(req)]
     );
     const existingSet = new Set(
       existingSlots.map(s => {
@@ -246,8 +256,8 @@ exports.bulkCreate = async (req, res) => {
 
         try {
           await pool.query(
-            'INSERT INTO slots (slot_date, start_time, end_time, max_capacity) VALUES (?, ?, ?, ?)',
-            [dateStr, slotStart, slotEnd, max_capacity]
+            'INSERT INTO slots (franchise_id, slot_date, start_time, end_time, max_capacity) VALUES (?, ?, ?, ?, ?)',
+            [actingFid(req), dateStr, slotStart, slotEnd, max_capacity]
           );
           created++;
           existingSet.add(`${dateStr}_${slotStart}`);
@@ -280,14 +290,26 @@ exports.update = async (req, res) => {
     const { max_capacity, is_blocked, reason } = req.body;
 
     const [existing] = await conn.query('SELECT * FROM slots WHERE id = ?', [id]);
-    if (!existing.length) {
+    if (!existing.length || !slotInStudio(req, existing[0])) {
       await conn.rollback();
       return res.status(404).json({ success: false, error: 'Slot not found' });
     }
 
+    if (max_capacity !== undefined) {
+      const cap = parseInt(max_capacity, 10);
+      if (!(cap >= 1)) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: 'Capacity must be at least 1' });
+      }
+      if (cap < Number(existing[0].booked_count || 0)) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: `${existing[0].booked_count} booking(s) already in this slot — capacity can't be less` });
+      }
+    }
+
     const updates = [];
     const params = [];
-    if (max_capacity !== undefined) { updates.push('max_capacity = ?'); params.push(max_capacity); }
+    if (max_capacity !== undefined) { updates.push('max_capacity = ?'); params.push(parseInt(max_capacity, 10)); }
     if (is_blocked !== undefined) { updates.push('is_blocked = ?'); params.push(is_blocked ? 1 : 0); }
 
     if (!updates.length) {
@@ -333,8 +355,8 @@ exports.toggleBlock = exports.update;
 exports.delete = async (req, res) => {
   try {
     const { id } = req.params;
-    const [slot] = await pool.query('SELECT booked_count, slot_date, start_time FROM slots WHERE id = ?', [id]);
-    if (!slot.length) return res.status(404).json({ success: false, error: 'Slot not found' });
+    const [slot] = await pool.query('SELECT booked_count, slot_date, start_time, franchise_id FROM slots WHERE id = ?', [id]);
+    if (!slot.length || !slotInStudio(req, slot[0])) return res.status(404).json({ success: false, error: 'Slot not found' });
     if (slot[0].booked_count > 0) return res.status(422).json({ success: false, error: 'Cannot delete slot with existing bookings' });
 
     // Soft delete so admin can undo/restore at any time
@@ -363,7 +385,7 @@ exports.restore = async (req, res) => {
   try {
     const { id } = req.params;
     const [slot] = await pool.query('SELECT * FROM slots WHERE id = ?', [id]);
-    if (!slot.length) return res.status(404).json({ success: false, error: 'Slot not found' });
+    if (!slot.length || !slotInStudio(req, slot[0])) return res.status(404).json({ success: false, error: 'Slot not found' });
 
     await pool.query('UPDATE slots SET is_deleted = 0, is_blocked = 0 WHERE id = ?', [id]);
 
@@ -436,9 +458,7 @@ exports.getClosures = async (req, res) => {
 exports.checkClosureConflicts = async (req, res) => {
   try {
     const user = tryParseUser(req);
-    const franchiseId = req.headers['x-franchise-id']
-      ? parseInt(req.headers['x-franchise-id'], 10)
-      : (req.franchiseId || user?.franchise_id || 1);
+    const franchiseId = actingFid(req);
 
     let { start_date, end_date, slot_time } = req.body;
     if (start_date) start_date = normalizeDateStr(start_date);
@@ -486,9 +506,7 @@ exports.checkClosureConflicts = async (req, res) => {
 exports.createClosure = async (req, res) => {
   try {
     const user = tryParseUser(req);
-    const franchiseId = req.headers['x-franchise-id']
-      ? parseInt(req.headers['x-franchise-id'], 10)
-      : (req.franchiseId || user?.franchise_id || 1);
+    const franchiseId = actingFid(req);
 
     let {
       start_date,
@@ -671,6 +689,9 @@ exports.deleteClosure = async (req, res) => {
     }
 
     const closure = existing[0];
+    if (req.user?.role !== 'super_admin' && Number(closure.franchise_id || 1) !== actingFid(req)) {
+      return res.status(404).json({ success: false, error: 'Closure record not found' });
+    }
     const franchiseId = closure.franchise_id || 1;
     const sDate = closure.start_date;
     const eDate = closure.end_date || sDate;
@@ -714,32 +735,4 @@ exports.deleteClosure = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
-
-// ─── GET CLOSURES ─────────────────────────────────────────────────
-exports.getClosures = async (req, res) => {
-  try {
-    const user = tryParseUser(req);
-    const franchiseId = req.headers['x-franchise-id']
-      ? parseInt(req.headers['x-franchise-id'], 10)
-      : (req.franchiseId || user?.franchise_id || 1);
-
-    const [rows] = await pool.query(
-      `SELECT id, franchise_id, DATE_FORMAT(start_date, '%Y-%m-%d') as start_date, 
-              DATE_FORMAT(end_date, '%Y-%m-%d') as end_date, 
-              slot_time, reason, closure_type, is_recurring, recurrence_type, recurrence_day, title,
-              created_at
-       FROM slot_closures 
-       WHERE (franchise_id = ? OR franchise_id IS NULL OR franchise_id = 0)
-       ORDER BY start_date DESC`,
-      [franchiseId]
-    );
-
-    res.json({ success: true, data: rows });
-  } catch (err) {
-    console.error('getClosures error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
-  }
-};
-
-
 

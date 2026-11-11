@@ -2,7 +2,7 @@ const ExcelJS = require('exceljs');
 const pool = require('../config/db');
 
 // ─── Generate Excel Report ──────────────────
-exports.generateExcelReport = async (fromDate, toDate) => {
+exports.generateExcelReport = async (fromDate, toDate, scope = { and: () => '' }) => {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'O3 Car Spaa';
   workbook.created = new Date();
@@ -18,31 +18,31 @@ exports.generateExcelReport = async (fromDate, toDate) => {
   const [revenue] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
      WHERE direction = 'in' AND type = 'job_revenue'
-     AND transaction_date >= ? AND transaction_date <= ?`, [fromDate, toDate]
+     AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`, [fromDate, toDate]
   );
   // Purchases
   const [purchases] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
      WHERE direction = 'out' AND type = 'purchase'
-     AND transaction_date >= ? AND transaction_date <= ?`, [fromDate, toDate]
+     AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`, [fromDate, toDate]
   );
   // Staff payments
   const [staffPay] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
      WHERE direction = 'out' AND type = 'staff_payment'
-     AND transaction_date >= ? AND transaction_date <= ?`, [fromDate, toDate]
+     AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`, [fromDate, toDate]
   );
   // B2B sales
   const [b2b] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
      WHERE direction = 'in' AND type = 'sale_b2b'
-     AND transaction_date >= ? AND transaction_date <= ?`, [fromDate, toDate]
+     AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`, [fromDate, toDate]
   );
   // B2C sales
   const [b2c] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
      WHERE direction = 'in' AND type = 'sale_b2c'
-     AND transaction_date >= ? AND transaction_date <= ?`, [fromDate, toDate]
+     AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`, [fromDate, toDate]
   );
 
   const totalIn = parseFloat(revenue[0].total) + parseFloat(b2b[0].total) + parseFloat(b2c[0].total);
@@ -80,7 +80,7 @@ exports.generateExcelReport = async (fromDate, toDate) => {
 
   const [txns] = await pool.query(
     `SELECT transaction_date, type, direction, amount, note FROM transactions
-     WHERE transaction_date >= ? AND transaction_date <= ?
+     WHERE transaction_date >= ? AND transaction_date <= ?${scope.and()}
      ORDER BY transaction_date DESC`,
     [fromDate, toDate]
   );
@@ -109,7 +109,7 @@ exports.generateExcelReport = async (fromDate, toDate) => {
   bsSheet.getRow(1).font = { bold: true };
 
   const [bsRows] = await pool.query(
-    `SELECT * FROM buy_sell WHERE transaction_date >= ? AND transaction_date <= ?
+    `SELECT * FROM buy_sell WHERE transaction_date >= ? AND transaction_date <= ?${scope.and()}
      ORDER BY transaction_date DESC`,
     [fromDate, toDate]
   );
@@ -126,28 +126,28 @@ exports.generateExcelReport = async (fromDate, toDate) => {
     });
   });
 
-  const buffer = await workbook.xlsx.writeBuffer();
+  const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
   return Buffer.from(buffer);
 };
 
 // ─── Generate PDF Report ────────────────────
-exports.generatePDFReport = async (fromDate, toDate) => {
+exports.generatePDFReport = async (fromDate, toDate, scope = { and: () => '' }) => {
   // Fetch data
   const [txns] = await pool.query(
     `SELECT transaction_date, type, direction, amount, note FROM transactions
-     WHERE transaction_date >= ? AND transaction_date <= ?
+     WHERE transaction_date >= ? AND transaction_date <= ?${scope.and()}
      ORDER BY transaction_date DESC`,
     [fromDate, toDate]
   );
 
   const [revenue] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
-     WHERE direction = 'in' AND transaction_date >= ? AND transaction_date <= ?`,
+     WHERE direction = 'in' AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`,
     [fromDate, toDate]
   );
   const [expenses] = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
-     WHERE direction = 'out' AND transaction_date >= ? AND transaction_date <= ?`,
+     WHERE direction = 'out' AND transaction_date >= ? AND transaction_date <= ?${scope.and()}`,
     [fromDate, toDate]
   );
 
@@ -161,7 +161,7 @@ exports.generatePDFReport = async (fromDate, toDate) => {
     <meta charset="utf-8">
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { font-family: 'Segoe UI', Arial, sans-serif; color: #212121; font-size: 12px; }
+      body { font-family: 'Manrope', Arial, sans-serif; color: #212121; font-size: 12px; }
       .header { background: #D32F2F; color: white; padding: 20px 30px; }
       .header h1 { font-size: 22px; margin-bottom: 4px; }
       .header p { font-size: 12px; opacity: 0.9; }
@@ -222,21 +222,7 @@ exports.generatePDFReport = async (fromDate, toDate) => {
   </body>
   </html>`;
 
-  let browser;
-  try {
-    const puppeteer = require('puppeteer');
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({ format: 'A4', printBackground: true, margin: { top: 0, bottom: 0, left: 0, right: 0 } });
-    return pdf;
-  } finally {
-    if (browser) await browser.close();
-  }
+  return require('./invoiceService').htmlToPdfBuffer(html, { margin: { top: '0', right: '0', bottom: '0', left: '0' } });
 };
 
 // ─── Generate Sales Excel Report (new) ──────
@@ -284,7 +270,7 @@ exports.generateSalesExcel = async (fromDate, toDate, data) => {
     });
   });
 
-  const buffer = await workbook.xlsx.writeBuffer();
+  const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
   return Buffer.from(buffer);
 };
 
@@ -317,7 +303,7 @@ exports.generateInventoryExcel = async (data) => {
   usageSheet.getRow(1).font = { bold: true };
   data.usage_last_30_days.forEach(u => usageSheet.addRow(u));
 
-  const buffer = await workbook.xlsx.writeBuffer();
+  const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
   return Buffer.from(buffer);
 };
 
@@ -351,6 +337,6 @@ exports.generateJobCardExcel = async (data) => {
   sheet.addRow({});
   sheet.addRow({ id: '', visit_date: '', vehicle: 'TOTAL', customer_name: `${data.total_jobs} jobs`, services_done: '', status: '', total_amount: data.total_revenue, invoice_number: '' });
 
-  const buffer = await workbook.xlsx.writeBuffer();
+  const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
   return Buffer.from(buffer);
 };

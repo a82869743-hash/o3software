@@ -20,6 +20,8 @@ exports.getLastAddress = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { booking_id, address, scheduled_time, notes, request_type } = req.body;
+    const lat = parseFloat(req.body.latitude), lng = parseFloat(req.body.longitude);
+    const pin = Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? [lat, lng] : [null, null];
 
     if (!booking_id || !address) {
       return res.status(400).json({ success: false, error: 'Booking ID and address are required' });
@@ -39,10 +41,20 @@ exports.create = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Not authorized to request pickup for this booking' });
     }
 
+    // the booking already made its pickup request → just update time / pin, never a second one
+    const [[already]] = await pool.query("SELECT id FROM v2_pickup_requests WHERE booking_id = ? AND status <> 'cancelled' ORDER BY id DESC LIMIT 1", [booking_id]);
+    if (already) {
+      await pool.query(
+        `UPDATE v2_pickup_requests SET address = ?, scheduled_time = COALESCE(?, scheduled_time), notes = COALESCE(?, notes),
+                latitude = COALESCE(?, latitude), longitude = COALESCE(?, longitude) WHERE id = ?`,
+        [address, scheduled_time || null, notes || null, pin[0], pin[1], already.id]);
+      return res.status(200).json({ success: true, message: 'Pickup request updated', data: { id: already.id } });
+    }
+
     const [result] = await pool.query(
-      `INSERT INTO v2_pickup_requests (booking_id, customer_id, address, scheduled_time, notes, pickup_charges, status, request_type)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-      [booking_id, customerId, address, scheduled_time || null, notes || null, pickupCharges, resolvedRequestType]
+      `INSERT INTO v2_pickup_requests (booking_id, customer_id, address, scheduled_time, notes, pickup_charges, status, request_type, latitude, longitude)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+      [booking_id, customerId, address, scheduled_time || null, notes || null, pickupCharges, resolvedRequestType, ...pin]
     );
 
     res.status(201).json({
@@ -75,8 +87,12 @@ exports.list = async (req, res) => {
       query += ' WHERE pr.customer_id = ?';
       params.push(req.user.id);
     } else if (req.user.role === 'staff') {
-      query += ' WHERE pr.assigned_staff_id = ?';
-      params.push(req.user.id);
+      // front desk with the Pickups module sees every pickup; drivers see only the ones given to them
+      const perms = await require('../middleware/accessControl').getEffectivePermissions(req.user);
+      if (!perms.includes('pickups.view')) {
+        query += ' WHERE pr.assigned_staff_id = ?';
+        params.push(req.user.id);
+      }
     }
 
     query += ' ORDER BY pr.created_at DESC';
@@ -105,9 +121,11 @@ exports.assign = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Pickup request not found' });
     }
     const pickup = pickups[0];
-
-    // Verify staff exists and is indeed staff
-    const [staffUsers] = await pool.query("SELECT id, name, mobile FROM users WHERE id = ? AND role = 'staff'", [assigned_staff_id]);
+    if (['cancelled', 'picked_up', 'completed', 'delivered'].includes(pickup.status)) {
+      return res.status(422).json({ success: false, error: `This pickup is already ${String(pickup.status).replace('_', ' ')}` });
+    }
+    const [staffUsers] = await pool.query("SELECT id, name, mobile FROM users WHERE id = ? AND role NOT IN ('customer') AND is_active = 1 AND is_deleted = 0 AND COALESCE(franchise_id, 1) = ?",
+      [assigned_staff_id, Number(pickup.franchise_id) || Number(req.franchiseId) || 1]);
     if (!staffUsers.length) {
       return res.status(400).json({ success: false, error: 'Invalid staff ID' });
     }
@@ -153,6 +171,9 @@ exports.markPickedUp = async (req, res) => {
     // Authorize: Only admin or assigned staff
     if (req.user.role === 'staff' && pickup.assigned_staff_id !== req.user.id) {
       return res.status(403).json({ success: false, error: 'Not authorized. You are not assigned to this pickup' });
+    }
+    if (pickup.status !== 'assigned' && pickup.status !== 'pending' && pickup.status !== 'requested') {
+      return res.status(422).json({ success: false, error: `This pickup is ${String(pickup.status).replace('_', ' ')} — it cannot be marked picked up` });
     }
 
     // Update status to picked_up
@@ -260,5 +281,26 @@ exports.createAddress = async (req, res) => {
   } catch (err) {
     console.error('Create customer address error:', err);
     res.status(500).json({ success: false, error: 'Failed to save address' });
+  }
+};
+
+// ─── CANCEL a pickup / drop ─────────────────
+// Admin: any request that is not picked up yet. Customer: only their own, before a driver is assigned.
+exports.cancel = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [[p]] = await pool.query('SELECT * FROM v2_pickup_requests WHERE id = ?', [id]);
+    if (!p) return res.status(404).json({ success: false, error: 'Pickup request not found' });
+    if (req.user.role === 'customer') {
+      if (Number(p.customer_id) !== Number(req.user.id)) return res.status(404).json({ success: false, error: 'Pickup request not found' });
+      if (p.status !== 'pending') return res.status(400).json({ success: false, error: 'A driver is already assigned — please call the studio to cancel' });
+    }
+    if (p.status === 'picked_up') return res.status(400).json({ success: false, error: 'The car has already been picked up' });
+    if (p.status === 'cancelled') return res.json({ success: true, message: 'Already cancelled' });
+    await pool.query("UPDATE v2_pickup_requests SET status = 'cancelled' WHERE id = ?", [id]);
+    res.json({ success: true, message: 'Pickup cancelled' });
+  } catch (err) {
+    console.error('Cancel pickup error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 };

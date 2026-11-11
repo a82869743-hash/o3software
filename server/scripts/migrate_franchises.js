@@ -26,7 +26,7 @@ async function run() {
 
   await pool.query(`
     INSERT INTO franchises (id, name, code, address, phone) VALUES
-      (1, 'O3 Car Spa - Main Studio', 'o3_main', 'Plot No. 37, Zone D5, GIDC, Anand', '7225030303'),
+      (1, 'O3 Car Spaa - Main Studio', 'o3_main', 'Plot No. 37, Zone D5, GIDC, Anand', '7225030303'),
       (2, 'O3 Lite - Express Studio', 'o3_lite', 'Station Road, Anand', '7225030304')
     ON DUPLICATE KEY UPDATE name = VALUES(name);
   `);

@@ -1,11 +1,12 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 
 // ─── LIST ───────────────────────────────────
 exports.list = async (req, res) => {
   try {
     const { type, status, page = 1, limit = 50, from_date, to_date } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    let where = '1=1';
+    let where = '1=1' + scopeOf(req).and('bs.franchise_id');
     const params = [];
 
     if (type) { where += ' AND bs.type = ?'; params.push(type); }
@@ -55,16 +56,23 @@ exports.create = async (req, res) => {
     if (!['buy', 'sell_b2b', 'sell_b2c'].includes(type)) {
       return res.status(400).json({ success: false, error: 'Invalid type' });
     }
+    if (!(Number(quantity) > 0) || !(Number(unit_price) >= 0) || (total_amount !== undefined && total_amount !== null && total_amount !== '' && !(Number(total_amount) >= 0))) {
+      return res.status(400).json({ success: false, error: 'Quantity must be more than 0 and prices 0 or more' });
+    }
+    if (type !== 'buy' && product_id) {
+      const err = await require('../utils/stock').stockError(pool, product_id, quantity);
+      if (err) return res.status(400).json({ success: false, error: err });
+    }
 
     const calculatedTotal = total_amount || (quantity * unit_price);
 
     const [result] = await pool.query(
       `INSERT INTO buy_sell (type, vendor_id, party_name, party_mobile, product_id, product_name,
-        quantity, unit_price, total_amount, note, transaction_date, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        quantity, unit_price, total_amount, note, transaction_date, created_by, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [type, vendor_id || null, party_name, party_mobile || null, product_id || null,
        product_name, quantity, unit_price, calculatedTotal,
-       note || null, transaction_date, req.user.id]
+       note || null, transaction_date, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     // Phase 5 Automation: Buy/Sell bill soft copy PDF auto-sent by WhatsApp/Email
@@ -89,7 +97,7 @@ exports.complete = async (req, res) => {
   const conn = await pool.getConnection();
   try {
     const { id } = req.params;
-    const [records] = await conn.query('SELECT * FROM buy_sell WHERE id = ? AND status = ?', [id, 'pending']);
+    const [records] = await conn.query(`SELECT * FROM buy_sell WHERE id = ? AND status = ?${scopeOf(req).and()}`, [id, 'pending']);
     if (!records.length) return res.status(404).json({ success: false, error: 'Pending record not found' });
 
     const record = records[0];
@@ -105,7 +113,9 @@ exports.complete = async (req, res) => {
         await conn.query('UPDATE inventory SET quantity = quantity + ? WHERE id = ?',
           [parseFloat(record.quantity), record.product_id]);
       } else {
-        // Sell: deduct from inventory
+        // Sell: deduct from inventory (stock may have changed since the sale was recorded)
+        const err = await require('../utils/stock').stockError(conn, record.product_id, record.quantity);
+        if (err) { await conn.rollback(); return res.status(400).json({ success: false, error: err }); }
         await conn.query('UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
           [parseFloat(record.quantity), record.product_id]);
       }
@@ -122,11 +132,11 @@ exports.complete = async (req, res) => {
     }
 
     await conn.query(
-      `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [txnType, parseInt(id), parseFloat(record.total_amount), txnDirection,
        `${record.type}: ${record.party_name} — ${record.product_name} (${record.quantity})`,
-       record.transaction_date, req.user.id]
+       record.transaction_date, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     await conn.commit();
@@ -144,6 +154,8 @@ exports.complete = async (req, res) => {
 exports.invoice = async (req, res) => {
   try {
     const { id } = req.params;
+    const [[own]] = await pool.query(`SELECT id FROM buy_sell WHERE id = ?${scopeOf(req).and()}`, [id]);
+    if (!own) return res.status(404).json({ success: false, error: 'Record not found' });
     const { generateBuySellInvoicePDF } = require('../services/invoiceService');
     const pdfBuffer = await generateBuySellInvoicePDF(id);
 

@@ -33,6 +33,9 @@ class BaileysDemoAdapter extends IWhatsAppProvider {
    * Check if phone is in allowed demo whitelist
    */
   async isPhoneWhitelisted(phone, franchiseId = 1) {
+    // DEMO_WHITELIST=* → anyone (the studio's interim live use: replies to every customer who writes in)
+    if ((process.env.DEMO_WHITELIST || '').trim() === '*') return true;
+
     // 1. Env whitelist
     const envWhitelist = (process.env.DEMO_WHITELIST || '').split(',').map(p => p.trim().replace(/\D/g, '')).filter(Boolean);
 

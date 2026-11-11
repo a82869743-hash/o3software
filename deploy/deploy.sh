@@ -41,7 +41,9 @@ npm install --prefix server --omit=dev --no-audit
 npm install --prefix client --no-audit
 
 # ── 4. Run Versioned Database Migrations ──────────────────────────────────────
-echo "🗄️ [4/6] Executing database migrations..."
+echo "🗄️ [4/6] Backing up, then executing database migrations..."
+# fresh backup first, so a bad migration can always be undone
+/bin/bash "${APP_ROOT}/scripts/backup.sh" || { echo "❌ Backup failed — deploy stopped before touching the database"; exit 1; }
 npm run db:migrate --prefix server
 
 # ── 5. Build Client Production Bundle ────────────────────────────────────────

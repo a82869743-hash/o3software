@@ -39,11 +39,11 @@ export default function Modal({ open, onClose, title, children, size = 'md', foo
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
-        className={`bg-white rounded-xl shadow-card-premium w-full ${sizeClasses[size]} max-h-[90vh] flex flex-col animate-scale-in overflow-hidden`}
+        className={`bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl shadow-slate-900/20 w-full ${sizeClasses[size]} max-h-[92vh] sm:max-h-[90vh] flex flex-col animate-slide-up sm:animate-scale-in overflow-hidden`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Red accent line */}
@@ -52,7 +52,7 @@ export default function Modal({ open, onClose, title, children, size = 'md', foo
         {/* Header */}
         {title && (
           <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-gray-100">
-            <h3 className="text-lg font-bold text-[#0F172A] tracking-tight">{title}</h3>
+            <h3 className="text-[17px] font-extrabold text-slate-900 tracking-tight">{title}</h3>
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
@@ -67,7 +67,7 @@ export default function Modal({ open, onClose, title, children, size = 'md', foo
 
         {/* Footer */}
         {footer && (
-          <div className="flex items-center justify-end gap-3 px-4 sm:px-6 py-3.5 sm:py-4 border-t border-gray-100 bg-gray-50/50 rounded-b-xl">
+          <div className="flex items-center justify-end gap-3 px-4 sm:px-6 py-3.5 sm:py-4 border-t border-slate-100 bg-slate-50/70 sm:rounded-b-2xl">
             {footer}
           </div>
         )}

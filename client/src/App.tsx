@@ -1,10 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { useInactivityTimer, useTokenRefresh } from './utils/useInactivityTimer';
 import AdminLayout from './components/layout/AdminLayout';
 import CustomerLayout from './components/layout/CustomerLayout';
-import StaffLayout from './components/layout/StaffLayout';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage';
@@ -15,117 +14,112 @@ import ToastContainer from './components/shared/Toast';
 import ImpersonationBanner from './components/shared/ImpersonationBanner';
 import ForcePasswordChangeModal from './components/shared/ForcePasswordChangeModal';
 import NoAccessPage from './pages/shared/NoAccessPage';
+import RequireAccess from './router/RequireAccess';
+import { can, landingPath } from './utils/access';
+import { useSessionSync } from './utils/useSessionSync';
+import PageLoader from './components/shared/PageLoader';
+const ReferralsPage = lazy(() => import('./pages/admin/ReferralsPage'));
+const MyHRPage = lazy(() => import('./pages/staff/MyHRPage'));
+const ProfileHubPage = lazy(() => import('./pages/customer/ProfileHubPage'));
+const ReferEarnPage = lazy(() => import('./pages/customer/ReferEarnPage'));
+const SupportPage = lazy(() => import('./pages/customer/SupportPage'));
+const ImageCreditsPage = lazy(() => import('./pages/ImageCreditsPage'));
+const DevLoginPage = lazy(() => import('./pages/auth/DevLoginPage'));
 
-import AllJobCardsPage from './pages/admin/AllJobCardsPage';
-import JobCartCreatePage from './pages/admin/JobCartCreatePage';
-import JobCartDetailPage from './pages/admin/JobCartDetailPage';
+const AllJobCardsPage = lazy(() => import('./pages/admin/AllJobCardsPage'));
+const JobCartCreatePage = lazy(() => import('./pages/admin/JobCartCreatePage'));
+const JobCartDetailPage = lazy(() => import('./pages/admin/JobCartDetailPage'));
 
-import CustomerJobCartsPage from './pages/customer/JobCartsPage';
+const CustomerJobCartsPage = lazy(() => import('./pages/customer/JobCartsPage'));
 
 // Inventory pages
-import InventoryPage from './pages/admin/InventoryPage';
-import StaffInventoryPage from './pages/staff/InventoryPage';
+const InventoryPage = lazy(() => import('./pages/admin/InventoryPage'));
 
 // Slots & Bookings pages
-import SlotsPage from './pages/admin/SlotsPage';
-import CustomerBookingsPage from './pages/admin/CustomerBookingsPage';
-import BookingPage from './pages/customer/BookingPage';
-import BookingsPage from './pages/customer/BookingsPage';
+const SlotsPage = lazy(() => import('./pages/admin/SlotsPage'));
+const CustomerBookingsPage = lazy(() => import('./pages/admin/CustomerBookingsPage'));
+const BookingPage = lazy(() => import('./pages/customer/BookingPage'));
+const BookingsPage = lazy(() => import('./pages/customer/BookingsPage'));
 
 // Services, Packages & Loyalty pages
-import ServicesPage from './pages/admin/ServicesPage';
-import PackagesPage from './pages/admin/PackagesPage';
-import LoyaltyAwardPage from './pages/admin/LoyaltyAwardPage';
-import CustomerServicesPage from './pages/customer/ServicesPage';
-import LoyaltyPage from './pages/customer/LoyaltyPage';
-import VehiclesPage from './pages/customer/VehiclesPage';
-import ProfilePage from './pages/customer/ProfilePage';
-import CustomerDashboardPage from './pages/customer/DashboardPage';
-import CustomerBuyPackagesPage from './pages/customer/BuyPackagesPage';
-import CustomerProductsPage from './pages/customer/ProductsPage';
-import AdminProductOrdersPage from './pages/admin/ProductOrdersPage';
+const ServicesPage = lazy(() => import('./pages/admin/ServicesPage'));
+const PackagesPage = lazy(() => import('./pages/admin/PackagesPage'));
+const LoyaltyAwardPage = lazy(() => import('./pages/admin/LoyaltyAwardPage'));
+const CustomerServicesPage = lazy(() => import('./pages/customer/ServicesPage'));
+const LoyaltyPage = lazy(() => import('./pages/customer/LoyaltyPage'));
+const VehiclesPage = lazy(() => import('./pages/customer/VehiclesPage'));
+const ProfilePage = lazy(() => import('./pages/customer/ProfilePage'));
+const CustomerDashboardPage = lazy(() => import('./pages/customer/DashboardPage'));
+const CustomerBuyPackagesPage = lazy(() => import('./pages/customer/BuyPackagesPage'));
+const CustomerProductsPage = lazy(() => import('./pages/customer/ProductsPage'));
+const AdminProductOrdersPage = lazy(() => import('./pages/admin/ProductOrdersPage'));
 
 // Staff & Accounts pages
-import StaffPage from './pages/admin/StaffPage';
-import StaffDetailPage from './pages/admin/StaffDetailPage';
-import StaffSalaryPage from './pages/admin/StaffSalaryPage';
-import AccountsPage from './pages/admin/AccountsPage';
-import BuySellPage from './pages/admin/BuySellPage';
-import CustomersListPage from './pages/admin/CustomersListPage';
-import CustomerDetailPage from './pages/admin/CustomerDetailPage';
-import ManualRegistrationPage from './pages/admin/ManualRegistrationPage';
-import PackageApprovalsPage from './pages/admin/PackageApprovalsPage';
-import StaffJobCartsPage from './pages/staff/StaffJobCartsPage';
-import StaffBenefitsPage from './pages/staff/StaffBenefitsPage';
-import CheckInOutPage from './pages/staff/CheckInOutPage';
+const StaffPage = lazy(() => import('./pages/admin/StaffPage'));
+const StaffDetailPage = lazy(() => import('./pages/admin/StaffDetailPage'));
+const StaffSalaryPage = lazy(() => import('./pages/admin/StaffSalaryPage'));
+const AccountsPage = lazy(() => import('./pages/admin/AccountsPage'));
+const BuySellPage = lazy(() => import('./pages/admin/BuySellPage'));
+const CustomersListPage = lazy(() => import('./pages/admin/CustomersListPage'));
+const CustomerDetailPage = lazy(() => import('./pages/admin/CustomerDetailPage'));
+const ManualRegistrationPage = lazy(() => import('./pages/admin/ManualRegistrationPage'));
+const PackageApprovalsPage = lazy(() => import('./pages/admin/PackageApprovalsPage'));
+const StaffBenefitsPage = lazy(() => import('./pages/staff/StaffBenefitsPage'));
+const CheckInOutPage = lazy(() => import('./pages/staff/CheckInOutPage'));
 
 // Messages, Inquiries & Import pages
-import MessagesPage from './pages/admin/MessagesPage';
-import InquiriesPage from './pages/admin/InquiriesPage';
-import ImportPage from './pages/admin/ImportPage';
-import StaffInquiryPage from './pages/staff/InquiryPage';
+const MessagesPage = lazy(() => import('./pages/admin/MessagesPage'));
+const InquiriesPage = lazy(() => import('./pages/admin/InquiriesPage'));
+const ImportPage = lazy(() => import('./pages/admin/ImportPage'));
 
 // Settings & Dashboard Pages
 // Settings, Dashboard & Billing Pages
-import DashboardPage from './pages/admin/DashboardPage';
-import SettingsPage from './pages/admin/SettingsPage';
-import QuickBillingPage from './pages/admin/QuickBillingPage';
-import AllInvoicesPage from './pages/admin/AllInvoicesPage';
-import ArchivePage from './pages/admin/ArchivePage';
-import ReportsPage from './pages/admin/ReportsPage';
-import VendorsPage from './pages/admin/VendorsPage';
+const DashboardPage = lazy(() => import('./pages/admin/DashboardPage'));
+const SettingsPage = lazy(() => import('./pages/admin/SettingsPage'));
+const QuickBillingPage = lazy(() => import('./pages/admin/QuickBillingPage'));
+const AllInvoicesPage = lazy(() => import('./pages/admin/AllInvoicesPage'));
+const ArchivePage = lazy(() => import('./pages/admin/ArchivePage'));
+const ReportsPage = lazy(() => import('./pages/admin/ReportsPage'));
+const VendorsPage = lazy(() => import('./pages/admin/VendorsPage'));
 
 // Phase 2 pages
-import QuickWashPage from './pages/admin/QuickWashPage';
-import LoyaltySettingsPage from './pages/admin/LoyaltySettingsPage';
-import PremiumServicesPage from './pages/admin/PremiumServicesPage';
-import AdminDeliveriesPage from './pages/admin/DeliveriesPage';
-import PickupsPage from './pages/admin/PickupsPage';
+const QuickWashPage = lazy(() => import('./pages/admin/QuickWashPage'));
+const LoyaltySettingsPage = lazy(() => import('./pages/admin/LoyaltySettingsPage'));
+const PremiumServicesPage = lazy(() => import('./pages/admin/PremiumServicesPage'));
+const AdminDeliveriesPage = lazy(() => import('./pages/admin/DeliveriesPage'));
+const PickupsPage = lazy(() => import('./pages/admin/PickupsPage'));
 
 // Phase 2 Extended pages
-import PaymentsPage from './pages/admin/PaymentsPage';
-import FeedbackPage from './pages/admin/FeedbackPage';
-import BalanceSheetPage from './pages/admin/BalanceSheetPage';
-import AuditLogPage from './pages/admin/AuditLogPage';
-import StaffHRPage from './pages/admin/StaffHRPage';
-import WhatsAppPage from './pages/admin/WhatsAppPage';
-import CustomerRewardsPage from './pages/admin/CustomerRewardsPage';
-import PackageTrackingPage from './pages/admin/PackageTrackingPage';
+const PaymentsPage = lazy(() => import('./pages/admin/PaymentsPage'));
+const FeedbackPage = lazy(() => import('./pages/admin/FeedbackPage'));
+const BalanceSheetPage = lazy(() => import('./pages/admin/BalanceSheetPage'));
+const AuditLogPage = lazy(() => import('./pages/admin/AuditLogPage'));
+const StaffHRPage = lazy(() => import('./pages/admin/StaffHRPage'));
+const WhatsAppPage = lazy(() => import('./pages/admin/WhatsAppPage'));
+const CustomerRewardsPage = lazy(() => import('./pages/admin/CustomerRewardsPage'));
+const PackageTrackingPage = lazy(() => import('./pages/admin/PackageTrackingPage'));
 
 // Quotations pages
-import QuotationsListPage from './pages/admin/QuotationsListPage';
-import QuotationCreatePage from './pages/admin/QuotationCreatePage';
+const QuotationsListPage = lazy(() => import('./pages/admin/QuotationsListPage'));
+const QuotationCreatePage = lazy(() => import('./pages/admin/QuotationCreatePage'));
 
 // New Features (Leads, Alerts, Pending Payments, Stock Approvals)
-import LeadManagementPage from './pages/admin/LeadManagementPage';
-import PackageAlertsPage from './pages/admin/PackageAlertsPage';
-import PendingPaymentsPage from './pages/admin/PendingPaymentsPage';
-import FranchiseStockApprovalsPage from './pages/admin/FranchiseStockApprovalsPage';
-import FranchiseStockOrdersPage from './pages/admin/FranchiseStockOrdersPage';
-import FranchiseManagementPage from './pages/admin/FranchiseManagementPage';
+const LeadManagementPage = lazy(() => import('./pages/admin/LeadManagementPage'));
+const PackageAlertsPage = lazy(() => import('./pages/admin/PackageAlertsPage'));
+const PendingPaymentsPage = lazy(() => import('./pages/admin/PendingPaymentsPage'));
+const FranchiseStockApprovalsPage = lazy(() => import('./pages/admin/FranchiseStockApprovalsPage'));
+const FranchiseStockOrdersPage = lazy(() => import('./pages/admin/FranchiseStockOrdersPage'));
+const FranchiseManagementPage = lazy(() => import('./pages/admin/FranchiseManagementPage'));
 
 
 // Phase 5 pages
-import RoleManagementPage from './pages/admin/RoleManagementPage';
-import FeedbackFormPage from './pages/customer/FeedbackFormPage';
+const RoleManagementPage = lazy(() => import('./pages/admin/RoleManagementPage'));
+const FeedbackFormPage = lazy(() => import('./pages/customer/FeedbackFormPage'));
 
 // Delivery pages
-import DeliveryPage from './pages/staff/DeliveryPage';
-import TrackingPage from './pages/customer/TrackingPage';
-import JobTrackingPage from './pages/customer/JobTrackingPage';
-
-// ─── Placeholder pages (replaced in later phases) ────────
-const Placeholder = ({ title }: { title: string }) => (
-  <div className="flex items-center justify-center py-20">
-    <div className="text-center">
-      <div className="w-12 h-12 rounded-full bg-[#f6f3f2] flex items-center justify-center mx-auto mb-4">
-        <span className="text-xl">🚧</span>
-      </div>
-      <h2 className="text-xl font-bold text-[#0F172A]">{title}</h2>
-      <p className="text-sm text-[#5f5e5e] mt-1">Building in next phase</p>
-    </div>
-  </div>
-);
+const DeliveryPage = lazy(() => import('./pages/staff/DeliveryPage'));
+const TrackingPage = lazy(() => import('./pages/customer/TrackingPage'));
+const JobTrackingPage = lazy(() => import('./pages/customer/JobTrackingPage'));
 
 // ─── App ──────────────────────────────────────────────────
 export default function App() {
@@ -136,6 +130,9 @@ export default function App() {
 
   // Silent token refresh (checks expiry on mount, refreshes every 45 min)
   useTokenRefresh();
+
+  // Keep role / permissions in sync with what the admin or Super Admin changes
+  useSessionSync();
 
   // Global Theme Overrides Effect
   useEffect(() => {
@@ -280,14 +277,7 @@ export default function App() {
 
   const getDefaultRedirect = () => {
     if (!isAuthenticated || !user) return '/login';
-    const redirects: Record<string, string> = {
-      super_admin: '/admin',
-      admin: '/admin',
-      manager: '/admin',
-      customer: '/customer',
-      staff: '/staff/job-carts',
-    };
-    return redirects[user.role] || '/login';
+    return landingPath(user);
   };
 
   return (
@@ -295,9 +285,12 @@ export default function App() {
       <ImpersonationBanner />
       <ForcePasswordChangeModal />
       <ToastContainer />
+      <Suspense fallback={<PageLoader />}>
       <Routes>
       {/* 403 Access Denied */}
       <Route path="/403" element={<NoAccessPage />} />
+      <Route path="/image-credits" element={<ImageCreditsPage />} />
+      {import.meta.env.DEV && <Route path="/dev-login" element={<DevLoginPage />} />}
       {/* Public routes */}
       <Route path="/login" element={
         isAuthenticated ? <Navigate to={getDefaultRedirect()} replace /> : <LoginPage />
@@ -309,67 +302,74 @@ export default function App() {
         isAuthenticated ? <Navigate to={getDefaultRedirect()} replace /> : <ForgotPasswordPage />
       } />
 
-      {/* Admin routes */}
+      {/* Internal app (Super Admin, Franchise Admin, Manager, Staff) — every page is permission-gated */}
       <Route path="/admin" element={
-        <ProtectedRoute><RoleRoute allowedRoles={['admin']}><AdminLayout /></RoleRoute></ProtectedRoute>
+        <ProtectedRoute><RoleRoute allowedRoles={['admin', 'manager', 'staff']}><AdminLayout /></RoleRoute></ProtectedRoute>
       }>
-        <Route index element={<DashboardPage />} />
-        <Route path="job-carts" element={<AllJobCardsPage />} />
+        <Route index element={can(user, 'dashboard') ? <DashboardPage /> : <Navigate to={landingPath(user)} replace />} />
+        <Route path="job-carts" element={<RequireAccess module="job_cards"><AllJobCardsPage /></RequireAccess>} />
+        <Route path="job-carts/new" element={<RequireAccess module="job_cards" action="create"><JobCartCreatePage /></RequireAccess>} />
+        <Route path="job-carts/:id" element={<RequireAccess module="job_cards"><JobCartDetailPage /></RequireAccess>} />
+        <Route path="quick-wash" element={<RequireAccess module="quick_wash"><QuickWashPage /></RequireAccess>} />
+        <Route path="slots" element={<RequireAccess module="slots"><SlotsPage /></RequireAccess>} />
+        <Route path="customer-bookings" element={<RequireAccess module="bookings"><CustomerBookingsPage /></RequireAccess>} />
+        <Route path="pickups" element={<RequireAccess module="pickups"><PickupsPage /></RequireAccess>} />
+        <Route path="deliveries" element={<RequireAccess module="deliveries"><AdminDeliveriesPage /></RequireAccess>} />
 
-        <Route path="job-carts/new" element={<JobCartCreatePage />} />
-        <Route path="job-carts/:id" element={<JobCartDetailPage />} />
-        <Route path="inventory" element={<InventoryPage />} />
-        <Route path="slots" element={<SlotsPage />} />
-        <Route path="customer-bookings" element={<CustomerBookingsPage />} />
-        <Route path="services" element={<ServicesPage />} />
-        <Route path="packages" element={<PackagesPage />} />
-        <Route path="staff" element={<StaffPage />} />
-        <Route path="staff/:id" element={<StaffDetailPage />} />
-        <Route path="accounts" element={<AccountsPage />} />
-        <Route path="buy-sell" element={<BuySellPage />} />
-        <Route path="product-orders" element={<AdminProductOrdersPage />} />
-        <Route path="messages" element={<MessagesPage />} />
-        <Route path="inquiries" element={<InquiriesPage />} />
-        <Route path="import" element={<ImportPage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        <Route path="customers" element={<CustomersListPage />} />
-        <Route path="customers/:id" element={<CustomerDetailPage />} />
-        <Route path="add-customer" element={<ManualRegistrationPage />} />
-        <Route path="package-approvals" element={<PackageApprovalsPage />} />
-        <Route path="package-tracking" element={<PackageTrackingPage />} />
-        {/* ─── New Admin Routes ─── */}
-        <Route path="reports" element={<ReportsPage />} />
-        <Route path="billing" element={<QuickBillingPage />} />
-        <Route path="invoices" element={<AllInvoicesPage />} />
-        <Route path="salary" element={<StaffSalaryPage />} />
-        <Route path="vendors" element={<VendorsPage />} />
-        <Route path="archive" element={<SuperAdminRoute><ArchivePage /></SuperAdminRoute>} />
-        {/* ─── Phase 2 Routes ─── */}
-        <Route path="quick-wash" element={<QuickWashPage />} />
-        <Route path="loyalty" element={<LoyaltySettingsPage />} />
-        <Route path="premium-services" element={<PremiumServicesPage />} />
-        <Route path="deliveries" element={<AdminDeliveriesPage />} />
-        <Route path="pickups" element={<PickupsPage />} />
-        {/* ─── Phase 2 Extended Routes ─── */}
-        <Route path="payments" element={<PaymentsPage />} />
-        <Route path="feedback" element={<FeedbackPage />} />
-        <Route path="balance-sheet" element={<BalanceSheetPage />} />
-        <Route path="audit-logs" element={<SuperAdminRoute><AuditLogPage /></SuperAdminRoute>} />
-        <Route path="staff-hr" element={<StaffHRPage />} />
-        <Route path="whatsapp" element={<WhatsAppPage />} />
-        <Route path="customer-rewards" element={<CustomerRewardsPage />} />
-        <Route path="roles" element={<SuperAdminRoute><RoleManagementPage /></SuperAdminRoute>} />
-        {/* ─── Quotations Routes ─── */}
-        <Route path="quotations" element={<QuotationsListPage />} />
-        <Route path="quotations/new" element={<QuotationCreatePage />} />
-        <Route path="quotations/edit/:id" element={<QuotationCreatePage />} />
-        {/* ─── New Admin Routes ─── */}
-        <Route path="leads" element={<LeadManagementPage />} />
-        <Route path="package-alerts" element={<PackageAlertsPage />} />
-        <Route path="pending-payments" element={<PendingPaymentsPage />} />
+        <Route path="customers" element={<RequireAccess module="customers"><CustomersListPage /></RequireAccess>} />
+        <Route path="customers/:id" element={<RequireAccess module="customers"><CustomerDetailPage /></RequireAccess>} />
+        <Route path="add-customer" element={<RequireAccess module="customers" action="create"><ManualRegistrationPage /></RequireAccess>} />
+        <Route path="leads" element={<RequireAccess module="leads"><LeadManagementPage /></RequireAccess>} />
+        <Route path="inquiries" element={<RequireAccess module="inquiries"><InquiriesPage /></RequireAccess>} />
+        <Route path="packages" element={<RequireAccess module="packages"><PackagesPage /></RequireAccess>} />
+        <Route path="package-approvals" element={<RequireAccess module="packages"><PackageApprovalsPage /></RequireAccess>} />
+        <Route path="package-tracking" element={<RequireAccess module="packages"><PackageTrackingPage /></RequireAccess>} />
+        <Route path="package-alerts" element={<RequireAccess module="packages"><PackageAlertsPage /></RequireAccess>} />
+        <Route path="loyalty" element={<RequireAccess module="loyalty"><LoyaltySettingsPage /></RequireAccess>} />
+        <Route path="customer-rewards" element={<RequireAccess module="loyalty"><CustomerRewardsPage /></RequireAccess>} />
+        <Route path="referrals" element={<RequireAccess module="referrals"><ReferralsPage /></RequireAccess>} />
+        <Route path="feedback" element={<RequireAccess module="feedback"><FeedbackPage /></RequireAccess>} />
+
+        <Route path="services" element={<RequireAccess module="services"><ServicesPage /></RequireAccess>} />
+        <Route path="premium-services" element={<RequireAccess module="services"><PremiumServicesPage /></RequireAccess>} />
+        <Route path="inventory" element={<RequireAccess module="inventory"><InventoryPage /></RequireAccess>} />
+        <Route path="buy-sell" element={<RequireAccess module="inventory"><BuySellPage /></RequireAccess>} />
+        <Route path="product-orders" element={<RequireAccess module="inventory"><AdminProductOrdersPage /></RequireAccess>} />
+        <Route path="franchise-orders" element={<RequireAccess module="franchise_stock"><FranchiseStockOrdersPage /></RequireAccess>} />
         <Route path="stock-approvals" element={<SuperAdminRoute><FranchiseStockApprovalsPage /></SuperAdminRoute>} />
-        <Route path="franchise-orders" element={<FranchiseStockOrdersPage />} />
+
+        <Route path="accounts" element={<RequireAccess module="accounts"><AccountsPage /></RequireAccess>} />
+        <Route path="vendors" element={<RequireAccess module="accounts"><VendorsPage /></RequireAccess>} />
+        <Route path="pending-payments" element={<RequireAccess module="payments"><PendingPaymentsPage /></RequireAccess>} />
+        <Route path="payments" element={<RequireAccess module="payments"><PaymentsPage /></RequireAccess>} />
+        <Route path="billing" element={<RequireAccess module="billing"><QuickBillingPage /></RequireAccess>} />
+        <Route path="invoices" element={<RequireAccess module="invoices"><AllInvoicesPage /></RequireAccess>} />
+        <Route path="quotations" element={<RequireAccess module="quotations"><QuotationsListPage /></RequireAccess>} />
+        <Route path="quotations/new" element={<RequireAccess module="quotations" action="create"><QuotationCreatePage /></RequireAccess>} />
+        <Route path="quotations/edit/:id" element={<RequireAccess module="quotations" action="edit"><QuotationCreatePage /></RequireAccess>} />
+        <Route path="balance-sheet" element={<RequireAccess module="balance_sheet"><BalanceSheetPage /></RequireAccess>} />
+        <Route path="reports" element={<RequireAccess module="reports"><ReportsPage /></RequireAccess>} />
+
+        <Route path="staff" element={<RequireAccess module="staff"><StaffPage /></RequireAccess>} />
+        <Route path="staff/:id" element={<RequireAccess module="staff"><StaffDetailPage /></RequireAccess>} />
+        <Route path="salary" element={<RequireAccess module="salary"><StaffSalaryPage /></RequireAccess>} />
+        <Route path="staff-hr" element={<RequireAccess module="staff_hr"><StaffHRPage /></RequireAccess>} />
+
+        <Route path="whatsapp" element={<RequireAccess module="whatsapp"><WhatsAppPage /></RequireAccess>} />
+        <Route path="messages" element={<RequireAccess module="whatsapp"><MessagesPage /></RequireAccess>} />
+
+        <Route path="roles" element={<RequireAccess module="roles"><RoleManagementPage /></RequireAccess>} />
+        <Route path="import" element={<RequireAccess module="import" action="create"><ImportPage /></RequireAccess>} />
+        <Route path="settings" element={<RequireAccess module="settings"><SettingsPage /></RequireAccess>} />
         <Route path="franchises" element={<SuperAdminRoute><FranchiseManagementPage /></SuperAdminRoute>} />
+        <Route path="audit-logs" element={<SuperAdminRoute><AuditLogPage /></SuperAdminRoute>} />
+        <Route path="archive" element={<SuperAdminRoute><ArchivePage /></SuperAdminRoute>} />
+
+        {/* My workspace — every internal user, own data only */}
+        <Route path="my/attendance" element={<CheckInOutPage />} />
+        <Route path="my/benefits" element={<StaffBenefitsPage />} />
+        <Route path="my/hr" element={<MyHRPage />} />
+        <Route path="my/deliveries" element={<DeliveryPage />} />
       </Route>
 
 
@@ -386,25 +386,21 @@ export default function App() {
         <Route path="vehicles" element={<VehiclesPage />} />
         <Route path="buy-packages" element={<CustomerBuyPackagesPage />} />
         <Route path="products" element={<CustomerProductsPage />} />
-        <Route path="profile" element={<ProfilePage />} />
+        <Route path="profile" element={<ProfileHubPage />} />
+        <Route path="profile/edit" element={<ProfilePage />} />
+        <Route path="refer" element={<ReferEarnPage />} />
+        <Route path="support" element={<SupportPage />} />
         <Route path="delivery/:id" element={<TrackingPage />} />
       </Route>
 
-      {/* Staff routes */}
-      <Route path="/staff" element={
-        <ProtectedRoute><RoleRoute allowedRoles={['staff']}><StaffLayout /></RoleRoute></ProtectedRoute>
-      }>
-        <Route index element={<Navigate to="job-carts" replace />} />
-        <Route path="job-carts" element={<StaffJobCartsPage />} />
-        <Route path="job-carts/new" element={<JobCartCreatePage />} />
-        <Route path="job-carts/:id" element={<JobCartDetailPage />} />
-        <Route path="inventory" element={<StaffInventoryPage />} />
-        <Route path="benefits" element={<StaffBenefitsPage />} />
-        <Route path="inquiry" element={<StaffInquiryPage />} />
-        <Route path="delivery" element={<DeliveryPage />} />
-        <Route path="check-in" element={<CheckInOutPage />} />
-        <Route path="quick-wash" element={<QuickWashPage />} />
-      </Route>
+      {/* Legacy staff URLs → unified internal app */}
+      <Route path="/staff" element={<Navigate to="/admin" replace />} />
+      <Route path="/staff/job-carts" element={<Navigate to="/admin/job-carts" replace />} />
+      <Route path="/staff/job-carts/new" element={<Navigate to="/admin/job-carts/new" replace />} />
+      <Route path="/staff/check-in" element={<Navigate to="/admin/my/attendance" replace />} />
+      <Route path="/staff/benefits" element={<Navigate to="/admin/my/benefits" replace />} />
+      <Route path="/staff/delivery" element={<Navigate to="/admin/my/deliveries" replace />} />
+      <Route path="/staff/*" element={<Navigate to="/admin" replace />} />
 
       {/* Public Tracking Page */}
       <Route path="/job/:id" element={<JobTrackingPage />} />
@@ -414,6 +410,7 @@ export default function App() {
       <Route path="/" element={<Navigate to={getDefaultRedirect()} replace />} />
       <Route path="*" element={<Navigate to={getDefaultRedirect()} replace />} />
     </Routes>
+    </Suspense>
     </>
   );
 }

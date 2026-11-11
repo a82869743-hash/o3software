@@ -9,7 +9,8 @@ export default function FeedbackFormPage() {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
 
-  const { data: context, isLoading, isError } = useFeedbackFormContext(token);
+  const { data: context, isLoading, isError, error } = useFeedbackFormContext(token);
+  const alreadyDone = /already/i.test((error as any)?.response?.data?.error || '');
   const submitMutation = useSubmitFeedback();
 
   const [ratings, setRatings] = useState({
@@ -89,6 +90,19 @@ export default function FeedbackFormPage() {
     );
   }
 
+  if (alreadyDone) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <AnimatedCard className="bg-white p-8 rounded-2xl max-w-md w-full border border-gray-100 text-center shadow-sm">
+          <CheckCircle size={48} className="text-emerald-500 mx-auto mb-4" />
+          <h3 className="text-lg font-bold text-[#0F172A]">Review completed</h3>
+          <p className="text-sm text-gray-500 mt-2">Thank you! Your review for this visit is already saved.</p>
+          <RippleButton variant="primary" onClick={() => navigate('/')} className="mt-6 w-full bg-amber-500 hover:bg-amber-600 text-white rounded-xl">Go to Home</RippleButton>
+        </AnimatedCard>
+      </div>
+    );
+  }
+
   if (isError || !context) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -123,9 +137,6 @@ export default function FeedbackFormPage() {
           <p className="text-sm text-gray-500 mt-2">
             Your review has been saved. We constantly strive to improve our services based on your valuable inputs.
           </p>
-          <div className="mt-6 border-t border-gray-100 pt-4 text-xs text-gray-400">
-            Invoice: <span className="font-semibold text-gray-600">{context.invoice_number}</span>
-          </div>
           <RippleButton
             variant="primary"
             onClick={() => navigate('/')}
@@ -149,9 +160,6 @@ export default function FeedbackFormPage() {
           <p className="text-xs text-gray-400 mt-1">
             Hi {context.customer_name}, help us improve our wash standards!
           </p>
-          <div className="mt-2 text-xs bg-gray-50 inline-block px-3 py-1 rounded-full text-gray-500 border border-gray-100">
-            Invoice: <span className="font-semibold">{context.invoice_number}</span>
-          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

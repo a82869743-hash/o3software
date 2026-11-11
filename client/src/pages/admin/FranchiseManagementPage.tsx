@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { FranchiseUsersPanel, PriceVisibilityPanel } from '../../components/admin/SuperAdminAccessPanel';
 import {
   Building2, Plus, Edit3, Power, CheckCircle, AlertCircle,
   MapPin, Phone, Mail, Clock, DollarSign, Users, ClipboardList,
@@ -10,7 +11,10 @@ import { useAuthStore } from '../../store/authStore';
 import { useUIStore } from '../../store/uiStore';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
+import AdminHero from '../../components/admin/AdminHero';
 import Input from '../../components/ui/Input';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface Franchise {
   id: number;
@@ -82,7 +86,7 @@ interface ConsolidatedOverview {
 export default function FranchiseManagementPage() {
   const toast = useUIStore((s) => s.toast);
 
-  const [activeTab, setActiveTab] = useState<'locations' | 'overview' | 'settings' | 'entitlements'>('locations');
+  const [activeTab, setActiveTab] = useState<'locations' | 'overview' | 'settings' | 'entitlements' | 'users' | 'prices'>('locations');
   const [franchises, setFranchises] = useState<Franchise[]>([]);
   const [overview, setOverview] = useState<ConsolidatedOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -110,6 +114,7 @@ export default function FranchiseManagementPage() {
     slot_duration_minutes: 60,
     opening_time: '09:00:00',
     closing_time: '20:00:00',
+    plan_tier: 'enterprise',
   });
 
   // Per-franchise settings tab state
@@ -188,6 +193,7 @@ export default function FranchiseManagementPage() {
     }
   };
 
+  useLiveReload(() => { fetchFranchises(); fetchOverview(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchFranchises();
     fetchOverview();
@@ -220,6 +226,17 @@ export default function FranchiseManagementPage() {
     } finally {
       setApplyingPreset(false);
     }
+  };
+
+  // switch every module on / off for this studio (each keeps its full set of actions when on)
+  const setAllModules = (on: boolean) => {
+    if (!entitlementsData) return;
+    const next: Record<string, any> = {};
+    for (const m of (entitlementsData.catalog || []) as any[]) {
+      if (!m.key) continue;
+      next[m.key] = { ...(entitlementsData.entitlements?.[m.key] || {}), is_enabled: on, actions: on ? (m.actions || []) : [] };
+    }
+    setEntitlementsData({ ...entitlementsData, entitlements: { ...entitlementsData.entitlements, ...next } });
   };
 
   const handleToggleModule = (featKey: string) => {
@@ -361,6 +378,7 @@ export default function FranchiseManagementPage() {
       slot_duration_minutes: 60,
       opening_time: '09:00:00',
       closing_time: '20:00:00',
+      plan_tier: 'enterprise',
     });
     setIsModalOpen(true);
   };
@@ -382,6 +400,7 @@ export default function FranchiseManagementPage() {
       slot_duration_minutes: f.slot_duration_minutes || 60,
       opening_time: f.opening_time || '09:00:00',
       closing_time: f.closing_time || '20:00:00',
+      plan_tier: (f as any).plan_tier || 'enterprise',
     });
     setIsModalOpen(true);
   };
@@ -396,7 +415,9 @@ export default function FranchiseManagementPage() {
     try {
       if (modalMode === 'create') {
         const res = await api.post('/franchises', formData);
-        toast('success', res.data.message || 'Franchise created successfully');
+        toast('success', `${res.data.message || 'Franchise created'}. Now choose exactly what this studio can use.`);
+        // straight to its module access, so the Super Admin decides access while setting it up
+        if (res.data.data?.id) { setSelectedEntitlementFid(res.data.data.id); setActiveTab('entitlements'); }
       } else if (editingId) {
         const res = await api.put(`/franchises/${editingId}`, formData);
         toast('success', res.data.message || 'Franchise updated successfully');
@@ -473,20 +494,15 @@ export default function FranchiseManagementPage() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <AdminHero title={'Super Admin — Franchise Network'} subtitle={'Manage multi-tenant studio locations, configure branch settings, and view cross-franchise metrics.'} />
       {/* ── Header ── */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="p-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-lg">
-              <Shield className="w-5 h-5" />
-            </span>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-              Super Admin — Franchise Network
-            </h1>
+
+            
           </div>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Manage multi-tenant studio locations, configure branch settings, and view cross-franchise metrics.
-          </p>
+          
         </div>
 
         <div className="flex items-center gap-3">
@@ -513,7 +529,7 @@ export default function FranchiseManagementPage() {
       </div>
 
       {/* ── View Navigation Tabs ── */}
-      <div className="flex border-b border-gray-200 dark:border-gray-800">
+      <div className="flex border-b border-gray-200 dark:border-gray-800 overflow-x-auto no-scrollbar [&>button]:shrink-0 [&>button]:whitespace-nowrap">
         <button
           onClick={() => setActiveTab('locations')}
           className={`py-3 px-5 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors ${
@@ -559,9 +575,20 @@ export default function FranchiseManagementPage() {
           }`}
         >
           <Key className="w-4 h-4" />
-          Feature Entitlements
+          Module Access (per franchise)
         </button>
+
+        {(['users', 'prices'] as const).map(t => (
+          <button key={t} onClick={() => setActiveTab(t)}
+            className={`py-3 px-5 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors ${
+              activeTab === t ? 'border-blue-600 text-blue-600 font-bold' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {t === 'users' ? 'Logins & Admins' : 'Price Visibility'}
+          </button>
+        ))}
       </div>
+
+      {activeTab === 'users' && <FranchiseUsersPanel franchises={franchises.filter((f: any) => !f.is_deleted)} />}
+      {activeTab === 'prices' && <PriceVisibilityPanel />}
 
       {/* ── TAB 1: FRANCHISE LOCATIONS ── */}
       {activeTab === 'locations' && (
@@ -578,7 +605,7 @@ export default function FranchiseManagementPage() {
 
             <div className="flex items-center gap-2 w-full sm:w-auto">
               <span className="text-xs text-gray-500 font-medium">Status:</span>
-              <select
+              <Dropdown
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as any)}
                 className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#0F172A] text-gray-800 dark:text-gray-200"
@@ -586,7 +613,7 @@ export default function FranchiseManagementPage() {
                 <option value="all">All Locations</option>
                 <option value="active">Active Only</option>
                 <option value="disabled">Disabled Only</option>
-              </select>
+              </Dropdown>
             </div>
           </div>
 
@@ -934,8 +961,8 @@ export default function FranchiseManagementPage() {
 
               {/* Franchise Selector */}
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-500">Target Studio:</span>
-                <select
+                <span className="text-xs font-medium text-gray-500 whitespace-nowrap shrink-0">Target studio:</span>
+                <Dropdown
                   value={selectedSettingFid}
                   onChange={(e) => setSelectedSettingFid(parseInt(e.target.value, 10))}
                   className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#0F172A] text-gray-800 dark:text-gray-200 font-medium"
@@ -945,7 +972,7 @@ export default function FranchiseManagementPage() {
                       {f.name} (#{f.code})
                     </option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
             </div>
 
@@ -993,7 +1020,7 @@ export default function FranchiseManagementPage() {
                       <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                         Slot Duration (Minutes)
                       </label>
-                      <select
+                      <Dropdown
                         value={settingsData.franchise?.slot_duration_minutes || 60}
                         onChange={(e) =>
                           setSettingsData({
@@ -1011,7 +1038,7 @@ export default function FranchiseManagementPage() {
                         <option value={60}>60 Minutes (Default)</option>
                         <option value={90}>90 Minutes</option>
                         <option value={120}>120 Minutes</option>
-                      </select>
+                      </Dropdown>
                     </div>
                   </div>
                 </div>
@@ -1113,8 +1140,8 @@ export default function FranchiseManagementPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-500">Target Studio:</span>
-                <select
+                <span className="text-xs font-medium text-gray-500 whitespace-nowrap shrink-0">Target studio:</span>
+                <Dropdown
                   value={selectedEntitlementFid}
                   onChange={(e) => setSelectedEntitlementFid(parseInt(e.target.value, 10))}
                   className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-[#0F172A] text-gray-800 dark:text-gray-200 font-medium"
@@ -1124,7 +1151,7 @@ export default function FranchiseManagementPage() {
                       {f.name} (#{f.code}) — {f.plan_tier?.toUpperCase() || 'PRO'}
                     </option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
             </div>
 
@@ -1132,52 +1159,27 @@ export default function FranchiseManagementPage() {
               <div className="py-12 text-center text-gray-500">Loading feature entitlements...</div>
             ) : entitlementsData ? (
               <form onSubmit={handleSaveEntitlements} className="space-y-6 pt-4">
-                {/* Presets Toolbar */}
-                <div className="p-4 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200/80 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Active Plan Tier</span>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-base font-extrabold uppercase text-slate-900 dark:text-white">
-                        {entitlementsData.plan_tier || 'PRO'}
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        ({entitlementsData.franchise?.name})
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-slate-500 font-medium">Apply Preset:</span>
-                    <button
-                      type="button"
-                      disabled={applyingPreset}
-                      onClick={() => handleApplyPreset('basic')}
-                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                    >
-                      Basic Preset
-                    </button>
-                    <button
-                      type="button"
-                      disabled={applyingPreset}
-                      onClick={() => handleApplyPreset('pro')}
-                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 transition-colors cursor-pointer"
-                    >
-                      Pro Preset
-                    </button>
-                    <button
-                      type="button"
-                      disabled={applyingPreset}
-                      onClick={() => handleApplyPreset('enterprise')}
-                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200 dark:border-purple-800 transition-colors cursor-pointer"
-                    >
-                      Enterprise Preset
-                    </button>
+                {/* What this screen does */}
+                <div className="p-4 bg-blue-50/60 rounded-xl border border-blue-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <p className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                    <b className="text-slate-900">Which parts of the app {entitlementsData.franchise?.name} can use.</b> Turn a module off and nobody in that studio sees it.
+                    Inside the studio, its admin then decides what each staff role may do (Roles &amp; permissions). The Super Admin always sees everything.
+                  </p>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button type="button" onClick={() => setAllModules(true)} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50">Turn all on</button>
+                    <button type="button" onClick={() => setAllModules(false)} className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50">Turn all off</button>
                   </div>
                 </div>
 
                 {/* Categories & Feature Toggles */}
                 <div className="space-y-6">
-                  {entitlementsData.catalog?.map((cat: any) => (
+                  {Object.values(((entitlementsData.catalog || []) as any[]).reduce((acc: Record<string, any>, m: any) => {
+                    // server sends a flat list of modules — group them by category for display
+                    if (m.modules) { acc[m.category] = m; return acc; }
+                    const key = m.category || 'Other';
+                    (acc[key] = acc[key] || { category: key, modules: [] }).modules.push({ ...m, label: m.label || m.name });
+                    return acc;
+                  }, {})).map((cat: any) => (
                     <div key={cat.category} className="space-y-3">
                       <div className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-200">
                         <Layers className="w-4 h-4 text-blue-600" />
@@ -1307,6 +1309,18 @@ export default function FranchiseManagementPage() {
               />
             </div>
           </div>
+
+          {modalMode === 'create' && (
+            <div>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Starting access</label>
+              <Dropdown value={formData.plan_tier} onChange={(e) => setFormData({ ...formData, plan_tier: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
+                <option value="basic">Basic: job cards, quick wash, bookings, slots, customers, enquiries, billing, invoices, staff, feedback</option>
+                <option value="enterprise">Everything (services and prices stay view-only)</option>
+              </Dropdown>
+              <p className="text-[11px] text-gray-500 mt-1">You can switch any module or action on or off right after saving, or any time later.</p>
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">

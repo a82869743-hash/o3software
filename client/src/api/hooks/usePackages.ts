@@ -10,16 +10,6 @@ export const usePackages = (params?: { published_only?: boolean }) =>
     },
   });
 
-export const usePackage = (id: number | undefined) =>
-  useQuery({
-    queryKey: ['package', id],
-    queryFn: async () => {
-      const res = await api.get(`/packages/${id}`);
-      return res.data.data;
-    },
-    enabled: !!id,
-  });
-
 export const useCreatePackage = () => {
   const qc = useQueryClient();
   return useMutation({

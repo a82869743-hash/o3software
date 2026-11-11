@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { guessCarCategory } = require('../utils/carCategory');
 
 // Get all unique brands (makes)
 exports.getBrands = async (req, res) => {
@@ -140,7 +141,19 @@ exports.addCar = async (req, res) => {
     await conn.beginTransaction();
 
     const userId = req.user.id;
-    const { brand, model, registration_no, car_year, manufacture_year, category } = req.body;
+    let { brand, model, registration_no, car_year, manufacture_year, category } = req.body;
+    if (!registration_no || !String(registration_no).trim()) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Registration number is required' });
+    }
+    {
+      const { validateRegNo } = require('../utils/validators');
+      const rc = validateRegNo(registration_no);
+      if (!rc.valid) { await conn.rollback(); return res.status(400).json({ success: false, error: rc.error }); }
+      registration_no = rc.value;
+      const [dupReg] = await pool.query('SELECT id FROM vehicles WHERE registration_no = ? AND id <> ?', [rc.value, Number(req.params.id) || 0]);
+      if (dupReg.length) { await conn.rollback(); return res.status(409).json({ success: false, error: `${rc.value} is already registered to another customer. Please contact the studio.` }); }
+    }
     const resolvedYear = car_year || manufacture_year || null;
 
     // Validate required fields
@@ -163,7 +176,7 @@ exports.addCar = async (req, res) => {
     const [result] = await conn.query(
       `INSERT INTO vehicles (customer_id, brand, model, registration_no, car_year, is_primary, category)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [userId, brand.trim(), model.trim(), registration_no?.toUpperCase().trim() || null, resolvedYear, isFirst ? 1 : 0, category || 'sedan']
+      [userId, brand.trim(), model.trim(), registration_no?.toUpperCase().trim() || null, resolvedYear, isFirst ? 1 : 0, category || guessCarCategory(brand, model) || 'sedan']
     );
 
     await conn.commit();
@@ -177,7 +190,7 @@ exports.addCar = async (req, res) => {
         registration_no: registration_no?.toUpperCase().trim() || null,
         car_year: resolvedYear,
         is_primary: isFirst ? 1 : 0,
-        category: category || 'sedan',
+        category: category || guessCarCategory(brand, model) || 'sedan',
       },
       message: 'Car added successfully',
     });
@@ -268,7 +281,7 @@ exports.deleteCar = async (req, res) => {
 
     // Check if car has active bookings
     const [activeBookings] = await conn.query(
-      "SELECT COUNT(*) AS count FROM bookings WHERE vehicle_id = ? AND status NOT IN ('completed', 'cancelled')",
+      "SELECT COUNT(*) AS count FROM bookings WHERE vehicle_id = ? AND status IN ('pending_approval', 'confirmed', 'in_progress', 'pending_payment', 'reschedule_required')",
       [carId]
     );
     if (activeBookings[0].count > 0) {
@@ -276,6 +289,22 @@ exports.deleteCar = async (req, res) => {
       return res.status(422).json({
         success: false,
         error: `Cannot delete vehicle: It has ${activeBookings[0].count} active booking(s) attached to it. Please complete or cancel the booking(s) first.`,
+      });
+    }
+
+    // A car with service history (job cards, packages, warranty, done washes) is kept — that record matters
+    const [[hist]] = await conn.query(
+      `SELECT (SELECT COUNT(*) FROM job_carts WHERE vehicle_id = ?)
+            + (SELECT COUNT(*) FROM user_packages WHERE vehicle_id = ?)
+            + (SELECT COUNT(*) FROM warranty_certificates WHERE vehicle_id = ?)
+            + (SELECT COUNT(*) FROM bookings WHERE vehicle_id = ? AND status IN ('completed', 'delivered')) AS n`,
+      [carId, carId, carId, carId]
+    );
+    if (Number(hist.n) > 0) {
+      await conn.rollback();
+      return res.status(422).json({
+        success: false,
+        error: 'This car has service history with us, so it can\'t be removed. Please ask the studio if you no longer own it.',
       });
     }
 
@@ -312,7 +341,15 @@ exports.updateCar = async (req, res) => {
 
     const userId = req.user.id;
     const carId = req.params.id;
-    const { brand, model, registration_no, car_year, manufacture_year, category } = req.body;
+    let { brand, model, registration_no, car_year, manufacture_year, category } = req.body;
+    if (registration_no) {
+      const { validateRegNo } = require('../utils/validators');
+      const rc = validateRegNo(registration_no);
+      if (!rc.valid) return res.status(400).json({ success: false, error: rc.error });
+      registration_no = rc.value;
+      const [dupReg] = await pool.query('SELECT id FROM vehicles WHERE registration_no = ? AND id <> ?', [rc.value, Number(req.params.id) || 0]);
+      if (dupReg.length) return res.status(409).json({ success: false, error: `${rc.value} is already registered to another customer. Please contact the studio.` });
+    }
     const resolvedYear = car_year || manufacture_year || null;
 
     // Verify car exists
@@ -326,7 +363,7 @@ exports.updateCar = async (req, res) => {
     }
 
     // Check authorization: admin or owner
-    if (req.user.role !== 'admin' && cars[0].customer_id !== userId) {
+    if (!['admin', 'super_admin'].includes(req.user.role) && cars[0].customer_id !== userId) {
       await conn.rollback();
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
@@ -382,10 +419,16 @@ exports.getAllMaster = async (req, res) => {
 exports.createMaster = async (req, res) => {
   try {
     const { make, model, variant } = req.body;
+    if (!['admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'Only an admin can change the car make / model list' });
+    }
     if (!make || !model) {
       return res.status(400).json({ success: false, error: 'Make and model are required' });
     }
-
+    const [[dupV]] = await pool.query(
+      `SELECT id FROM vehicle_master WHERE LOWER(TRIM(make)) = LOWER(?) AND LOWER(TRIM(model)) = LOWER(?) AND LOWER(COALESCE(TRIM(variant), '')) = LOWER(?) LIMIT 1`,
+      [make.trim(), model.trim(), variant?.trim() || '']);
+    if (dupV) return res.status(409).json({ success: false, error: `"${make.trim()} ${model.trim()}${variant ? ' ' + variant.trim() : ''}" is already in the list` });
     const [result] = await pool.query(
       'INSERT INTO vehicle_master (make, model, variant) VALUES (?, ?, ?)',
       [make.trim(), model.trim(), variant?.trim() || null]
@@ -407,11 +450,16 @@ exports.updateMaster = async (req, res) => {
   try {
     const { id } = req.params;
     const { make, model, variant } = req.body;
-
+    if (!['admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'Only an admin can change the car make / model list' });
+    }
     if (!make || !model) {
       return res.status(400).json({ success: false, error: 'Make and model are required' });
     }
-
+    const [[dupU]] = await conn.query(
+      `SELECT id FROM vehicle_master WHERE id <> ? AND LOWER(TRIM(make)) = LOWER(?) AND LOWER(TRIM(model)) = LOWER(?) AND LOWER(COALESCE(TRIM(variant), '')) = LOWER(?) LIMIT 1`,
+      [id, make.trim(), model.trim(), variant?.trim() || '']);
+    if (dupU) { return res.status(409).json({ success: false, error: 'That make / model is already in the list' }); }
     await conn.beginTransaction();
 
     const [existing] = await conn.query('SELECT * FROM vehicle_master WHERE id = ?', [id]);

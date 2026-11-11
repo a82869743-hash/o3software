@@ -17,7 +17,8 @@ export default function ForcePasswordChangeModal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  if (!user || !user.must_change_password) {
+  // staff & admin passwords are set by their admin and are permanent; only customers are ever asked to change
+  if (!user || !user.must_change_password || user.role !== 'customer') {
     return null;
   }
 
@@ -25,10 +26,6 @@ export default function ForcePasswordChangeModal() {
     e.preventDefault();
     setError('');
 
-    if (!currentPassword) {
-      setError('Please enter your current temporary password.');
-      return;
-    }
 
     if (newPassword.length < 8) {
       setError('New password must be at least 8 characters long.');
@@ -92,7 +89,7 @@ export default function ForcePasswordChangeModal() {
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Current Temporary Password
+              Current / Temporary Password (leave blank if you signed in with OTP)
             </label>
             <div className="relative">
               <input

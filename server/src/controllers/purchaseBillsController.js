@@ -8,7 +8,12 @@ exports.create = async (req, res) => {
     const { vendor_id, purchase_date, invoice_number, items, tax_amount = 0, notes } = req.body;
 
     if (!vendor_id || !purchase_date || !items || !items.length) {
+      await connection.rollback();
       return res.status(400).json({ success: false, error: 'Vendor, date, and items are required' });
+    }
+    if (items.some(it => !Number(it.item_id || it.product_id))) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, error: 'Pick a product for every line' });
     }
 
     // 1. Calculate item totals and GST split per line item
@@ -41,7 +46,7 @@ exports.create = async (req, res) => {
       totalGstAmount += lineGst;
 
       return {
-        item_id: item.item_id,
+        item_id: item.item_id || item.product_id,
         hsn_sac: item.hsn_sac || null,
         quantity: qty,
         unit_price: unitCost,
@@ -73,9 +78,9 @@ exports.create = async (req, res) => {
 
     // 3. Insert header
     const [headerResult] = await connection.query(
-      `INSERT INTO v2_purchases (vendor_id, purchase_date, invoice_number, taxable_amount, tax_amount, total_amount, previous_balance, running_balance, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'received', ?)`,
-      [vendor_id, purchase_date, invoice_number || null, totalTaxable, finalTaxAmount, finalTotal, previousBalance, runningBalance, notes || '']
+      `INSERT INTO v2_purchases (vendor_id, purchase_date, invoice_number, taxable_amount, tax_amount, total_amount, previous_balance, running_balance, status, notes, franchise_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?)`,
+      [vendor_id, purchase_date, invoice_number || null, totalTaxable, finalTaxAmount, finalTotal, previousBalance, runningBalance, notes || '', (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
     const purchaseId = headerResult.insertId;
 
@@ -133,17 +138,17 @@ exports.create = async (req, res) => {
       }
 
       await connection.query(
-        `INSERT INTO v2_gst_records (record_type, purchase_id, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year)
-         VALUES ('purchase', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [purchaseId, gstin, totalTaxable, totalCgst, totalSgst, totalIgst, finalTaxAmount, periodMonth, periodYear]
+        `INSERT INTO v2_gst_records (record_type, purchase_id, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year, franchise_id)
+         VALUES ('purchase', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [purchaseId, gstin, totalTaxable, totalCgst, totalSgst, totalIgst, finalTaxAmount, periodMonth, periodYear, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
     }
 
     // 6. Create expense record linked to balance sheet
     await connection.query(
-      `INSERT INTO v2_expenses (category, description, amount, expense_date, payment_mode, vendor_id, added_by)
-       VALUES ('Inventory Purchase', ?, ?, ?, 'cash', ?, ?)`,
-      [`Purchase Invoice #${invoice_number || purchaseId}`, finalTotal, purchase_date, vendor_id, req.user.id]
+      `INSERT INTO v2_expenses (category, description, amount, expense_date, payment_mode, vendor_id, added_by, franchise_id)
+       VALUES ('Inventory Purchase', ?, ?, ?, 'cash', ?, ?, ?)`,
+      [`Purchase Invoice #${invoice_number || purchaseId}`, finalTotal, purchase_date, vendor_id, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     await connection.commit();

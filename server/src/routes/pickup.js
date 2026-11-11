@@ -12,5 +12,6 @@ router.get('/',              auth, role(['admin', 'customer', 'staff']), ctrl.li
 router.get('/:id',           auth, role(['admin', 'customer', 'staff']), ctrl.getOne);
 router.patch('/:id/assign',  auth, role(['admin']), ctrl.assign);
 router.patch('/:id/picked-up', auth, role(['admin', 'staff']), ctrl.markPickedUp);
+router.patch('/:id/cancel', auth, role(['admin', 'customer']), ctrl.cancel);
 
 module.exports = router;

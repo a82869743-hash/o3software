@@ -8,7 +8,10 @@ import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axiosInstance';
 import { useSendWhatsApp } from '../../api/hooks/useWhatsApp';
+import { carImage } from '../../utils/carImage';
 import { formatINR, formatDate } from '../../utils/formatters';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface PendingPayment {
   job_cart_id: number;
@@ -38,7 +41,7 @@ export default function PendingPaymentsPage() {
   const handleSendPaymentReminder = (p: PendingPayment) => {
     if (!p.customer_mobile) return;
     const date = formatDate(p.visit_date);
-    const msg = `Hi ${p.customer_name},\n\nThis is a payment reminder from *O3 Car Spaa* 🚗\n\nYour vehicle *${p.registration_no}* (${p.brand} ${p.model}) serviced on ${date} has a pending balance of *₹${formatINR(p.balance_due)}*.\n\nKindly clear the payment at your earliest convenience.\n\nThank you for choosing O3 Car Spaa! 🙏`;
+    const msg = `Hi ${p.customer_name},\n\nThis is a payment reminder from *O3 Car Spaa* 🚗\n\nYour vehicle *${p.registration_no}* ${[p.brand, p.model].filter(Boolean).length ? `(${[p.brand, p.model].filter(Boolean).join(' ')}) ` : ''}serviced on ${date} has a pending balance of *${formatINR(p.balance_due)}*.\n\nKindly clear the payment at your earliest convenience.\n\nThank you for choosing O3 Car Spaa! 🙏`;
 
     setSendingId(p.job_cart_id);
     sendWhatsApp.mutate(
@@ -48,6 +51,7 @@ export default function PendingPaymentsPage() {
         customer_id: p.customer_id
       },
       {
+        onSuccess: () => { api.post(`/payments/pending-reminders/${p.job_cart_id}/sent`).then(() => fetchPendingPayments()).catch(() => {}); },
         onSettled: () => setSendingId(null)
       }
     );
@@ -72,6 +76,7 @@ export default function PendingPaymentsPage() {
       .finally(() => setLoading(false));
   };
 
+  useLiveReload(() => { fetchPendingPayments(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchPendingPayments();
   }, []);
@@ -168,7 +173,7 @@ export default function PendingPaymentsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by name, mobile, number plate, job #"
-            className="w-full pl-9 pr-4 py-2.5 bg-[#f6f3f2] border border-transparent rounded-xl text-sm font-medium text-slate-900 focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 placeholder:text-slate-400 transition-all"
+            className="w-full pl-9 pr-4 py-2.5 bg-[#F1F5F9] border border-transparent rounded-xl text-sm font-medium text-slate-900 focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 placeholder:text-slate-400 transition-all"
           />
         </div>
       </div>
@@ -187,85 +192,51 @@ export default function PendingPaymentsPage() {
           <p className="text-sm text-slate-400 mt-1">{search ? 'Try different search terms' : 'All customers are up to date with their payments'}</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {filtered.map((p) => (
-            <div key={p.job_cart_id} className="bg-white border border-slate-200 rounded-2xl p-4 hover:border-red-200 hover:shadow-sm transition-all">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-4">
-                  {/* Avatar */}
-                  <div className="w-11 h-11 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
-                    <span className="text-red-600 font-extrabold text-sm">
-                      {p.customer_name?.charAt(0) || '?'}
+        <div className="grid gap-3 md:grid-cols-2">
+          {filtered.map((p) => {
+            const total = Number(p.total_amount) || 0, due = Number(p.balance_due) || 0;
+            const paidPct = total > 0 ? Math.max(0, Math.min(100, ((total - due) / total) * 100)) : 0;
+            const days = p.visit_date ? Math.max(0, Math.floor((Date.now() - new Date(p.visit_date).getTime()) / 864e5)) : 0;
+            const times = Number((p as any).payment_reminder_count) || 0;
+            return (
+              <div key={p.job_cart_id} className="bg-white rounded-2xl border border-slate-100 shadow-[0_4px_18px_rgba(15,23,42,0.06)] overflow-hidden">
+                <div className={`h-1 ${days > 30 ? 'bg-rose-500' : days > 7 ? 'bg-amber-500' : 'bg-[#2563EB]'}`} />
+                <div className="p-3.5">
+                  <div className="flex gap-3">
+                    <img src={carImage({ brand: p.brand, model: p.model })} alt="" className="w-20 h-14 object-contain shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="font-extrabold text-[15px] text-slate-900 truncate">{p.customer_name}</p>
+                        <p className="text-[17px] font-black text-rose-600 shrink-0">{formatINR(due)}</p>
+                      </div>
+                      <p className="text-[12px] text-slate-600 truncate">{p.registration_no} · {p.brand} {p.model}</p>
+                      <p className="text-[11px] text-slate-400">Job #{p.job_cart_id} · {formatDate(p.visit_date)} · {days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex justify-between text-[11px] font-semibold text-slate-500 mb-1"><span>Paid {formatINR(total - due)}</span><span>Bill {formatINR(total)}</span></div>
+                    <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${paidPct}%` }} /></div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
+                    <span className={`whitespace-nowrap text-[11px] font-bold px-2 py-1 rounded-lg ${times ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {times ? `Reminded ${times === 1 ? 'once' : times === 2 ? 'twice' : `${times} times`}` : 'Not reminded yet'}
                     </span>
-                  </div>
-
-                  {/* Info */}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="font-extrabold text-slate-900 text-sm">{p.customer_name}</h3>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full">
-                        {p.registration_no}
-                      </span>
-                      {p.brand && <span className="text-[10px] text-slate-400">{p.brand} {p.model}</span>}
-                    </div>
-                    <div className="flex items-center gap-3 mt-1">
+                    <div className="flex items-center gap-1.5 ml-auto">
+                      <button onClick={() => openCollectModal(p)} className="px-3 py-2 bg-[#2563EB] text-white rounded-xl text-xs font-bold flex items-center gap-1"><DollarSign size={13} /> Collect</button>
                       {p.customer_mobile && (
-                        <span className="flex items-center gap-1 text-xs text-slate-500">
-                          <Phone size={11} />
-                          {p.customer_mobile}
-                        </span>
+                        <button type="button" disabled={sendingId === p.job_cart_id} onClick={() => handleSendPaymentReminder(p)}
+                          className="px-3 py-2 bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1">
+                          {sendingId === p.job_cart_id ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
+                          {times ? 'Again' : 'Remind'}
+                        </button>
                       )}
-                      <span className="text-xs text-slate-400">
-                        Job #{p.job_cart_id} · {formatDate(p.visit_date)}
-                      </span>
+                      <button onClick={() => navigate(`/admin/job-carts/${p.job_cart_id}`)} className="p-2 rounded-xl hover:bg-slate-100" title="Open job card"><ChevronRight size={16} className="text-slate-400" /></button>
                     </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0 border-t sm:border-t-0 pt-3 sm:pt-0 border-gray-100">
-                  {/* Balance */}
-                  <div className="text-left sm:text-right">
-                    <p className="text-lg font-black text-red-600">{formatINR(p.balance_due)}</p>
-                    <p className="text-[10px] text-slate-400">of {formatINR(p.total_amount)}</p>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openCollectModal(p)}
-                      className="px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-extrabold hover:bg-blue-700 transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
-                    >
-                      <DollarSign size={13} />
-                      Collect
-                    </button>
-                    {p.customer_mobile && (
-                      <button
-                        type="button"
-                        disabled={sendingId === p.job_cart_id}
-                        onClick={() => handleSendPaymentReminder(p)}
-                        className="flex items-center gap-1 px-3 py-2 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
-                        title="Send 1-Click WhatsApp Payment Reminder"
-                      >
-                        {sendingId === p.job_cart_id ? (
-                          <Loader2 size={13} className="animate-spin" />
-                        ) : (
-                          <MessageCircle size={13} />
-                        )}
-                        <span>{sendingId === p.job_cart_id ? 'Sending...' : 'Remind'}</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => navigate(`/admin/job-carts/${p.job_cart_id}`)}
-                      className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
-                      title="View Job Card"
-                    >
-                      <ChevronRight size={16} className="text-slate-400" />
-                    </button>
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -303,7 +274,7 @@ export default function PendingPaymentsPage() {
               <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-600 mb-1">
                 Payment Method
               </label>
-              <select
+              <Dropdown
                 value={collectMethod}
                 onChange={(e) => setCollectMethod(e.target.value as any)}
                 className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:border-blue-500 outline-none bg-white font-semibold"
@@ -313,7 +284,7 @@ export default function PendingPaymentsPage() {
                 <option value="card">💳 Credit / Debit Card</option>
                 <option value="net_banking">🏦 Net Banking</option>
                 <option value="other">📝 Other</option>
-              </select>
+              </Dropdown>
             </div>
 
             <div>

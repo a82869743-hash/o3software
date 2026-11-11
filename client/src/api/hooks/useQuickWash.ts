@@ -64,18 +64,3 @@ export const useUpdateWashStatus = () => {
     },
   });
 };
-
-// ─── Update Wash Phase ──────────────────────
-export const useUpdateWashPhase = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, phase }: { id: number; phase: string }) => {
-      const { data } = await api.patch(`/quick-wash/${id}/phase`, { phase });
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['quick-washes'] });
-      queryClient.invalidateQueries({ queryKey: ['quick-wash-stats'] });
-    },
-  });
-};

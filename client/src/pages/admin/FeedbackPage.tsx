@@ -1,25 +1,15 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Star, MessageSquare, ThumbsUp, ThumbsDown, Reply, BarChart3 } from 'lucide-react';
-import { useFeedback, useFeedbackStats, useReplyFeedback } from '../../api/hooks/useFeedback';
+import { Star, MessageSquare, ThumbsUp, ThumbsDown, BarChart3 } from 'lucide-react';
+import { useFeedback, useFeedbackStats } from '../../api/hooks/useFeedback';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
 
 export default function FeedbackPage() {
-  const [replyModal, setReplyModal] = useState<{ id: number; name: string } | null>(null);
-  const [replyText, setReplyText] = useState('');
   const { data: feedbackData, isLoading } = useFeedback();
   const { data: stats } = useFeedbackStats();
-  const replyMutation = useReplyFeedback();
 
-  const handleReply = () => {
-    if (replyModal) {
-      replyMutation.mutate({ id: replyModal.id, admin_reply: replyText }, {
-        onSuccess: () => { setReplyModal(null); setReplyText(''); }
-      });
-    }
-  };
 
   const renderStars = (rating: number) =>
     Array.from({ length: 5 }, (_, i) => (
@@ -76,15 +66,7 @@ export default function FeedbackPage() {
                   </div>
                   <p className="text-sm text-gray-600 mb-2">{fb.review_text || 'No comment'}</p>
                   <p className="text-[11px] text-gray-400">{new Date(fb.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
-                  {fb.admin_reply && (
-                    <div className="mt-2 pl-3 border-l-2 border-[#2563EB]/30">
-                      <p className="text-xs text-gray-500"><span className="font-semibold text-[#2563EB]">Admin:</span> {fb.admin_reply}</p>
-                    </div>
-                  )}
                 </div>
-                {!fb.admin_reply && (
-                  <RippleButton variant="ghost" onClick={() => setReplyModal({ id: fb.id, name: fb.customer_name })}><Reply size={14} className="mr-1" /> Reply</RippleButton>
-                )}
               </div>
             </motion.div>
           ))}
@@ -92,17 +74,6 @@ export default function FeedbackPage() {
         </div>
       </AnimatedCard>
 
-      {/* Reply Modal */}
-      <AnimatedModal isOpen={!!replyModal} onClose={() => setReplyModal(null)}>
-        <div className="p-6">
-          <h3 className="text-xl font-bold text-[#0F172A] mb-2">Reply to {replyModal?.name}</h3>
-          <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={4} className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm mt-4 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500" placeholder="Type your reply..." />
-          <div className="flex justify-end gap-3 mt-4">
-            <RippleButton variant="ghost" onClick={() => setReplyModal(null)}>Cancel</RippleButton>
-            <RippleButton variant="primary" onClick={handleReply}>Send Reply</RippleButton>
-          </div>
-        </div>
-      </AnimatedModal>
     </PageTransition>
   );
 }

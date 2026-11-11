@@ -83,9 +83,26 @@ class WhatsAppManager {
   }
 
   /**
+   * Customers may use a different WhatsApp number than their login mobile — deliver there.
+   * Keeps the caller's country-code prefix (e.g. 91XXXXXXXXXX).
+   */
+  async resolveTo(to) {
+    const digits = String(to || '').replace(/\D/g, '');
+    if (digits.length < 10) return to;
+    const last10 = digits.slice(-10);
+    try {
+      const [[u]] = await pool.query(
+        "SELECT whatsapp_number FROM users WHERE mobile = ? AND whatsapp_number IS NOT NULL AND whatsapp_number <> '' LIMIT 1", [last10]);
+      if (u && u.whatsapp_number && u.whatsapp_number !== last10) return digits.slice(0, -10) + u.whatsapp_number;
+    } catch (_) { /* fall back to the given number */ }
+    return to;
+  }
+
+  /**
    * Universal Send Template method
    */
   async sendTemplate(options) {
+    options = { ...options, to: await this.resolveTo(options.to) };
     const { to, franchiseId = 1 } = options;
 
     // 1. Opt-out enforcement
@@ -106,7 +123,26 @@ class WhatsAppManager {
   /**
    * Universal Send Free-Form (24-hour care window aware)
    */
+  /** Business-initiated text: uses the provider's smart path (template outside the 24h window) when available. */
+  async sendText(options) {
+    const { limitEmojis } = require('../../utils/humanizer');
+    // WhatsApp bold is *text*; AI replies sometimes use markdown **text**, which shows the stars
+    const waText = (t) => limitEmojis(String(t).replace(/\*\*(.+?)\*\*/g, '*$1*').replace(/__(.+?)__/g, '_$1_'));
+    options = { ...options, to: await this.resolveTo(options.to), ...(options.text ? { text: waText(options.text) } : {}) };
+    const { to, franchiseId = 1 } = options;
+    if (await this.isOptedOut(to)) {
+      return { success: false, opted_out: true, error: 'Message suppressed: Customer has opted out of WhatsApp messages.' };
+    }
+    const adapter = await this.getAdapter(franchiseId);
+    if (typeof adapter.sendSmart === 'function') return adapter.sendSmart(options);
+    return adapter.sendFreeForm(options);
+  }
+
   async sendFreeForm(options) {
+    const { limitEmojis } = require('../../utils/humanizer');
+    // WhatsApp bold is *text*; AI replies sometimes use markdown **text**, which shows the stars
+    const waText = (t) => limitEmojis(String(t).replace(/\*\*(.+?)\*\*/g, '*$1*').replace(/__(.+?)__/g, '_$1_'));
+    options = { ...options, to: await this.resolveTo(options.to), ...(options.text ? { text: waText(options.text) } : {}) };
     const { to, franchiseId = 1 } = options;
 
     if (await this.isOptedOut(to)) {
@@ -125,6 +161,7 @@ class WhatsAppManager {
    * Universal Send Media
    */
   async sendMedia(options) {
+    options = { ...options, to: await this.resolveTo(options.to) };
     const { to, franchiseId = 1 } = options;
 
     if (await this.isOptedOut(to)) {

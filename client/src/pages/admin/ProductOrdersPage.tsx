@@ -4,7 +4,11 @@ import api from '../../api/axiosInstance';
 import { useUIStore } from '../../store/uiStore';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
+import { copyText } from '../../utils/copyText';
 
+import { askText } from '../../utils/ask';
 // 15 product templates to resolve product images for display in admin
 const PRODUCT_TEMPLATES = [
   { dbName: 'MICROFIBER 40*60 800 GSM', image: '/products/microfiber_40x60_800gsm.png' },
@@ -80,6 +84,7 @@ export default function ProductOrdersPage() {
     }
   };
 
+  useLiveReload(() => { loadOrders(); }); // reload when anything changes elsewhere
   useEffect(() => {
     loadOrders();
   }, [page, statusFilter]);
@@ -101,9 +106,10 @@ export default function ProductOrdersPage() {
   };
 
   const handleRejectOrder = async (orderId: number) => {
-    const reason = window.prompt(
-      "Enter reason for rejecting this order (e.g. Payment not received in Studio account):",
-      "UPI payment reference not received in Studio account"
+    const reason = await askText(
+      "Reason for rejecting this order:",
+      "UPI payment not received in the studio account",
+      { title: 'Reject order', okLabel: 'Reject order' }
     );
     if (reason === null) return;
 
@@ -130,8 +136,7 @@ export default function ProductOrdersPage() {
       o.customer_name?.toLowerCase().includes(term) ||
       o.customer_mobile?.includes(term) ||
       o.product_name?.toLowerCase().includes(term) ||
-      o.qr_transaction_id?.toLowerCase().includes(term) ||
-      o.razorpay_payment_id?.toLowerCase().includes(term)
+      o.qr_transaction_id?.toLowerCase().includes(term)
     );
   });
 
@@ -186,7 +191,7 @@ export default function ProductOrdersPage() {
         </div>
 
         <div className="flex gap-2 w-full sm:w-auto self-stretch sm:self-center">
-          <select
+          <Dropdown
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="h-11 px-4 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB] font-bold text-gray-600 bg-white flex-1 sm:flex-none"
@@ -195,7 +200,7 @@ export default function ProductOrdersPage() {
             <option value="pending">Pending Verification</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
-          </select>
+          </Dropdown>
 
           <button
             onClick={loadOrders}
@@ -308,25 +313,25 @@ export default function ProductOrdersPage() {
                     {/* Method & Submitted UTR */}
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-1.5 font-bold text-gray-700 text-xs uppercase">
-                        {order.payment_method === 'razorpay' ? (
-                          <CreditCard size={14} className="text-[#2563EB]" />
+                        {order.payment_method === 'cash' ? (
+                          <Clock size={14} className="text-slate-500" />
                         ) : (
                           <QrCode size={14} className="text-emerald-600" />
                         )}
-                        {order.payment_method === 'qr' ? 'UPI QR Code' : order.payment_method}
+                        {order.payment_method === 'qr' ? 'UPI QR Code' : order.payment_method === 'cash' ? 'Pay at studio' : order.payment_method}
                       </div>
 
                       {/* Prominent UTR Reference Badge with Copy Button */}
-                      {(order.qr_transaction_id || order.razorpay_payment_id) ? (
+                      {(order.qr_transaction_id) ? (
                         <div className="mt-1 flex items-center gap-1">
                           <span className="text-[11px] font-mono font-extrabold text-amber-900 bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded-md">
-                            UTR #{order.qr_transaction_id || order.razorpay_payment_id}
+                            UTR #{order.qr_transaction_id}
                           </span>
                           <button
                             type="button"
                             onClick={() => {
-                              navigator.clipboard.writeText(order.qr_transaction_id || order.razorpay_payment_id);
-                              toast('info', `Copied UTR "${order.qr_transaction_id || order.razorpay_payment_id}" to clipboard!`);
+                              copyText(order.qr_transaction_id);
+                              toast('info', `Copied UTR "${order.qr_transaction_id}" to clipboard!`);
                             }}
                             className="text-[10px] text-gray-500 hover:text-black bg-gray-100 hover:bg-gray-200 px-1.5 py-0.5 rounded font-bold transition-all cursor-pointer"
                             title="Copy UTR to verify in GPay/PhonePe App"
@@ -335,7 +340,7 @@ export default function ProductOrdersPage() {
                           </button>
                         </div>
                       ) : (
-                        <span className="text-[10px] text-gray-400 italic">No UTR submitted</span>
+                        <span className="text-[10px] text-gray-400 italic">{order.payment_method === 'cash' ? 'Pays cash / UPI at the counter' : 'No UTR submitted'}</span>
                       )}
                     </td>
 
@@ -358,7 +363,7 @@ export default function ProductOrdersPage() {
                         ) : order.payment_status === 'pending' ? (
                           <>
                             <Clock size={12} />
-                            Awaiting UTR Verification
+                            {order.payment_method === 'cash' ? 'To be paid at studio' : order.payment_method === 'qr' ? 'Check UTR in bank app' : 'Payment not finished'}
                           </>
                         ) : (
                           <>
@@ -402,9 +407,22 @@ export default function ProductOrdersPage() {
                           </button>
                         </div>
                       ) : order.payment_status === 'completed' ? (
-                        <span className="text-xs text-emerald-600 font-bold flex items-center justify-end gap-1">
-                          <Check size={13} /> Approved
-                        </span>
+                        order.collected_at ? (
+                          <span className="text-xs text-emerald-600 font-bold flex items-center justify-end gap-1">
+                            <Check size={13} /> Collected & paid
+                          </span>
+                        ) : (
+                          <button
+                            onClick={async () => {
+                              if (!window.confirm('Customer collected this order and paid in full?')) return;
+                              try { await api.post(`/products/orders/${order.id}/collected`); toast('success', 'Marked collected & paid'); loadOrders(); }
+                              catch (e: any) { toast('error', e?.response?.data?.error || 'Could not mark collected'); }
+                            }}
+                            className="px-2.5 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold rounded-lg"
+                          >
+                            Mark collected
+                          </button>
+                        )
                       ) : (
                         <span className="text-xs text-blue-600 font-bold flex items-center justify-end gap-1">
                           <X size={13} /> Payment Rejected

@@ -11,9 +11,10 @@ exports.getStats = async (req, res) => {
     const timeframe = req.query.timeframe || req.query.period || 'today';
     
     // Franchise filter: 'all' (Consolidated Super Admin) or numeric franchise id
-    const requestedFranchise = req.query.franchise_id || req.headers['x-franchise-id'];
-    const isConsolidated = requestedFranchise === 'all' || requestedFranchise === 'consolidated' || req.isGlobalAdmin;
-    const franchiseId = isConsolidated ? null : (requestedFranchise ? parseInt(requestedFranchise, 10) : 1);
+    // Only the Super Admin may pick another franchise or the consolidated view
+    const requestedFranchise = req.user.role === 'super_admin' ? (req.query.franchise_id || req.headers['x-franchise-id']) : String(req.franchiseId || 1);
+    const isConsolidated = req.user.role === 'super_admin' && (requestedFranchise === 'all' || requestedFranchise === 'consolidated' || req.isGlobalAdmin);
+    const franchiseId = isConsolidated ? null : (parseInt(requestedFranchise, 10) || 1);
 
     // ─── Date Range Condition Builder ───────────
     let dateCondTrans = 'DATE(transactions.transaction_date) = CURDATE()';
@@ -107,7 +108,7 @@ exports.getStats = async (req, res) => {
       ),
       // 4. Top services performed in timeframe
       pool.query(
-        `SELECT js.service_name AS name, COUNT(*) AS count, COALESCE(SUM(js.service_price), 0) AS revenue
+        `SELECT js.service_name AS name, COUNT(*) AS count, COALESCE(ROUND(SUM(js.service_price * (1 - LEAST(1, COALESCE(jc.discount_amount, 0) / NULLIF(jc.subtotal, 0))))), 0) AS revenue
          FROM job_services js
          JOIN job_carts jc ON js.job_cart_id = jc.id
          WHERE jc.status = 'complete' AND ${dateCondJCJoined} AND ${fCondJCJoined}
@@ -176,9 +177,9 @@ exports.getStats = async (req, res) => {
         FROM job_carts
         WHERE ${fCondJC}`, fParams),
       // Deliveries
-      pool.query(`SELECT COUNT(*) as active FROM deliveries WHERE status='in_transit'`),
+      pool.query(`SELECT COUNT(*) as active FROM deliveries WHERE status='in_transit' AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`),
       // Inquiries
-      pool.query(`SELECT COUNT(*) as new_leads FROM inquiries WHERE inquiries.status='new' AND ${fCondInq}`, fParams),
+      pool.query(`SELECT COUNT(*) as new_leads FROM inquiries WHERE inquiries.status='new' AND inquiries.is_deleted = 0 AND ${fCondInq}`, fParams),
       // Purchases
       pool.query(
         `SELECT COALESCE(SUM(transactions.amount), 0) AS total FROM transactions
@@ -187,9 +188,9 @@ exports.getStats = async (req, res) => {
         isConsolidated ? [monthStart, today] : [monthStart, today, franchiseId, franchiseId]
       ),
       // Pending staff payments
-      pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM staff_payments WHERE status = 'pending'`),
+      pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM staff_payments WHERE status = 'pending' AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`),
       // Low stock count
-      pool.query(`SELECT COUNT(*) AS total FROM inventory i WHERE i.quantity <= i.low_stock_threshold AND i.is_deleted = 0 AND ${fCondInv}`, fParams),
+      pool.query(`SELECT COUNT(*) AS total FROM inventory i WHERE (i.low_stock_threshold > 0 AND i.quantity <= i.low_stock_threshold) AND i.is_deleted = 0 AND ${fCondInv}`, fParams),
       // Low stock details array per franchise
       pool.query(
         `SELECT i.id, i.product_name, i.unit, i.quantity, i.low_stock_threshold, i.category,
@@ -197,7 +198,7 @@ exports.getStats = async (req, res) => {
                 i.franchise_id, f.name AS franchise_name, f.code AS franchise_code
          FROM inventory i
          LEFT JOIN franchises f ON i.franchise_id = f.id
-         WHERE i.quantity <= i.low_stock_threshold AND i.is_deleted = 0
+         WHERE (i.low_stock_threshold > 0 AND i.quantity <= i.low_stock_threshold) AND i.is_deleted = 0
            AND ${fCondInv}
          ORDER BY i.quantity ASC
          LIMIT 10`, fParams
@@ -210,7 +211,7 @@ exports.getStats = async (req, res) => {
         isConsolidated ? [today] : [today, franchiseId, franchiseId]
       ),
       // Total customers
-      pool.query(`SELECT COUNT(*) AS total FROM users WHERE role = 'customer' AND is_active = 1`),
+      pool.query(`SELECT COUNT(*) AS total FROM users WHERE role = 'customer' AND is_active = 1 AND is_deleted = 0 AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`),
       // Completed in last 7 days
       pool.query(
         `SELECT COUNT(*) AS total FROM job_carts 
@@ -220,7 +221,7 @@ exports.getStats = async (req, res) => {
       // Staff present today
       pool.query(
         `SELECT COUNT(*) AS total FROM staff_attendance 
-         WHERE att_date = CURDATE() AND status = 'present'`
+         WHERE att_date = CURDATE() AND status = 'present' AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`
       ),
       // Packages expiring in next 30 days
       pool.query(
@@ -236,8 +237,8 @@ exports.getStats = async (req, res) => {
       ),
       // Pending Approvals Queries
       pool.query(`SELECT COUNT(*) AS total FROM bookings b WHERE b.status = 'pending_approval' AND ${fCondBook}`, fParams),
-      pool.query(`SELECT COUNT(*) AS total FROM package_requests WHERE status = 'pending'`),
-      pool.query(`SELECT COUNT(*) AS total FROM product_orders WHERE payment_status = 'pending'`),
+      pool.query(`SELECT COUNT(*) AS total FROM package_requests WHERE status = 'pending' AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`),
+      pool.query(`SELECT COUNT(*) AS total FROM product_orders WHERE payment_status = 'pending' AND ${isConsolidated ? '1=1' : `franchise_id = ${Number(franchiseId) || 1}`}`),
     ]);
 
     // Weekly trend data (last 7 days revenue + job count per day)
@@ -258,7 +259,7 @@ exports.getStats = async (req, res) => {
     let finalTopServices = topServicesRows;
     if (!finalTopServices || finalTopServices.length === 0) {
       const [allTimeServices] = await pool.query(
-        `SELECT js.service_name AS name, COUNT(*) AS count, COALESCE(SUM(js.service_price), 0) AS revenue
+        `SELECT js.service_name AS name, COUNT(*) AS count, COALESCE(ROUND(SUM(js.service_price * (1 - LEAST(1, COALESCE(jc.discount_amount, 0) / NULLIF(jc.subtotal, 0))))), 0) AS revenue
          FROM job_services js
          JOIN job_carts jc ON js.job_cart_id = jc.id
          WHERE ${fCondJCJoined}
@@ -434,7 +435,43 @@ exports.getCustomerDashboard = async (req, res) => {
       // Check 50% first wash eligibility
       checkFirstWashEligibility(pool, customerId),
       // Total cars serviced this year across studio (Live customer counter)
-      pool.query("SELECT COUNT(*) AS total FROM job_carts WHERE status = 'complete' AND YEAR(COALESCE(completed_at, visit_date)) = YEAR(CURDATE())"),
+      pool.query("SELECT COUNT(*) AS total FROM job_carts WHERE status = 'complete' AND YEAR(COALESCE(completed_at, visit_date)) = YEAR(CURDATE()) AND franchise_id = ?", [req.user.franchise_id || 1]),
+    ]);
+
+    // Live jobs (with tracking link), services waiting for a rating, referral earnings, loyalty points
+    const [[activeJobs], [pendingFeedback], [refRows], [pointsRows], [activeWashes], [updates]] = await Promise.all([
+      pool.query(
+        // one row per car job: open jobs, plus finished jobs not yet handed over (no delivered drop, last 3 days)
+        `SELECT jc.id, jc.status, jc.public_token, jc.visit_date, jc.total_amount, jc.balance_due,
+                CASE WHEN jc.status = 'complete' THEN
+                       CASE d.status WHEN 'in_transit' THEN 'Out for delivery' WHEN 'assigned' THEN 'Ready — delivery being arranged' ELSE 'Ready for pickup' END
+                     ELSE COALESCE(jc.current_stage, 'Received') END AS current_stage,
+                v.registration_no, v.brand, v.model
+         FROM job_carts jc JOIN vehicles v ON v.id = jc.vehicle_id
+         LEFT JOIN deliveries d ON d.job_cart_id = jc.id
+         WHERE v.customer_id = ?
+           AND (jc.status IN ('draft','open','in_progress')
+                OR (jc.status = 'complete' AND COALESCE(jc.current_stage,'') <> 'Delivered' AND COALESCE(d.status,'') <> 'delivered'
+                    AND jc.completed_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)))
+         ORDER BY jc.created_at DESC LIMIT 5`, [customerId]),
+      pool.query(
+        // one prompt per job, and none once that job has been rated
+        `SELECT MAX(r.feedback_token) AS token, r.job_cart_id, MAX(r.booking_id) AS booking_id, MAX(r.sent_at) AS sent_at FROM v2_review_requests r
+         WHERE r.customer_id = ? AND r.status <> 'responded' AND r.feedback_token IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM v2_feedback f WHERE f.customer_id = r.customer_id AND f.job_cart_id = r.job_cart_id)
+         GROUP BY r.job_cart_id ORDER BY sent_at DESC LIMIT 5`, [customerId]),
+      pool.query(
+        `SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount END),0) AS paid, COALESCE(SUM(CASE WHEN status='unpaid' THEN amount END),0) AS unpaid,
+                COUNT(*) AS referrals FROM referral_ledger WHERE referrer_type='customer' AND referrer_user_id = ? AND status <> 'cancelled'`, [customerId]),
+      pool.query('SELECT COALESCE(points,0) AS points FROM loyalty WHERE customer_id = ?', [customerId]),
+      pool.query(
+        `SELECT id, wash_status, current_phase, vehicle_reg_no, vehicle_brand, vehicle_model, queue_position FROM bookings
+         WHERE customer_id = ? AND job_type = 'quick_wash' AND wash_status IN ('pending','washing') ORDER BY id DESC LIMIT 3`, [customerId]),
+      // in-app copy of every WhatsApp update (shown even when WhatsApp could not be delivered)
+      pool.query(
+        `SELECT MAX(id) AS id, template_name, MAX(message_body) AS message_body, reference_type, reference_id, MAX(created_at) AS created_at
+         FROM v2_notification_logs WHERE customer_id = ? AND channel = 'whatsapp'
+         GROUP BY template_name, reference_type, reference_id ORDER BY MAX(id) DESC LIMIT 8`, [customerId]),
     ]);
 
     const carsServicedCount = parseInt(carsServicedYear[0]?.total || 0, 10);
@@ -452,6 +489,12 @@ exports.getCustomerDashboard = async (req, res) => {
         primary_car: packageData.primary_car,
         active_package: packageData.active_package,
         first_wash_eligible: fwCheck.isEligible,
+        active_jobs: activeJobs,
+        active_washes: activeWashes,
+        updates,
+        pending_feedback: pendingFeedback,
+        referrals: refRows[0] || { paid: 0, unpaid: 0, referrals: 0 },
+        loyalty_points: pointsRows[0]?.points || 0,
       }
     });
   } catch (err) {

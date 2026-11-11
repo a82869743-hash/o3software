@@ -8,6 +8,8 @@ import { usePickups, useAssignPickupStaff, useMarkPickedUp } from '../../api/hoo
 import Modal from '../../components/ui/Modal';
 import Select from '../../components/ui/Select';
 import Button from '../../components/ui/Button';
+import { useStudio } from '../../api/hooks/useStudio';
+import { directionsUrl } from '../../utils/location';
 
 interface PickupRequest {
   id: number;
@@ -37,6 +39,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
 export default function PickupsPage() {
   const toast = useUIStore((s) => s.toast);
   const { data: pickupsRes, isLoading, refetch } = usePickups();
+  const { data: studio } = useStudio();
   const assignMut = useAssignPickupStaff();
   const markPickedUpMut = useMarkPickedUp();
 
@@ -50,7 +53,7 @@ export default function PickupsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await api.get('/staff');
+        const res = await api.get('/staff/technicians');
         setStaffList(res.data.data || []);
       } catch {
         setStaffList([]);
@@ -205,6 +208,9 @@ export default function PickupsPage() {
                     <div className="bg-gray-50 rounded-lg p-2.5 space-y-1">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Pickup Address</p>
                       <p className="text-gray-700 leading-relaxed font-medium">{p.address}</p>
+                      <a target="_blank" rel="noreferrer" className="text-[11px] font-bold text-blue-600"
+                        href={directionsUrl({ lat: (p as any).latitude, lng: (p as any).longitude, address: p.address }, studio ? { lat: studio.latitude, lng: studio.longitude } : null)}>
+                        Route from studio{(p as any).latitude ? ' (exact pin)' : ''} →</a>
                     </div>
 
                     {/* Scheduled Time */}
@@ -241,6 +247,18 @@ export default function PickupsPage() {
                   </span>
 
                   <div className="flex gap-2">
+                    {(p.status === 'pending' || p.status === 'assigned') && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Cancel pickup #${p.id}?`)) return;
+                          try { await api.patch(`/pickup-requests/${p.id}/cancel`); toast('success', 'Pickup cancelled'); refetch(); }
+                          catch (e: any) { toast('error', e?.response?.data?.error || 'Could not cancel'); }
+                        }}
+                        className="px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded-lg transition-all"
+                      >
+                        Cancel
+                      </button>
+                    )}
                     {p.status === 'pending' && (
                       <button
                         onClick={() => {
@@ -300,7 +318,7 @@ export default function PickupsPage() {
         }
       >
         <div className="space-y-4">
-          <p className="text-sm text-[#5f5e5e]">
+          <p className="text-sm text-[#64748B]">
             Select a staff driver to pick up vehicle for booking #{selectedPickup?.booking_id}.
           </p>
           <Select

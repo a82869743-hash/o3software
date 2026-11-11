@@ -195,17 +195,18 @@ export interface InventoryItem {
 // ═══════════════════════════════════════════
 // SERVICES & PACKAGES
 // ═══════════════════════════════════════════
-export type VehicleCategory = 'hatchback' | 'medium_hatchback' | 'sedan' | 'premium_sedan' | 'suv';
+export type VehicleCategory = 'hatchback' | 'semi_sedan' | 'sedan' | 'premium_sedan' | 'suv' | 'premium_suv';
 
 export interface Service {
   id: number;
   name: string;
   description?: string;
   price_hatchback: number;
-  price_medium_hatchback: number;
+  price_semi_sedan: number;
   price_sedan: number;
   price_premium_sedan: number;
   price_suv: number;
+  price_premium_suv?: number;
   duration_minutes: number;
   category_id?: number;
   category_name?: string;
@@ -223,10 +224,11 @@ export interface Package {
   name: string;
   description?: string;
   price_hatchback: number;
-  price_medium_hatchback: number;
+  price_semi_sedan: number;
   price_sedan: number;
   price_premium_sedan: number;
   price_suv: number;
+  price_premium_suv?: number;
   wash_count: number;
   wax_count: number;
   is_published: boolean;
@@ -555,6 +557,7 @@ export interface LoyaltySettings {
   points_ratio: number;
   min_redeem: number;
   point_value: number;
+  free_wash_points: number;
   enabled: boolean;
 }
 
@@ -643,11 +646,11 @@ export interface PremiumService {
   name: string;
   description?: string;
   price_hatchback: number;
-  price_medium_hatchback: number;
+  price_semi_sedan: number;
   price_sedan: number;
   price_premium_sedan: number;
   price_suv: number;
-  price_luxury: number;
+  price_premium_suv: number;
   duration_minutes: number;
   is_premium: boolean;
   is_active: boolean;

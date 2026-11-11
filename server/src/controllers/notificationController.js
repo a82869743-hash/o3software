@@ -88,7 +88,10 @@ exports.getWarranties = async (req, res) => {
     const params = [];
     let where = '1=1';
 
-    if (customer_id) {
+    if (req.user.role === 'customer') {
+      where += ' AND wc.customer_id = ?';
+      params.push(req.user.id);
+    } else if (customer_id) {
       where += ' AND wc.customer_id = ?';
       params.push(customer_id);
     }
@@ -146,7 +149,7 @@ exports.getWarrantyById = async (req, res) => {
        WHERE wc.id = ? OR wc.certificate_no = ?`,
       [id, id]
     );
-    if (!rows.length) {
+    if (!rows.length || (req.user.role === 'customer' && Number(rows[0].customer_id) !== Number(req.user.id))) {
       return res.status(404).json({ success: false, error: 'Warranty certificate not found' });
     }
     res.json({ success: true, data: rows[0] });

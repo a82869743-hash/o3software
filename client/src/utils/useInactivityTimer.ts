@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../store/authStore';
 import api from '../api/axiosInstance';
 
-const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const INACTIVITY_TIMEOUT = 2 * 60 * 60 * 1000; // studio logins: 2 hours without any activity
 const WARNING_BEFORE = 5 * 60 * 1000;      // Show warning 5 min before logout
 const TOKEN_REFRESH_INTERVAL = 45 * 60 * 1000; // Refresh token every 45 min
 
@@ -12,7 +12,9 @@ const TOKEN_REFRESH_INTERVAL = 45 * 60 * 1000; // Refresh token every 45 min
  * Shows a warning toast at 25 minutes.
  */
 export function useInactivityTimer() {
-  const { isAuthenticated, logout } = useAuthStore();
+  const { isAuthenticated: authed, logout, user } = useAuthStore();
+  // customers are never logged out for inactivity (it is their own phone)
+  const isAuthenticated = authed && user?.role !== 'customer';
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warningRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warningShownRef = useRef(false);
@@ -33,7 +35,7 @@ export function useInactivityTimer() {
       if (!warningShownRef.current) {
         warningShownRef.current = true;
         // Dispatch a custom event that the Toast component can listen to
-        window.dispatchEvent(new CustomEvent('gk-inactivity-warning', {
+        window.dispatchEvent(new CustomEvent('o3-inactivity-warning', {
           detail: { message: 'You will be logged out in 5 minutes due to inactivity.' }
         }));
       }
@@ -87,7 +89,7 @@ export function useInactivityTimer() {
  * - While active: refreshes the token every 45 min so users never hit the 1h expiry wall
  */
 export function useTokenRefresh() {
-  const { isAuthenticated, token, login, logout } = useAuthStore();
+  const { isAuthenticated, token, login, logout, user: currentUser } = useAuthStore();
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Parse JWT expiry without a library
@@ -106,14 +108,15 @@ export function useTokenRefresh() {
     try {
       const res = await api.post('/auth/refresh');
       if (res.data?.success && res.data.data?.token) {
-        login(res.data.data.token, res.data.data.user);
+        // keep everything we already know (permissions, franchise, picture) — the refresh only returns basics
+        login(res.data.data.token, { ...(currentUser || {}), ...res.data.data.user } as any);
         console.log('[SESSION] Token refreshed silently');
       }
     } catch (err) {
       console.error('[SESSION] Token refresh failed:', err);
       // 401 will be handled by axios interceptor → auto-logout
     }
-  }, [login]);
+  }, [login, currentUser]);
 
   useEffect(() => {
     if (!isAuthenticated || !token) {

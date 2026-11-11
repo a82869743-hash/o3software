@@ -1,4 +1,6 @@
+import { ymd } from '../../utils/formatters';
 import { useState } from 'react';
+import api from '../../api/axiosInstance';
 import { motion } from 'framer-motion';
 import { Wallet, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, Download, Calendar, DollarSign, Receipt, PieChart } from 'lucide-react';
 import { useBalanceSheet, useExpenses, useExpenseCategories, useCreateExpense } from '../../api/hooks/useBalanceSheet';
@@ -6,13 +8,14 @@ import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal, StaggerList, StaggerItem } from '../../components/ui/Animations';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RechartsPie, Pie, Cell } from 'recharts';
+import Dropdown from '../../components/ui/Dropdown';
 
 const COLORS = ['#2563EB', '#FF5722', '#FF9800', '#4CAF50', '#2196F3', '#9C27B0', '#607D8B', '#795548'];
 
 export default function BalanceSheetPage() {
   const [dateRange, setDateRange] = useState({ from: '', to: '' });
   const [showExpenseModal, setShowExpenseModal] = useState(false);
-  const [expenseForm, setExpenseForm] = useState({ category_id: '', amount: '', description: '', expense_date: new Date().toISOString().split('T')[0], payment_method: 'cash', gst_amount: '0' });
+  const [expenseForm, setExpenseForm] = useState({ category_id: '', amount: '', description: '', expense_date: ymd(), payment_method: 'cash', gst_amount: '0' });
 
   const { data: sheet, isLoading } = useBalanceSheet(dateRange.from ? dateRange : undefined);
   const { data: expensesData } = useExpenses();
@@ -21,7 +24,7 @@ export default function BalanceSheetPage() {
 
   const handleCreateExpense = () => {
     createExpense.mutate({ ...expenseForm, amount: parseFloat(expenseForm.amount), gst_amount: parseFloat(expenseForm.gst_amount || '0') }, {
-      onSuccess: () => { setShowExpenseModal(false); setExpenseForm({ category_id: '', amount: '', description: '', expense_date: new Date().toISOString().split('T')[0], payment_method: 'cash', gst_amount: '0' }); }
+      onSuccess: () => { setShowExpenseModal(false); setExpenseForm({ category_id: '', amount: '', description: '', expense_date: ymd(), payment_method: 'cash', gst_amount: '0' }); }
     });
   };
 
@@ -198,7 +201,14 @@ export default function BalanceSheetPage() {
           <AnimatedCard className="bg-white rounded-2xl border border-gray-100 p-6" delay={0.4}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-[#0F172A] flex items-center gap-2"><Receipt size={18} /> Recent Expenses</h3>
-              <RippleButton variant="ghost" onClick={() => {}}><Download size={14} className="mr-1" /> Export</RippleButton>
+              <RippleButton variant="ghost" onClick={async () => {
+                try {
+                  const res = await api.get('/balance-sheet/export', { params: { from: dateRange.from || undefined, to: dateRange.to || undefined, format: 'excel' }, responseType: 'blob' });
+                  const url = URL.createObjectURL(res.data);
+                  const a = document.createElement('a'); a.href = url; a.download = `O3CarSpaa_BalanceSheet_${dateRange.from || 'all'}_${dateRange.to || 'today'}.xlsx`; a.click();
+                  URL.revokeObjectURL(url);
+                } catch { /* error toast by interceptor message */ }
+              }}><Download size={14} className="mr-1" /> Export Excel</RippleButton>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -227,10 +237,10 @@ export default function BalanceSheetPage() {
           <h3 className="text-xl font-bold text-[#0F172A] mb-6">Add Expense</h3>
           <div className="space-y-4">
             <div><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Category</label>
-              <select value={expenseForm.category_id} onChange={e => setExpenseForm(p => ({ ...p, category_id: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
+              <Dropdown value={expenseForm.category_id} onChange={e => setExpenseForm(p => ({ ...p, category_id: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500">
                 <option value="">Select category</option>
                 {(categories || []).map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              </Dropdown>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Amount (₹)</label>
@@ -247,9 +257,9 @@ export default function BalanceSheetPage() {
               <input value={expenseForm.description} onChange={e => setExpenseForm(p => ({ ...p, description: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm" placeholder="Description..." />
             </div>
             <div><label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Payment Method</label>
-              <select value={expenseForm.payment_method} onChange={e => setExpenseForm(p => ({ ...p, payment_method: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm">
+              <Dropdown value={expenseForm.payment_method} onChange={e => setExpenseForm(p => ({ ...p, payment_method: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm">
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="net_banking">Net Banking</option>
-              </select>
+              </Dropdown>
             </div>
             <div className="flex justify-end gap-3 pt-2">
               <RippleButton variant="ghost" onClick={() => setShowExpenseModal(false)}>Cancel</RippleButton>

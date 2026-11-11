@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 
 // ─── CREATE MANUAL BILL ─────────────────────
 exports.create = async (req, res) => {
@@ -16,16 +17,33 @@ exports.create = async (req, res) => {
     // Compute subtotal from services, products, or generic items
     let calcSubtotal = 0;
     if (services && Array.isArray(services)) {
-      services.forEach(s => { calcSubtotal += parseFloat(s.price || s.service_price || 0); });
+      services.forEach(s => {
+        const p = parseFloat(s.price || s.service_price || 0);
+        if (!isNaN(p)) calcSubtotal += p;
+      });
     }
     if (products && Array.isArray(products)) {
-      products.forEach(p => { calcSubtotal += (parseFloat(p.price || p.unit_cost || 0) * parseInt(p.quantity || 1)); });
+      products.forEach(p => {
+        const pr = parseFloat(p.price || p.unit_cost || 0);
+        const q = parseInt(p.quantity || 1, 10);
+        if (!isNaN(pr) && !isNaN(q)) calcSubtotal += (pr * q);
+      });
     }
     if (items && Array.isArray(items)) {
-      items.forEach(it => { calcSubtotal += (parseFloat(it.price || 0) * parseInt(it.quantity || 1)); });
+      items.forEach(it => {
+        const pr = parseFloat(it.price || 0);
+        const q = parseInt(it.quantity || 1, 10);
+        if (!isNaN(pr) && !isNaN(q)) calcSubtotal += (pr * q);
+      });
     }
-    if (calcSubtotal === 0 && amount > 0) {
-      calcSubtotal = parseFloat(amount);
+    if (calcSubtotal === 0 && amount) {
+      const am = parseFloat(amount);
+      calcSubtotal = isNaN(am) ? 0 : am;
+    }
+    if (isNaN(calcSubtotal)) calcSubtotal = 0;
+    if (calcSubtotal <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Add at least one service, product or amount before saving the bill' });
     }
 
     let numVal = parseFloat(discount_value || 0);
@@ -48,20 +66,24 @@ exports.create = async (req, res) => {
     } else if (discount_type === 'fixed') {
       discountAmt = Math.min(calcSubtotal, numVal);
     }
-    discountAmt = Math.min(calcSubtotal, Math.max(0, discountAmt));
-    const amountAfterDiscount = calcSubtotal - discountAmt;
+    discountAmt = Math.min(calcSubtotal, Math.max(0, isNaN(discountAmt) ? 0 : discountAmt));
+    const amountAfterDiscount = Math.max(0, calcSubtotal - discountAmt);
 
     const isWithGst = gst_type === 'with_gst';
-    const effectiveGstPct = isWithGst ? (parseFloat(gst_pct || 18.00)) : 0;
+    const effectiveGstPct = isWithGst ? (parseFloat(gst_pct || 18.00) || 0) : 0;
     const gstAmt = isWithGst ? (amountAfterDiscount * (effectiveGstPct / 100)) : 0;
-    const grandTotalVal = Math.max(0, amountAfterDiscount + gstAmt);
+    const grandTotalVal = Math.max(0, (amountAfterDiscount + gstAmt) || 0);
 
-    // Process products inventory deduction if present
+    // Process products inventory deduction if present (never sell what is not in stock)
     if (products && Array.isArray(products) && products.length > 0) {
+      const { stockError } = require('../utils/stock');
       for (const prod of products) {
-        if (prod.id && parseInt(prod.quantity || 1) > 0) {
-          await conn.query('UPDATE inventory SET quantity = GREATEST(0, quantity - ?) WHERE id = ?', [parseInt(prod.quantity || 1), prod.id]);
-        }
+        const pid = prod.id || prod.product_id;
+        const q = parseInt(prod.quantity || 1);
+        if (!pid || q <= 0) continue;
+        const err = await stockError(conn, pid, q);
+        if (err) { await conn.rollback(); return res.status(400).json({ success: false, error: err }); }
+        await conn.query('UPDATE inventory SET quantity = quantity - ? WHERE id = ?', [q, pid]);
       }
     }
 
@@ -71,9 +93,9 @@ exports.create = async (req, res) => {
       
       // Log the loyalty redemption transaction
       await conn.query(
-        `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by)
-         VALUES ('loyalty_redeem', ?, ?, 'out', ?, CURDATE(), ?)`,
-        [customer_id, discount_value, `Redeemed ₹${discount_value} for Manual Bill`, req.user.id]
+        `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by, franchise_id)
+         VALUES ('loyalty_redeem', ?, ?, 'out', ?, CURDATE(), ?, ?)`,
+        [customer_id, discount_value, `Redeemed ₹${discount_value} for Manual Bill`, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
     }
 
@@ -98,7 +120,7 @@ exports.create = async (req, res) => {
         description || null,
         services ? JSON.stringify(services) : null,
         products ? JSON.stringify(products) : null,
-        payment_method,
+        require('../services/moneyIn').methodFor('manual_bills', payment_method),
         req.user.id,
         vehicle_brand || null,
         vehicle_model || null,
@@ -112,9 +134,9 @@ exports.create = async (req, res) => {
 
     // Create transaction record
     await conn.query(
-      `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by)
-       VALUES ('job_revenue', ?, ?, 'in', ?, CURDATE(), ?)`,
-      [result.insertId, grandTotalVal, `Manual Bill #${result.insertId}: ${description || 'POS Sale'}`, req.user.id]
+      `INSERT INTO transactions (type, reference_id, amount, direction, note, transaction_date, created_by, franchise_id)
+       VALUES ('job_revenue', ?, ?, 'in', ?, CURDATE(), ?, ?)`,
+      [result.insertId, grandTotalVal, `Manual Bill #${result.insertId}: ${description || 'POS Sale'}`, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     // Log discount audit if applied
@@ -139,8 +161,8 @@ exports.create = async (req, res) => {
     // Emit real-time customer and manual bill updates
     const io = req.app.get('io');
     if (io) {
-      io.emit('manual_bill_created', { id: result.insertId, customer_name, customer_mobile });
-      io.emit('customer_updated', { customer_name, customer_mobile });
+      io.to('internal').emit('manual_bill_created', { id: result.insertId, customer_name, customer_mobile });
+      io.to('internal').emit('customer_updated', { customer_name, customer_mobile });
     }
 
     // If customer has mobile, send SMS
@@ -168,9 +190,9 @@ exports.create = async (req, res) => {
       const igst = 0;
 
       await conn.query(
-        `INSERT INTO v2_gst_records (record_type, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year)
-         VALUES ('sales', ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [gstin, taxableAmount, cgst, sgst, igst, totalGst, periodMonth, periodYear]
+        `INSERT INTO v2_gst_records (record_type, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year, franchise_id)
+         VALUES ('sales', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [gstin, taxableAmount, cgst, sgst, igst, totalGst, periodMonth, periodYear, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
       );
     }
 
@@ -273,6 +295,9 @@ exports.getOne = async (req, res) => {
 // ─── DOWNLOAD INVOICE PDF ────────────────────
 exports.downloadInvoice = async (req, res) => {
   try {
+    // only this studio's bills
+    const [[own]] = await pool.query(`SELECT id FROM manual_bills WHERE id = ?${scopeOf(req).and()}`, [req.params.id]);
+    if (!own) return res.status(404).json({ success: false, error: 'Bill not found' });
     const { generateManualBillPDF } = require('../services/invoiceService');
     const { pdfBuffer, invoiceNumber } = await generateManualBillPDF(req.params.id);
     res.set({

@@ -20,36 +20,3 @@ export const useCreateInquiry = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['inquiries'] }),
   });
 };
-
-export const useUpdateInquiryStatus = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, status }: { id: number; status: string }) => {
-      const res = await api.patch(`/inquiries/${id}/status`, { status });
-      return res.data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['inquiries'] }),
-  });
-};
-
-export const useConvertInquiry = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: number) => {
-      const res = await api.post(`/inquiries/${id}/convert`);
-      return res.data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['inquiries'] }),
-  });
-};
-
-export const useDeleteInquiry = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: number) => {
-      const res = await api.delete(`/inquiries/${id}`);
-      return res.data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['inquiries'] }),
-  });
-};

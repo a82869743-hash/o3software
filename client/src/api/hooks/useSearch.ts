@@ -27,16 +27,3 @@ export const useCustomerSearch = (q: string) => {
     staleTime: 30_000,
   });
 };
-
-// ─── Vehicle Search ─────────────────────────
-export const useVehicleSearch = (q: string) => {
-  return useQuery({
-    queryKey: ['search-vehicles', q],
-    queryFn: async () => {
-      const { data } = await api.get('/search/vehicles', { params: { q, limit: 10 } });
-      return data.data;
-    },
-    enabled: q.length >= 2,
-    staleTime: 30_000,
-  });
-};

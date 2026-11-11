@@ -22,21 +22,26 @@ const pool = require('../config/db');
 /**
  * getLoyaltySettings — Fetch loyalty config from settings table
  */
-async function getLoyaltySettings(conn) {
+async function getLoyaltySettings(conn, franchiseId = 1) {
   const db = conn || pool;
+  // the studio's own values, falling back to the main studio's (studio rows come last, so they win)
+  const fid = Number(franchiseId) || 1;
   const [settings] = await db.query(
-    "SELECT key_name, value FROM settings WHERE key_name LIKE 'loyalty_%'"
+    "SELECT key_name, value FROM settings WHERE key_name LIKE 'loyalty_%' AND franchise_id IN (1, ?) ORDER BY (franchise_id = ?) ASC",
+    [fid, fid]
   );
   const config = {
     points_ratio: 100,   // ₹100 spent = 1 point
     min_redeem: 50,      // Minimum 50 points to redeem
     point_value: 1,      // 1 point = ₹1
+    free_wash_points: 1000, // points a customer turns into 1 free wash
     enabled: true,
   };
   for (const s of settings) {
     if (s.key_name === 'loyalty_points_ratio') config.points_ratio = parseFloat(s.value) || 100;
     if (s.key_name === 'loyalty_min_redeem') config.min_redeem = parseFloat(s.value) || 50;
     if (s.key_name === 'loyalty_point_value') config.point_value = parseFloat(s.value) || 1;
+    if (s.key_name === 'loyalty_free_wash_points') config.free_wash_points = parseInt(s.value, 10) || 1000;
     if (s.key_name === 'loyalty_enabled') config.enabled = s.value === '1';
   }
   return config;
@@ -45,6 +50,11 @@ async function getLoyaltySettings(conn) {
 /**
  * ensureLoyaltyRow — Ensures loyalty row exists for customer
  */
+async function customerFid(db, customerId) {
+  const [[u]] = await (db || pool).query('SELECT franchise_id FROM users WHERE id = ?', [customerId]);
+  return Number(u?.franchise_id) || 1;
+}
+
 async function ensureLoyaltyRow(conn, customerId) {
   await conn.query(
     'INSERT IGNORE INTO loyalty (customer_id, credits, free_washes, wax_count, points) VALUES (?, 0, 0, 0, 0)',
@@ -72,7 +82,7 @@ exports.get = async (req, res) => {
     }
 
     // Also get loyalty settings for display
-    const config = await getLoyaltySettings();
+    const config = await getLoyaltySettings(null, await customerFid(pool, customerId));
 
     res.json({
       success: true,
@@ -95,7 +105,18 @@ exports.update = async (req, res) => {
 
     const { customerId } = req.params;
     const { credits, free_washes, wax_count, points, description } = req.body;
-
+    for (const [k, v] of [['Credits', credits], ['Free washes', free_washes], ['Wax count', wax_count], ['Points', points]]) {
+      if (v !== undefined && v !== null && !(Number.isInteger(Number(v)) && Number(v) >= 0)) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: `${k} must be a whole number, 0 or more` });
+      }
+    }
+    // loyalty belongs to customers of this studio only
+    const [[lc]] = await conn.query('SELECT role, franchise_id FROM users WHERE id = ? AND is_deleted = 0', [customerId]);
+    if (!lc || lc.role !== 'customer' || (req.user.role !== 'super_admin' && Number(lc.franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1))) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
     await ensureLoyaltyRow(conn, customerId);
 
     // Get current values
@@ -158,13 +179,17 @@ exports.earnPoints = async (req, res) => {
     await conn.beginTransaction();
 
     const { customer_id, amount, reference_type, reference_id, description } = req.body;
-
     if (!customer_id || !amount || amount <= 0) {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'customer_id and positive amount required' });
     }
+    const [[ec]] = await conn.query('SELECT role, franchise_id FROM users WHERE id = ? AND is_deleted = 0', [customer_id]);
+    if (!ec || ec.role !== 'customer' || (req.user.role !== 'super_admin' && Number(ec.franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1))) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
 
-    const config = await getLoyaltySettings(conn);
+    const config = await getLoyaltySettings(conn, await customerFid(conn, customer_id));
     if (!config.enabled) {
       await conn.rollback();
       return res.json({ success: true, data: { points_earned: 0 }, message: 'Loyalty system is disabled' });
@@ -182,7 +207,7 @@ exports.earnPoints = async (req, res) => {
     const [current] = await conn.query(
       'SELECT points FROM loyalty WHERE customer_id = ? FOR UPDATE', [customer_id]
     );
-    const newBalance = (current[0]?.points || 0) + pointsEarned;
+    const newBalance = Number(current[0]?.points || 0) + pointsEarned;
 
     await conn.query(
       'UPDATE loyalty SET points = ? WHERE customer_id = ?',
@@ -217,7 +242,7 @@ exports.earnPoints = async (req, res) => {
 // Callable from other controllers without req/res
 exports.awardPointsInternal = async (conn, customerId, amount, referenceType, referenceId, createdBy) => {
   try {
-    const config = await getLoyaltySettings(conn);
+    const config = await getLoyaltySettings(conn, await customerFid(conn, customerId));
     if (!config.enabled) return 0;
 
     // Idempotency safeguard: check if points were already awarded for this reference
@@ -240,7 +265,7 @@ exports.awardPointsInternal = async (conn, customerId, amount, referenceType, re
     const [current] = await conn.query(
       'SELECT points FROM loyalty WHERE customer_id = ? FOR UPDATE', [customerId]
     );
-    const newBalance = (current[0]?.points || 0) + pointsEarned;
+    const newBalance = Number(current[0]?.points || 0) + pointsEarned;
 
     await conn.query(
       'UPDATE loyalty SET points = ? WHERE customer_id = ?',
@@ -280,7 +305,7 @@ exports.redeemPoints = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Positive points amount required' });
     }
 
-    const config = await getLoyaltySettings(conn);
+    const config = await getLoyaltySettings(conn, await customerFid(conn, targetCustomer));
     if (!config.enabled) {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'Loyalty system is disabled' });
@@ -299,7 +324,7 @@ exports.redeemPoints = async (req, res) => {
     const [current] = await conn.query(
       'SELECT points FROM loyalty WHERE customer_id = ? FOR UPDATE', [targetCustomer]
     );
-    const currentBalance = current[0]?.points || 0;
+    const currentBalance = Number(current[0]?.points || 0);
 
     if (currentBalance < points) {
       await conn.rollback();
@@ -410,7 +435,7 @@ exports.search = async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 exports.getSettings = async (req, res) => {
   try {
-    const config = await getLoyaltySettings();
+    const config = await getLoyaltySettings(null, Number(req.franchiseId) || Number(req.user?.franchise_id) || 1);
     res.json({ success: true, data: config });
   } catch (err) {
     console.error('Get loyalty settings error:', err);
@@ -420,30 +445,32 @@ exports.getSettings = async (req, res) => {
 
 exports.updateSettings = async (req, res) => {
   try {
-    const { points_ratio, min_redeem, point_value, enabled } = req.body;
+    const { points_ratio, min_redeem, point_value, free_wash_points, enabled } = req.body;
+    const fid = Number(req.franchiseId) || Number(req.user?.franchise_id) || 1;
+    for (const [k, v, min] of [['Points ratio', points_ratio, 1], ['Minimum redeem', min_redeem, 0], ['Point value', point_value, 0.01], ['Points for 1 free wash', free_wash_points, 1]]) {
+      if (v !== undefined && !(Number(v) >= min)) return res.status(400).json({ success: false, error: `${k} must be ${min} or more` });
+    }
 
     const updates = [];
     if (points_ratio !== undefined) updates.push(['loyalty_points_ratio', String(points_ratio)]);
     if (min_redeem !== undefined) updates.push(['loyalty_min_redeem', String(min_redeem)]);
     if (point_value !== undefined) updates.push(['loyalty_point_value', String(point_value)]);
+    if (free_wash_points !== undefined) {
+      if (!Number.isInteger(Number(free_wash_points))) return res.status(400).json({ success: false, error: 'Points for 1 free wash must be a whole number' });
+      updates.push(['loyalty_free_wash_points', String(Number(free_wash_points))]);
+    }
     if (enabled !== undefined) updates.push(['loyalty_enabled', enabled ? '1' : '0']);
 
     // Ensure settings rows exist before updating
-    for (const [key] of updates) {
-      await pool.query(
-        'INSERT IGNORE INTO settings (key_name, value) VALUES (?, ?)',
-        [key, '']
-      );
-    }
-
+    // this studio's rows only
     for (const [key, val] of updates) {
       await pool.query(
-        'UPDATE settings SET value = ? WHERE key_name = ?',
-        [val, key]
+        'INSERT INTO settings (franchise_id, key_name, value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+        [fid, key, val]
       );
     }
 
-    const config = await getLoyaltySettings();
+    const config = await getLoyaltySettings(null, fid);
     res.json({ success: true, data: config, message: 'Loyalty settings updated' });
   } catch (err) {
     console.error('Update loyalty settings error:', err);
@@ -458,24 +485,24 @@ exports.updateSettings = async (req, res) => {
 exports.redeemPointsToWash = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction();
-
     const targetCustomer = req.user.id;
-    const pointsNeeded = 1000;
+    // the studio's own rule (Loyalty settings → points for 1 free wash), shown on the customer's Loyalty page
+    const pointsNeeded = (await getLoyaltySettings(null, await customerFid(null, targetCustomer))).free_wash_points;
 
-    await ensureLoyaltyRow(conn, targetCustomer);
+    await ensureLoyaltyRow(pool, targetCustomer); // outside the transaction, so fast repeated taps don't deadlock
+    await conn.beginTransaction();
 
     const [current] = await conn.query(
       'SELECT points, free_washes FROM loyalty WHERE customer_id = ? FOR UPDATE', [targetCustomer]
     );
-    const currentPoints = current[0]?.points || 0;
+    const currentPoints = Number(current[0]?.points || 0);
     const currentWashes = current[0]?.free_washes || 0;
 
     if (currentPoints < pointsNeeded) {
       await conn.rollback();
       return res.status(400).json({
         success: false,
-        error: `Insufficient points. 1000 points required to redeem a free wash. You have ${currentPoints} points.`
+        error: `Not enough points. ${pointsNeeded} points are needed for a free wash. You have ${currentPoints} points.`
       });
     }
 
@@ -490,8 +517,8 @@ exports.redeemPointsToWash = async (req, res) => {
     await conn.query(
       `INSERT INTO loyalty_transactions
        (customer_id, type, points, balance_after, reference_type, description, created_by)
-       VALUES (?, 'redeem', ?, ?, 'manual', 'Redeemed 1000 points for 1 Free Wash', ?)`,
-      [targetCustomer, -pointsNeeded, newPoints, req.user.id]
+       VALUES (?, 'redeem', ?, ?, 'manual', ?, ?)`,
+      [targetCustomer, -pointsNeeded, newPoints, `Redeemed ${pointsNeeded} points for 1 free wash`, req.user.id]
     );
 
     await conn.commit();
@@ -503,7 +530,7 @@ exports.redeemPointsToWash = async (req, res) => {
         new_points_balance: newPoints,
         new_washes_balance: newWashes
       },
-      message: 'Successfully redeemed 1000 points for 1 Free Wash!',
+      message: `Redeemed ${pointsNeeded} points for 1 free wash`,
     });
   } catch (err) {
     await conn.rollback();
@@ -521,10 +548,10 @@ exports.getRules = async (req, res) => {
   try {
     const fCond = req.getFranchiseCondition
       ? req.getFranchiseCondition('franchise_id')
-      : { clause: ' WHERE (franchise_id = ? OR franchise_id IS NULL)', params: [req.franchiseId || 1] };
+      : { clause: ' AND (franchise_id = ? OR franchise_id IS NULL)', params: [req.franchiseId || 1] };
 
     const [rules] = await pool.query(
-      `SELECT * FROM loyalty_rules ${fCond.clause} ORDER BY is_active DESC, id ASC`,
+      `SELECT * FROM loyalty_rules WHERE 1=1 ${fCond.clause} ORDER BY is_active DESC, id ASC`,
       fCond.params
     );
     res.json({ success: true, data: rules });

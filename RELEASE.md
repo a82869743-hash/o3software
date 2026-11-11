@@ -96,8 +96,6 @@ The backend server is configured via the `.env` file inside the `server/` direct
 | `CLOUDINARY_API_KEY` | Cloudinary API Key | No | |
 | `CLOUDINARY_API_SECRET` | Cloudinary Secret Key | No | |
 | `MSG91_AUTH_KEY` | MSG91 / 2Factor SMS portal authentication key | No | |
-| `RAZORPAY_KEY_ID` | Razorpay API Key ID for orders | No | |
-| `RAZORPAY_KEY_SECRET` | Razorpay API Secret Key | No | |
 
 ---
 

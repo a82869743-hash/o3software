@@ -4,6 +4,7 @@ import { useDelivery, useDeliveryLocation } from '../../api/hooks/useDeliveries'
 import { useAuthStore } from '../../store/authStore';
 import io from 'socket.io-client';
 import { ArrowLeft, Phone, MapPin, Clock, CheckCircle2, Truck } from 'lucide-react';
+import { socketUrl } from '../../utils/endpoints';
 
 export default function TrackingPage() {
   const { id } = useParams();
@@ -12,6 +13,10 @@ export default function TrackingPage() {
   const { data: delivery, isLoading, error } = useDelivery(Number(id));
   const { data: locationData } = useDeliveryLocation(Number(id));
   const [staffLocation, setStaffLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [gpsOff, setGpsOff] = useState(false);
+  useEffect(() => {
+    if (locationData) setGpsOff((locationData as any).gps_status && (locationData as any).gps_status !== 'on');
+  }, [locationData]);
 
   // Use polled location as fallback, socket for real-time
   useEffect(() => {
@@ -24,8 +29,8 @@ export default function TrackingPage() {
   useEffect(() => {
     if (!id || !token) return;
 
-    const socketUrl = import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000';
-    const newSocket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
+    const wsUrl = socketUrl();
+    const newSocket = io(wsUrl, { auth: { token }, transports: ['websocket', 'polling'] });
 
     newSocket.on('connect', () => {
       newSocket.emit('join_delivery', { deliveryId: Number(id) });
@@ -36,6 +41,8 @@ export default function TrackingPage() {
         setStaffLocation({ lat: parseFloat(loc.lat), lng: parseFloat(loc.lng) });
       }
     });
+
+    newSocket.on('gps_status', (p: any) => setGpsOff(p?.gps_status && p.gps_status !== 'on'));
 
     newSocket.on('location', (loc) => {
       if (loc && loc.lat && loc.lng) {
@@ -54,7 +61,7 @@ export default function TrackingPage() {
   }, [id, token]);
 
   if (isLoading) return (
-    <div className="p-8 text-center text-[#5f5e5e] animate-fade-in">
+    <div className="p-8 text-center text-[#64748B] animate-fade-in">
       <div className="animate-spin w-8 h-8 rounded-full border-4 border-gray-200 border-t-[#2563EB] mx-auto mb-3" />
       Loading delivery details...
     </div>
@@ -112,7 +119,7 @@ export default function TrackingPage() {
           {/* Status + Executive info */}
           <div className="flex justify-between items-center mb-6">
             <div>
-              <p className="text-[9px] uppercase font-bold tracking-widest text-[#5f5e5e] mb-1.5">Status</p>
+              <p className="text-[9px] uppercase font-bold tracking-widest text-[#64748B] mb-1.5">Status</p>
               <span className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider border ${
                 isDelivered
                   ? 'bg-green-50 text-green-700 border-green-200'
@@ -122,7 +129,7 @@ export default function TrackingPage() {
               </span>
             </div>
             <div className="text-right">
-              <p className="text-[9px] uppercase font-bold tracking-widest text-[#5f5e5e] mb-1.5">Assigned Executive</p>
+              <p className="text-[9px] uppercase font-bold tracking-widest text-[#64748B] mb-1.5">Assigned Executive</p>
               <p className="font-bold text-[#0F172A]">{delivery.staff_name}</p>
               {delivery.staff_mobile && (
                 <a
@@ -153,6 +160,11 @@ export default function TrackingPage() {
             </div>
           </div>
 
+          {isInTransit && gpsOff && (
+            <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-900">
+              The driver's GPS is currently off, so the live map can't update. {delivery.staff_mobile ? <a className="font-bold underline" href={`tel:${delivery.staff_mobile}`}>Call the driver</a> : null}
+            </div>
+          )}
           {/* Map / Status Area */}
           <div className="bg-[#F8FAFC] rounded-xl h-64 md:h-96 w-full flex items-center justify-center relative overflow-hidden border border-gray-100">
             {isDelivered ? (
@@ -161,7 +173,7 @@ export default function TrackingPage() {
                   <CheckCircle2 size={32} />
                 </div>
                 <h3 className="font-black text-xl text-[#0F172A] mb-1">Vehicle Delivered</h3>
-                <p className="text-[#5f5e5e] text-sm">Your vehicle was successfully delivered.</p>
+                <p className="text-[#64748B] text-sm">Your vehicle was successfully delivered.</p>
                 {delivery.delivered_at && (
                   <p className="text-xs text-gray-400 mt-2">
                     <Clock size={12} className="inline mr-1" />
@@ -184,8 +196,8 @@ export default function TrackingPage() {
             ) : (
               <div className="text-center p-6 bg-white/80 backdrop-blur-sm rounded-xl shadow-sm z-10 m-4 border border-gray-100">
                 <div className="animate-spin w-8 h-8 rounded-full border-4 border-gray-200 border-t-[#2563EB] mx-auto mb-3" />
-                <p className="text-sm font-medium text-[#5f5e5e]">Waiting for GPS signal from the executive...</p>
-                <p className="text-xs text-gray-400 mt-1">Location updates every 5 seconds</p>
+                <p className="text-sm font-medium text-[#64748B]">Waiting for GPS signal from the executive...</p>
+                <p className="text-xs text-gray-400 mt-1">Live location appears as soon as the driver starts the trip</p>
               </div>
             )}
           </div>

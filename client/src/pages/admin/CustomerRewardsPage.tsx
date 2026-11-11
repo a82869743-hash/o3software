@@ -5,6 +5,7 @@ import { useCustomerRewards, useAwardWelcomeReward, useRedeemReward } from '../.
 import api from '../../api/axiosInstance';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
+import Dropdown from '../../components/ui/Dropdown';
 
 
 export default function CustomerRewardsPage() {
@@ -86,11 +87,11 @@ export default function CustomerRewardsPage() {
             className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-pink-500/20 focus:border-pink-500" 
           />
         </div>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-500/20">
+        <Dropdown value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-500/20">
           <option value="">All Statuses</option>
           <option value="active">Active (Not Redeemed)</option>
           <option value="redeemed">Redeemed</option>
-        </select>
+        </Dropdown>
       </AnimatedCard>
 
       {/* Rewards Table */}
@@ -177,7 +178,7 @@ export default function CustomerRewardsPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Select Customer</label>
-              <select 
+              <Dropdown 
                 value={selectedCustomerId} 
                 onChange={e => setSelectedCustomerId(e.target.value)} 
                 className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-pink-500/20 focus:border-pink-500"
@@ -192,7 +193,7 @@ export default function CustomerRewardsPage() {
                     </option>
                   ))
                 )}
-              </select>
+              </Dropdown>
             </div>
             <div className="bg-pink-50 border border-pink-100 p-4 rounded-xl flex items-start gap-3">
               <Star className="text-[#E91E63] shrink-0 mt-0.5" size={18} />

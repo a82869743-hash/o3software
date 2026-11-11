@@ -24,27 +24,11 @@ interface AuthResponse {
   user: User;
 }
 
-export const useLogin = () =>
-  useMutation({
-    mutationFn: async (payload: LoginPayload): Promise<AuthResponse> => {
-      const res = await api.post('/auth/login', payload);
-      return res.data.data;
-    },
-  });
-
 export const useRegister = () =>
   useMutation({
     mutationFn: async (payload: RegisterPayload): Promise<AuthResponse> => {
       const res = await api.post('/auth/register', payload);
       return res.data.data;
-    },
-  });
-
-export const useChangePassword = () =>
-  useMutation({
-    mutationFn: async (payload: { old_password: string; new_password: string }) => {
-      const res = await api.post('/auth/change-password', payload);
-      return res.data;
     },
   });
 

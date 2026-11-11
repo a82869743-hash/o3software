@@ -138,11 +138,16 @@ cd /var/www/o3-car-spaa
 npm install --prefix server --omit=dev
 npm install --prefix client
 
-# Run all 104 versioned migrations in sequence
+# Load the clean studio data (staff logins, services, prices, packages, stock, roles, settings).
+# Copy these two files from the PC's backups/golive/ folder to /root/ first (WinSCP or scp):
+#   o3_golive_clean_20261111.sql   o3_golive_uploads.tar.gz
+mysql -u o3_prod_user -p o3_car_spa < /root/o3_golive_clean_20261111.sql
+tar -xzf /root/o3_golive_uploads.tar.gz -C /var/www/o3-car-spaa/server   # product pictures + UPI QR
+
+# Records the schema as current. Later deploys run only NEW migration files, once each.
 npm run db:migrate --prefix server
 
-# Optional: Seed initial admin accounts if this is a fresh database
-npm run db:seed --prefix server
+# Do NOT run db:seed or scripts/seed_*.js on the live server: they add test logins and old sample data.
 ```
 
 Build the optimized client bundle:

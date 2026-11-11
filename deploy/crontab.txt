@@ -3,8 +3,8 @@
 # Install via: crontab deploy/crontab.txt
 # ==============================================================================
 
-# 1. Daily MySQL Database Backup & Rotation (Every night at 02:00 AM IST)
-0 2 * * * /bin/bash /var/www/o3-car-spaa/scripts/backup.sh >> /var/log/o3-backup.log 2>&1
+# 1. Database + uploads backup twice a day (02:00 and 14:00 IST), with off-server copy when BACKUP_REMOTE is set
+0 2,14 * * * /bin/bash /var/www/o3-car-spaa/scripts/backup.sh >> /var/log/o3-backup.log 2>&1
 
 # 2. Weekly Automated Backup Restore & Row Integrity Verification (Every Sunday at 03:00 AM IST)
 0 3 * * 0 /bin/bash /var/www/o3-car-spaa/scripts/test-restore.sh >> /var/log/o3-restore-test.log 2>&1

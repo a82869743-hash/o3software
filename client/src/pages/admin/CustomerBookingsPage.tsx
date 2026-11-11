@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { carBrands, getModelsForBrand, getCategoryForModel } from '../../utils/carData';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, Calendar, Clock, Car, Phone, User, FileText,
@@ -11,16 +12,19 @@ import Button from '../../components/ui/Button';
 import StatusBadge from '../../components/ui/StatusBadge';
 import Modal from '../../components/ui/Modal';
 import { SkeletonCard } from '../../components/ui/SkeletonLoader';
-import { formatTime } from '../../utils/formatters';
+import { formatTime, ymd } from '../../utils/formatters';
 import api from '../../api/axiosInstance';
 import ConfirmModal from '../../components/ui/ConfirmModal';
 import toast from 'react-hot-toast';
 import io from 'socket.io-client';
 import { useAuthStore } from '../../store/authStore';
+import { socketUrl } from '../../utils/endpoints';
+import Dropdown from '../../components/ui/Dropdown';
 
 const TABS = [
-  { key: 'pending_approval', label: 'Pending Approvals', color: 'bg-yellow-500' },
-  { key: 'confirmed', label: 'Confirmed', color: 'bg-green-500' },
+  // a booking stays visible as it moves on: awaiting payment counts as pending, work started counts as confirmed
+  { key: 'pending_approval,pending_payment', label: 'Pending Approvals', color: 'bg-yellow-500' },
+  { key: 'confirmed,in_progress', label: 'Confirmed / In progress', color: 'bg-green-500' },
   { key: 'all', label: 'All', color: 'bg-gray-500' },
   { key: 'completed', label: 'Completed', color: 'bg-blue-500' },
   { key: 'cancelled', label: 'Cancelled', color: 'bg-blue-500' },
@@ -28,7 +32,7 @@ const TABS = [
 
 export default function CustomerBookingsPage() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('pending_approval');
+  const [activeTab, setActiveTab] = useState('pending_approval,pending_payment');
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
   const [page, setPage] = useState(1);
@@ -48,7 +52,7 @@ export default function CustomerBookingsPage() {
   const [searchCustomerQuery, setSearchCustomerQuery] = useState('');
   const [customersList, setCustomersList] = useState<any[]>([]);
   const [customerVehicles, setCustomerVehicles] = useState<any[]>([]);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(ymd());
   const [availableSlots, setAvailableSlots] = useState<any[]>([]);
 
   const [manualForm, setManualForm] = useState({
@@ -62,6 +66,9 @@ export default function CustomerBookingsPage() {
 
   const { data: servicesRes } = useServices();
   const createManualBooking = useCreateManualBooking();
+  // walk-in / phone customer who is not registered yet
+  const [newCustOpen, setNewCustOpen] = useState(false);
+  const [newCust, setNewCust] = useState({ name: '', mobile: '', brand: '', model: '', reg: '' });
 
   // Debounce search
   useEffect(() => {
@@ -79,11 +86,26 @@ export default function CustomerBookingsPage() {
     search: searchDebounced || undefined,
   });
 
+  // tab counts, so an empty "Pending" tab never hides bookings that were confirmed straight away
+  const { data: pendingCount } = useBookings({ page: 1, limit: 1, status: 'pending_approval,pending_payment' });
+  const { data: confirmedCount } = useBookings({ page: 1, limit: 1, status: 'confirmed,in_progress' });
+  const tabCount: Record<string, number | undefined> = {
+    'pending_approval,pending_payment': (pendingCount as any)?.pagination?.total,
+    'confirmed,in_progress': (confirmedCount as any)?.pagination?.total,
+  };
+  const autoTabDone = useRef(false);
+  useEffect(() => {
+    const pend = tabCount['pending_approval,pending_payment'], conf = tabCount['confirmed,in_progress'];
+    if (autoTabDone.current || pend === undefined || conf === undefined) return;
+    autoTabDone.current = true;
+    if (pend === 0 && conf > 0 && activeTab === 'pending_approval,pending_payment') setActiveTab('confirmed,in_progress');
+  }, [tabCount['pending_approval,pending_payment'], tabCount['confirmed,in_progress'], activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const { token } = useAuthStore();
 
   useEffect(() => {
     if (!token) return;
-    const socket = io(import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000', {
+    const socket = io(socketUrl(), {
       auth: { token }
     });
 
@@ -109,13 +131,13 @@ export default function CustomerBookingsPage() {
     if (!confirmTargetId || !confirmType) return;
     setIsConfirming(true);
     try {
-      await api.patch(`/bookings/${confirmTargetId}/${confirmType}`);
-      toast.success(`Booking ${confirmType}d successfully`);
+      const r = await api.patch(`/bookings/${confirmTargetId}/${confirmType}`);
+      toast.success(r.data?.message || `Booking ${confirmType}d successfully`);
       setConfirmType(null);
       setConfirmTargetId(null);
       refetch();
     } catch (err) {
-      toast.error(`Failed to ${confirmType} booking`);
+      toast.error((err as any)?.response?.data?.error || `Failed to ${confirmType} booking`);
     } finally {
       setIsConfirming(false);
     }
@@ -161,19 +183,31 @@ export default function CustomerBookingsPage() {
     }
   }, [selectedDate, manualBookingOpen]);
 
-  const handleCreateManualBookingSubmit = () => {
-    if (!manualForm.customer_id) { toast.error('Select a customer'); return; }
+  const handleCreateManualBookingSubmit = async () => {
+    if (!newCustOpen && !manualForm.customer_id) { toast.error('Select a customer'); return; }
     if (!manualForm.slot_id) { toast.error('Select a slot'); return; }
     if (!manualForm.service_id) { toast.error('Select a service'); return; }
 
-    const selectedCust = customersList.find(c => String(c.id) === manualForm.customer_id);
-    const selectedVeh = customerVehicles.find(v => String(v.id) === manualForm.vehicle_id);
+    let customerId = manualForm.customer_id ? parseInt(manualForm.customer_id) : 0;
+    let selectedVeh: any = customerVehicles.find(v => String(v.id) === manualForm.vehicle_id);
+    if (newCustOpen) {
+      const n = newCust;
+      if (!n.name.trim() || !/^[6-9]\d{9}$/.test(n.mobile) || !n.brand.trim() || !n.model.trim() || !n.reg.trim()) {
+        toast.error('Enter name, 10-digit mobile, car brand, model and number plate'); return;
+      }
+      try {
+        const category = getCategoryForModel(n.brand, n.model);
+        const r = await api.post('/customers/manual-registration', { name: n.name.trim(), mobile: n.mobile, brand: n.brand.trim(), model: n.model.trim(), registration_no: n.reg, category });
+        customerId = r.data.data.customer_id;
+        selectedVeh = { id: r.data.data.vehicle_id, brand: n.brand.trim(), model: n.model.trim(), registration_no: n.reg.toUpperCase(), category };
+      } catch (err: any) { toast.error(err?.response?.data?.error || 'Could not add the customer'); return; }
+    }
 
     createManualBooking.mutate({
-      customer_id: parseInt(manualForm.customer_id),
+      customer_id: customerId,
       slot_id: parseInt(manualForm.slot_id),
       service_id: parseInt(manualForm.service_id),
-      vehicle_id: manualForm.vehicle_id ? parseInt(manualForm.vehicle_id) : undefined,
+      vehicle_id: selectedVeh?.id ? parseInt(String(selectedVeh.id)) : undefined,
       vehicle_brand: selectedVeh?.brand || undefined,
       vehicle_model: selectedVeh?.model || undefined,
       vehicle_reg_no: selectedVeh?.registration_no || undefined,
@@ -193,6 +227,7 @@ export default function CustomerBookingsPage() {
           booking_notes: ''
         });
         setSearchCustomerQuery('');
+        setNewCustOpen(false); setNewCust({ name: '', mobile: '', brand: '', model: '', reg: '' });
         refetch();
       },
       onError: (err: any) => {
@@ -234,7 +269,7 @@ export default function CustomerBookingsPage() {
       {/* Tabs + Search Row */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         {/* Tabs */}
-        <div className="flex gap-1 bg-[#f6f3f2] rounded-xl p-1 overflow-x-auto max-w-full w-full sm:w-auto scrollbar-none">
+        <div className="flex gap-1 bg-[#F1F5F9] rounded-xl p-1 overflow-x-auto max-w-full w-full sm:w-auto scrollbar-none">
           {TABS.map((tab) => (
             <button
               key={tab.key}
@@ -242,10 +277,11 @@ export default function CustomerBookingsPage() {
               className={`px-3.5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-200 shrink-0 whitespace-nowrap ${
                 activeTab === tab.key
                   ? 'bg-white text-[#0F172A] shadow-sm'
-                  : 'text-[#5f5e5e] hover:text-[#0F172A]'
+                  : 'text-[#64748B] hover:text-[#0F172A]'
               }`}
             >
               {tab.label}
+              {tabCount[tab.key] ? <span className="ml-1.5 inline-flex min-w-[18px] justify-center rounded-full bg-[#2563EB] px-1.5 text-[10px] text-white">{tabCount[tab.key]}</span> : null}
             </button>
           ))}
         </div>
@@ -270,7 +306,7 @@ export default function CustomerBookingsPage() {
 
       {/* Results Count */}
       <div className="mb-4">
-        <p className="text-xs font-bold text-[#5f5e5e] uppercase tracking-widest">
+        <p className="text-xs font-bold text-[#64748B] uppercase tracking-widest">
           {pagination.total} Booking{pagination.total !== 1 ? 's' : ''} found
         </p>
       </div>
@@ -284,8 +320,8 @@ export default function CustomerBookingsPage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col items-center justify-center py-16">
           <Calendar size={48} className="text-gray-300 mb-4" />
           <h3 className="text-lg font-bold text-[#0F172A]">No Bookings Found</h3>
-          <p className="text-sm text-[#5f5e5e] mt-1">
-            {activeTab === 'confirmed' ? 'No confirmed bookings waiting to be processed' : 'No bookings match your filters'}
+          <p className="text-sm text-[#64748B] mt-1">
+            {activeTab === 'confirmed,in_progress' ? 'No confirmed bookings waiting to be processed' : 'No bookings match your filters'}
           </p>
         </div>
       ) : (
@@ -305,7 +341,7 @@ export default function CustomerBookingsPage() {
                     </div>
                     <div className="min-w-0">
                       <h4 className="font-bold text-[#0F172A] text-sm truncate">{b.customer_name}</h4>
-                      <div className="flex items-center gap-3 text-xs text-[#5f5e5e]">
+                      <div className="flex items-center gap-3 text-xs text-[#64748B]">
                         <span className="flex items-center gap-1">
                           <Phone size={10} />
                           {b.customer_mobile}
@@ -323,7 +359,7 @@ export default function CustomerBookingsPage() {
                     <div className="flex items-start gap-2">
                       <Car size={14} className="text-[#2563EB] shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Vehicle</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Vehicle</p>
                         <p className="text-xs font-bold text-[#0F172A]">
                           {b.vehicle_brand || '—'} {b.vehicle_model || ''}
                         </p>
@@ -343,7 +379,7 @@ export default function CustomerBookingsPage() {
                     <div className="flex items-start gap-2">
                       <FileText size={14} className="text-[#2563EB] shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Services Cart</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Services Cart</p>
                         {b.cart_items_json ? (
                           <div className="space-y-1 mt-0.5">
                             {(() => {
@@ -372,7 +408,7 @@ export default function CustomerBookingsPage() {
                     <div className="flex items-start gap-2">
                       <Calendar size={14} className="text-[#2563EB] shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Date</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Date</p>
                         <p className="text-xs font-bold text-[#0F172A]">
                           {b.slot_date
                             ? new Date(b.slot_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
@@ -385,7 +421,7 @@ export default function CustomerBookingsPage() {
                     <div className="flex items-start gap-2">
                       <Clock size={14} className="text-[#2563EB] shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Time</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Time</p>
                         <p className="text-xs font-bold text-[#0F172A]">
                           {b.start_time ? `${formatTime(b.start_time)} – ${formatTime(b.end_time)}` : '—'}
                         </p>
@@ -456,7 +492,7 @@ export default function CustomerBookingsPage() {
 
               {/* Payment Details */}
               <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-2 items-center w-full">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Payment:</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Payment:</span>
                 {b.booking_type === 'package' ? (
                   <span className="text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-lg">
                     📦 Package Credit ({b.package_name || 'Active Package'})
@@ -499,8 +535,13 @@ export default function CustomerBookingsPage() {
                     💵 Pay at Studio: ₹{b.total_amount || 0}
                   </span>
                 )}
+                {Number(b.discount_amount) > 0 && (
+                  <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-lg">
+                    🏷️ {b.offer_code ? `Offer ${b.offer_code}` : Number(b.discount_percent) === 50 ? 'First wash 50%' : 'Discount'}: −₹{Number(b.discount_amount).toLocaleString('en-IN')}
+                  </span>
+                )}
                 
-                <button
+                {['confirmed', 'in_progress', 'completed', 'delivered'].includes(b.status) && <button
                   onClick={() => {
                     const token = useAuthStore.getState().token;
                     window.open(`/api/bookings/${b.id}/invoice?token=${token}`, '_blank');
@@ -510,13 +551,13 @@ export default function CustomerBookingsPage() {
                 >
                   <Download className="w-3.5 h-3.5" />
                   Booking Invoice
-                </button>
+                </button>}
               </div>
 
               {/* Notes */}
               {b.notes && (
                 <div className="mt-3 pt-3 border-t border-gray-50">
-                  <p className="text-xs text-[#5f5e5e]">
+                  <p className="text-xs text-[#64748B]">
                     <span className="font-bold">Notes:</span> {b.notes}
                   </p>
                 </div>
@@ -563,34 +604,34 @@ export default function CustomerBookingsPage() {
         ) : !historyData?.found ? (
           <div className="text-center py-12">
             <Car size={40} className="text-gray-300 mx-auto mb-3" />
-            <p className="text-sm text-[#5f5e5e]">No records found for this vehicle</p>
+            <p className="text-sm text-[#64748B]">No records found for this vehicle</p>
           </div>
         ) : (
           <div>
             {/* Vehicle + Customer Summary */}
-            <div className="bg-[#f6f3f2] rounded-xl p-4 mb-5">
+            <div className="bg-[#F1F5F9] rounded-xl p-4 mb-5">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Vehicle</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Vehicle</p>
                   <p className="font-bold text-[#0F172A]">{historyData.vehicle?.brand} {historyData.vehicle?.model}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Reg. No</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Reg. No</p>
                   <p className="font-bold text-[#0F172A]">{historyData.vehicle?.registration_no}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Customer</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Customer</p>
                   <p className="font-bold text-[#0F172A]">{historyData.customer?.name}</p>
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Mobile</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Mobile</p>
                   <p className="font-bold text-[#0F172A]">{historyData.customer?.mobile}</p>
                 </div>
               </div>
             </div>
 
             {/* Job Card History */}
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-3">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-3">
               Service History ({historyData.history?.length || 0} visits)
             </p>
 
@@ -611,14 +652,14 @@ export default function CustomerBookingsPage() {
                           'bg-gray-100 text-gray-600'
                         }`}>{jc.status}</span>
                       </div>
-                      <span className="text-xs text-[#5f5e5e]">
+                      <span className="text-xs text-[#64748B]">
                         {new Date(jc.visit_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </span>
                     </div>
                     {jc.services_done && (
                       <p className="text-xs text-[#0F172A] font-medium">{jc.services_done}</p>
                     )}
-                    <div className="flex items-center justify-between mt-2 text-xs text-[#5f5e5e]">
+                    <div className="flex items-center justify-between mt-2 text-xs text-[#64748B]">
                       {jc.invoice_number && <span>Invoice: {jc.invoice_number}</span>}
                       {jc.total_amount > 0 && (
                         <span className="font-bold text-[#0F172A]">₹{Number(jc.total_amount).toLocaleString('en-IN')}</span>
@@ -629,7 +670,7 @@ export default function CustomerBookingsPage() {
               </div>
             ) : (
               <div className="text-center py-8 bg-gray-50 rounded-xl">
-                <p className="text-sm text-[#5f5e5e]">No previous service records</p>
+                <p className="text-sm text-[#64748B]">No previous service records</p>
               </div>
             )}
           </div>
@@ -657,10 +698,25 @@ export default function CustomerBookingsPage() {
         <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
           {/* Step 1: Customer Selection */}
           <div>
-            <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+            <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
               Select Customer
             </label>
-            {!manualForm.customer_id ? (
+            {!manualForm.customer_id && (
+              <button type="button" onClick={() => setNewCustOpen(o => !o)} className="mb-2 text-xs font-bold text-blue-600">
+                {newCustOpen ? '← Pick an existing customer' : '+ New customer (not registered yet)'}
+              </button>
+            )}
+            {newCustOpen && !manualForm.customer_id ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input value={newCust.name} onChange={e => setNewCust({ ...newCust, name: e.target.value })} placeholder="Customer name *" className="px-3 py-2.5 rounded-xl border border-slate-200 text-sm" />
+                <input value={newCust.mobile} onChange={e => setNewCust({ ...newCust, mobile: e.target.value.replace(/\D/g, '').slice(0, 10) })} inputMode="numeric" placeholder="Mobile (10 digits) *" className="px-3 py-2.5 rounded-xl border border-slate-200 text-sm" />
+                <input list="nc-brands" value={newCust.brand} onChange={e => setNewCust({ ...newCust, brand: e.target.value, model: '' })} placeholder="Car brand *" className="px-3 py-2.5 rounded-xl border border-slate-200 text-sm" />
+                <datalist id="nc-brands">{carBrands.map(b => <option key={b} value={b} />)}</datalist>
+                <input list="nc-models" value={newCust.model} onChange={e => setNewCust({ ...newCust, model: e.target.value })} placeholder="Car model *" className="px-3 py-2.5 rounded-xl border border-slate-200 text-sm" />
+                <datalist id="nc-models">{getModelsForBrand(newCust.brand).map(m => <option key={m} value={m} />)}</datalist>
+                <input value={newCust.reg} onChange={e => setNewCust({ ...newCust, reg: e.target.value.toUpperCase().replace(/\s/g, '') })} placeholder="Number plate * e.g. MH01AB1234" className="sm:col-span-2 px-3 py-2.5 rounded-xl border border-slate-200 text-sm uppercase" />
+              </div>
+            ) : !manualForm.customer_id ? (
               <div className="space-y-2">
                 <div className="relative">
                   <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -704,14 +760,14 @@ export default function CustomerBookingsPage() {
                           >
                             <div>
                               <p className="font-bold">{c.name}</p>
-                              <p className="text-xs text-[#5f5e5e]">{c.mobile}</p>
+                              <p className="text-xs text-[#64748B]">{c.mobile}</p>
                               {matchedVeh && (
                                 <p className="text-[10px] text-blue-600 font-bold mt-0.5">
                                   🚗 Matched Reg: {matchedVeh.registration_no} ({matchedVeh.brand} {matchedVeh.model})
                                 </p>
                               )}
                             </div>
-                            <span className="text-[10px] bg-gray-100 px-2 py-0.5 rounded font-black text-[#5f5e5e] uppercase">Select</span>
+                            <span className="text-[10px] bg-gray-100 px-2 py-0.5 rounded font-black text-[#64748B] uppercase">Select</span>
                           </button>
                         );
                       })}
@@ -723,7 +779,7 @@ export default function CustomerBookingsPage() {
                         c.vehicles?.some((v: any) => v.registration_no?.toLowerCase().includes(q))
                       );
                     }).length === 0 && (
-                      <p className="text-xs text-[#5f5e5e] p-3 text-center">No customers or vehicles found matching search.</p>
+                      <p className="text-xs text-[#64748B] p-3 text-center">No customers or vehicles found matching search.</p>
                     )}
                   </div>
                 )}
@@ -752,11 +808,11 @@ export default function CustomerBookingsPage() {
           {/* Step 2: Vehicle Selection */}
           {manualForm.customer_id && (
             <div>
-              <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+              <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                 Select Vehicle
               </label>
               {customerVehicles.length > 0 ? (
-                <select
+                <Dropdown
                   value={manualForm.vehicle_id}
                   onChange={(e) => setManualForm(prev => ({ ...prev, vehicle_id: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] outline-none transition-all animate-fadeIn"
@@ -766,7 +822,7 @@ export default function CustomerBookingsPage() {
                       {v.brand} {v.model} ({v.registration_no})
                     </option>
                   ))}
-                </select>
+                </Dropdown>
               ) : (
                 <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl border border-amber-100 font-medium">
                   No vehicles registered for this customer. Go to Customers page to add a vehicle, or proceed with manual details.
@@ -779,13 +835,13 @@ export default function CustomerBookingsPage() {
           {manualForm.customer_id && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                   Select Date
                 </label>
                 <input
                   type="date"
                   value={selectedDate}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={ymd()}
                   onChange={(e) => {
                     setSelectedDate(e.target.value);
                     setManualForm(prev => ({ ...prev, slot_id: '' }));
@@ -795,10 +851,10 @@ export default function CustomerBookingsPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                   Select Slot
                 </label>
-                <select
+                <Dropdown
                   value={manualForm.slot_id}
                   onChange={(e) => setManualForm(prev => ({ ...prev, slot_id: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] outline-none transition-all"
@@ -811,7 +867,7 @@ export default function CustomerBookingsPage() {
                         {formatTime(s.start_time)} - {formatTime(s.end_time)} ({s.booked_count}/{s.max_capacity} booked)
                       </option>
                     ))}
-                </select>
+                </Dropdown>
                 {availableSlots.filter(s => !s.is_blocked).length === 0 && (
                   <p className="text-[10px] text-blue-500 mt-1 font-bold">No slots generated or available on this day</p>
                 )}
@@ -822,10 +878,10 @@ export default function CustomerBookingsPage() {
           {/* Step 4: Service selection */}
           {manualForm.customer_id && (
             <div>
-              <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+              <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                 Select Service
               </label>
-              <select
+              <Dropdown
                 value={manualForm.service_id}
                 onChange={(e) => setManualForm(prev => ({ ...prev, service_id: e.target.value }))}
                 className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] outline-none transition-all"
@@ -838,7 +894,7 @@ export default function CustomerBookingsPage() {
                       {s.name} (Duration: {s.duration_minutes}m)
                     </option>
                   ))}
-              </select>
+              </Dropdown>
             </div>
           )}
 
@@ -846,7 +902,7 @@ export default function CustomerBookingsPage() {
           {manualForm.customer_id && (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                   Customer Notes (Optional)
                 </label>
                 <textarea
@@ -859,7 +915,7 @@ export default function CustomerBookingsPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-[#5f5e5e] mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-[#64748B] mb-1.5">
                   Admin Internal Notes (Optional)
                 </label>
                 <textarea

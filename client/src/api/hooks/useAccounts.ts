@@ -43,7 +43,7 @@ export const useExportReport = () =>
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `GKAutoHerb_Report_${params.from_date}_to_${params.to_date}.${ext}`;
+      link.download = `O3CarSpaa_Report_${params.from_date}_to_${params.to_date}.${ext}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

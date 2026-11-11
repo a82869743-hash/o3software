@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 
 exports.getReport = async (req, res) => {
   try {
@@ -18,7 +19,7 @@ exports.getReport = async (req, res) => {
        LEFT JOIN vendors v ON p.vendor_id = v.id
        LEFT JOIN vehicles veh ON jc.vehicle_id = veh.id
        LEFT JOIN users u ON veh.customer_id = u.id
-       WHERE r.period_month = ? AND r.period_year = ?
+       WHERE r.period_month = ? AND r.period_year = ?${scopeOf(req).and('r.franchise_id')}
        ORDER BY r.created_at DESC`,
       [currentMonth, currentYear]
     );

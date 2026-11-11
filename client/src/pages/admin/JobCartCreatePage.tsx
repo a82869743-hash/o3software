@@ -1,7 +1,10 @@
+import { ymd, dateOnly } from '../../utils/formatters';
+import { getCategoryForModel } from '../../utils/carData';
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Plus, Trash2, Search, CheckCircle, Loader2, X, Camera, PackageOpen, UserCheck, Users, Tag } from 'lucide-react';
-import { useCreateJobCart, useVehicleLookup, useAddService, useUploadPhoto } from '../../api/hooks/useJobCarts';
+import { useCreateJobCart, useVehicleLookup, useUploadPhoto } from '../../api/hooks/useJobCarts';
 import { useBrands, useModels, useVariants } from '../../api/hooks/useVehicles';
 import api from '../../api/axiosInstance';
 import AdminTopBar from '../../components/layout/AdminTopBar';
@@ -14,6 +17,11 @@ import { useUIStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
 import { carBrands, getModelsForBrand, getVariantsForModel } from '../../utils/carData';
 import type { InventoryItem } from '../../types';
+import ReferrerPicker, { ReferrerValue, referrerPayload } from '../../components/shared/ReferrerPicker';
+import { regNoError, isValidMobile, isValidEmail, normalizeRegNo } from '../../utils/validators';
+
+export const CAR_CATEGORIES = CAR_TYPES.map(t => ({ value: t.value, label: t.label }));
+export const priceFor = (svc: any, category: string) => Number(svc?.[`price_${category || 'sedan'}`]) || Number(svc?.price_sedan) || Number(svc?.price_hatchback) || 0;
 
 interface ProductRow {
   product_id: number;
@@ -31,6 +39,7 @@ interface ServiceBlock {
   labor_charges: number;
   custom_notes?: string;
   products: ProductRow[];
+  use_package?: boolean;
 }
 
 const emptyProduct = (): ProductRow => ({
@@ -54,11 +63,10 @@ export default function JobCartCreatePage() {
 
   const toast = useUIStore((s) => s.toast);
   const createCart = useCreateJobCart();
-  const addServiceMut = useAddService();
   const uploadPhotoMut = useUploadPhoto();
   const user = useAuthStore((s) => s.user);
   const isStaff = user?.role === 'staff';
-  const cancelPath = isStaff ? '/staff/job-carts' : '/admin/job-carts';
+  const cancelPath = '/admin/job-carts';
 
   // ─── Form state ─────────────────────────
   const [regNo, setRegNo] = useState(prefill?.vehicle_reg_no || '');
@@ -72,18 +80,23 @@ export default function JobCartCreatePage() {
   const [customModel, setCustomModel] = useState('');
   const [carVariant, setCarVariant] = useState(prefill?.car_variant || '');
   const [carRegYear, setCarRegYear] = useState(prefill?.car_registration_year?.toString() || '');
+  const [carColor, setCarColor] = useState('');
+  const [kmReading, setKmReading] = useState('');
   // Fix timezone: use local date instead of toISOString() which shifts dates in IST
   const now = new Date();
   const [visitDate, setVisitDate] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`);
   const [notes, setNotes] = useState(prefill?.notes || '');
-  const [preInspectorName, setPreInspectorName] = useState(user?.name ? `${user.name} (Inspector)` : 'Sunil Patel (Quality Inspector)');
+  const [preInspectorName, setPreInspectorName] = useState(user?.name || '');
   const [personalItemsNotes, setPersonalItemsNotes] = useState('');
   const [belongingPhotos, setBelongingPhotos] = useState<File[]>([]);
   const [belongingPreviews, setBelongingPreviews] = useState<string[]>([]);
   const belongingsFileRef = useRef<HTMLInputElement>(null);
 
   // Staff arrival capture & Incentive Engine state
-  const [referralPerson, setReferralPerson] = useState('');
+  const [referrer, setReferrer] = useState<ReferrerValue>({ referrer_type: 'none' });
+  const [carCategory, setCarCategory] = useState<string>(prefill?.car_category || 'sedan');
+  const [approvers, setApprovers] = useState<{ id: number; label: string }[]>([]);
+  const [discountApprovedBy, setDiscountApprovedBy] = useState<string>('');
   const [handlerId, setHandlerId] = useState<number | ''>('');
   const [technicianId, setTechnicianId] = useState<number | ''>('');
   const [teamIncentiveUsers, setTeamIncentiveUsers] = useState<number[]>([]);
@@ -93,10 +106,10 @@ export default function JobCartCreatePage() {
   const [discountType, setDiscountType] = useState<'fixed' | 'percentage'>('fixed');
   const [discountValue, setDiscountValue] = useState(0);
   const [discountReason, setDiscountReason] = useState('');
-  const [discountReference, setDiscountReference] = useState('');
 
   useEffect(() => {
-    api.get('/staff').then(r => setStaffList(r.data.data || [])).catch(() => {});
+    api.get('/staff/technicians').then(r => setStaffList(r.data.data || [])).catch(() => {});
+    api.get('/job-carts/discount-approvers').then(r => setApprovers(r.data.data || [])).catch(() => {});
   }, []);
 
   const handleBelongingsPhotoAdd = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -175,13 +188,16 @@ export default function JobCartCreatePage() {
   const variantOptions = rawVariants.map((v: string) => ({ value: v, label: v }));
 
   const currentYear = new Date().getFullYear();
-  const yearOptions = Array.from({ length: (currentYear + 2) - 1990 + 1 }, (_, i) => {
+  const yearOptions = Array.from({ length: currentYear - 1990 + 1 }, (_, i) => {
     const y = 1990 + i;
     return { value: y.toString(), label: y.toString() };
   }).reverse();
 
   // Services
   const [serviceBlocks, setServiceBlocks] = useState<ServiceBlock[]>(() => {
+    if (Array.isArray(prefill?.services) && prefill.services.length) {
+      return prefill.services.map((sv: any) => ({ ...emptyService(), service_name: sv.service_name, service_price: Number(sv.service_price) || 0 }));
+    }
     if (prefill?.service_name) {
       return [{ ...emptyService(), service_name: prefill.service_name }];
     }
@@ -194,6 +210,7 @@ export default function JobCartCreatePage() {
 
   // Catalog data
   const [servicesCatalog, setServicesCatalog] = useState<any[]>([]);
+
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
 
   // ─── Fetch catalogs ─────────────────────
@@ -207,7 +224,7 @@ export default function JobCartCreatePage() {
         if (found) {
           setServiceBlocks(prev => prev.map(block => block.service_name === prefill.service_name ? {
             ...block,
-            service_price: Number(found.price_sedan) || Number(found.price_hatchback) || 0
+            service_price: priceFor(found, carCategory)
           } : block));
         }
       }
@@ -225,7 +242,24 @@ export default function JobCartCreatePage() {
 
   // ─── Vehicle lookup ─────────────────────
   const { data: lookupData, isLoading: lookupLoading, isError: lookupNotFound } = useVehicleLookup(lookupQuery);
-
+  // Existing customer's active package for this car (walk-in can use its credits)
+  const [custPackages, setCustPackages] = useState<any[]>([]);
+  useEffect(() => {
+    const vid = (lookupData as any)?.vehicle?.id;
+    if (!lookupData?.found || !customerId) { setCustPackages([]); return; }
+    api.get('/user-packages').then(r => {
+      const list = (r.data?.data || []).filter((p: any) => Number(p.user_id) === Number(customerId) && p.package_status === 'active'
+        && (!p.vehicle_id || !vid || Number(p.vehicle_id) === Number(vid)) && (!p.end_date || dateOnly(p.end_date) >= ymd()));
+      setCustPackages(list);
+    }).catch(() => setCustPackages([]));
+  }, [lookupData, customerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const usePackageService = (name: string) => {
+    setServiceBlocks(prev => {
+      const blank = prev.find(b => !b.service_name.trim());
+      const block = { ...(blank || emptyService()), service_name: name, service_price: 0, labor_charges: 0, use_package: true, custom_notes: 'From package' };
+      return blank ? prev.map(b => (b.key === blank.key ? block : b)) : [...prev, block];
+    });
+  };
   useEffect(() => {
     if (lookupData?.found) {
       setCustomerId(lookupData.customer?.id || null);
@@ -243,6 +277,8 @@ export default function JobCartCreatePage() {
 
       setIsReturning(true);
       setNextVisit(lookupData.next_visit_number || 1);
+      const cat = (lookupData.vehicle as any)?.category;
+      if (cat && CAR_CATEGORIES.some(c => c.value === cat)) setCarCategory(cat);
 
       // Auto-populate customer discount if set in CRM profile
       const cust = lookupData.customer as any;
@@ -250,11 +286,21 @@ export default function JobCartCreatePage() {
         setDiscountType(cust.custom_discount_type);
         setDiscountValue(Number(cust.custom_discount_value));
         setDiscountReason('Customer CRM Profile Discount');
-        setDiscountReference(cust.name || 'CRM System');
         toast('info', `Applied ${cust.custom_discount_type === 'percentage' ? cust.custom_discount_value + '%' : '₹' + cust.custom_discount_value} CRM discount for ${cust.name}`);
       }
     }
   }, [lookupData]);
+
+  // Once both the car and the price list are known, price the services on the card for that car type
+  // (so a booked SUV is not billed at the sedan price). Runs only when either arrives, not on manual edits.
+  useEffect(() => {
+    const cat = (lookupData?.vehicle as any)?.category;
+    if (!cat || !servicesCatalog.length || !CAR_CATEGORIES.some(c => c.value === cat)) return;
+    setServiceBlocks(prev => prev.map(block => {
+      const svc = servicesCatalog.find((x: any) => x.name === block.service_name);
+      return svc ? { ...block, service_price: priceFor(svc, cat) } : block;
+    }));
+  }, [lookupData, servicesCatalog]);
 
   const handleRegBlur = () => {
     const clean = regNo.toUpperCase().replace(/\s/g, '');
@@ -279,7 +325,7 @@ export default function JobCartCreatePage() {
       const svc = servicesCatalog.find(s => s.name === val);
       updateService(key, 'service_name', val);
       updateService(key, 'is_custom', false);
-      updateService(key, 'service_price', Number(svc?.price_sedan) || Number(svc?.price_hatchback) || 0);
+      updateService(key, 'service_price', priceFor(svc, carCategory));
     }
   };
 
@@ -334,113 +380,116 @@ export default function JobCartCreatePage() {
   // ─── Submit ─────────────────────────────
   const [submitting, setSubmitting] = useState(false);
 
+  const regError = regNo ? regNoError(regNo) : '';
+
   const handleSave = async (submitAfter: boolean) => {
-    const cleanReg = regNo.toUpperCase().replace(/\s/g, '');
+    if (submitting) return;
+    const cleanReg = normalizeRegNo(regNo);
     const finalBrand = carBrand === 'Others' ? customBrand : carBrand;
     const finalModel = (carBrand === 'Others' || carModel === 'Other') ? customModel : carModel;
 
-    if (!cleanReg) { toast('error', 'Registration number is required'); return; }
+    const err = regNoError(cleanReg);
+    if (err) { toast('error', err); return; }
     if (!finalBrand || !finalModel) { toast('error', 'Brand and model are required'); return; }
-    if (!customerName && !customerId) { toast('error', 'Customer name is required'); return; }
-    if (!customerMobile && !customerId) { toast('error', 'Customer mobile is required'); return; }
-
-    if (discountValue > 0) {
-      if (!discountReason?.trim() || !discountReference?.trim()) {
-        toast('error', 'Discount reason and approved/referred by are mandatory');
-        return;
-      }
+    if (!customerId) {
+      if (!customerName.trim()) { toast('error', 'Customer name is required'); return; }
+      if (!isValidMobile(customerMobile)) { toast('error', 'Enter a valid 10-digit customer mobile number'); return; }
+      if (customerEmail && !isValidEmail(customerEmail)) { toast('error', 'Customer email is invalid'); return; }
     }
-
+    if (discountValue > 0) {
+      if (!discountReason?.trim()) { toast('error', 'Enter the reason for the discount'); return; }
+      if (!discountApprovedBy) { toast('error', 'Select who approved the discount'); return; }
+      if (discountType === 'percentage' && discountValue > 100) { toast('error', 'Discount cannot exceed 100%'); return; }
+    }
+    if (referrer.referrer_type === 'staff' && !referrer.referrer_user_id) { toast('error', 'Select the staff member who referred'); return; }
+    if (referrer.referrer_type === 'customer' && !referrer.referrer_user_id) { toast('error', 'Select the customer who referred'); return; }
+    if (referrer.referrer_type === 'external' && !referrer.referrer_name?.trim()) { toast('error', 'Enter the referrer name'); return; }
     for (const block of serviceBlocks) {
       if (block.service_name && /ppf|film/i.test(block.service_name) && !block.custom_notes?.trim()) {
-        toast('error', `Note is mandatory for Partial PPF service "${block.service_name}" (e.g. "bonnet PPF")`);
+        toast('error', `Note is mandatory for "${block.service_name}" (e.g. "Bonnet PPF")`);
         return;
       }
     }
 
     setSubmitting(true);
+    let cartId: number | null = null;
     try {
-      // 1. Create cart
+      // 1. Card + customer + vehicle + services + referral — one transaction on the server
       const cart = await createCart.mutateAsync({
         registration_no: cleanReg,
         customer_id: customerId,
-        customer_name: customerName,
+        customer_name: customerName.trim(),
         customer_mobile: customerMobile,
-        customer_email: customerEmail,
+        customer_email: customerEmail.trim(),
         car_brand: finalBrand,
         car_model: finalModel,
+        car_variant: carVariant,
+        car_category: carCategory,
         car_registration_year: carRegYear ? parseInt(carRegYear) : null,
+        car_color: carColor.trim() || null,
+        km_reading: kmReading || null,
         visit_date: visitDate,
         notes,
         pre_inspector_name: preInspectorName,
         personal_items_notes: personalItemsNotes,
         booking_id: bookingId,
-        referral_person: referralPerson,
+        ...referrerPayload(referrer),
         handler_id: handlerId ? Number(handlerId) : null,
         technician_id: technicianId ? Number(technicianId) : null,
         team_incentive_users: teamIncentiveUsers,
         discount_type: discountType,
         discount_value: discountValue,
         discount_reason: discountReason,
-        discount_reference: discountReference,
-      });
-      const cartId = cart.id;
-
-      // 2. Add services
-      for (const block of serviceBlocks) {
-        if (!block.service_name) continue;
-        await addServiceMut.mutateAsync({
-          id: cartId,
-          service_name: block.service_name,
-          service_price: block.service_price,
-          labor_charges: block.labor_charges,
-          custom_notes: block.custom_notes?.trim(),
-          products: block.products.filter(p => p.product_id > 0).map(p => ({
-            product_id: p.product_id,
-            quantity: p.quantity,
-            unit_cost: p.unit_cost,
-          })),
-        });
+        discount_approved_by: discountApprovedBy ? Number(discountApprovedBy) : null,
+        services: serviceBlocks.filter(b => b.service_name.trim()).map(b => ({
+          service_name: b.service_name.trim(),
+          service_price: b.service_price,
+          labor_charges: b.labor_charges,
+          custom_notes: b.use_package ? undefined : b.custom_notes?.trim(),
+          use_package: b.use_package || undefined,
+          products: b.products.filter(p => p.product_id > 0 && p.quantity > 0).map(p => ({ product_id: p.product_id, quantity: p.quantity, unit_cost: p.unit_cost })),
+        })),
+      } as any);
+      cartId = cart.id;
+    } catch (err: any) {
+      const data = err?.response?.data;
+      if (data?.code === 'OPEN_JOB_EXISTS' && data.existing_id) {
+        toast('info', data.error);
+        navigate(`/admin/job-carts/${data.existing_id}`);
+      } else {
+        toast('error', data?.error || err.message || 'Failed to create job card');
       }
+      setSubmitting(false);
+      return;
+    }
 
-      // 3. Upload photos (batch)
-      if (beforePhotos.length > 0) {
-        await uploadPhotoMut.mutateAsync({ cartId, files: beforePhotos, type: 'before' });
-      }
-      if (afterPhotos.length > 0) {
-        await uploadPhotoMut.mutateAsync({ cartId, files: afterPhotos, type: 'after' });
-      }
+    // 2. Photos & belongings (card already saved — failures here don't duplicate the card)
+    const failed: string[] = [];
+    try { if (beforePhotos.length) await uploadPhotoMut.mutateAsync({ cartId: cartId!, files: beforePhotos, type: 'before' }); } catch { failed.push('before photos'); }
+    try { if (afterPhotos.length) await uploadPhotoMut.mutateAsync({ cartId: cartId!, files: afterPhotos, type: 'after' }); } catch { failed.push('after photos'); }
+    for (let i = 0; i < belongingPhotos.length; i++) {
+      try {
+        const formData = new FormData();
+        formData.append('description', personalItemsNotes ? `Item #${i + 1}: ${personalItemsNotes}` : `Personal item photo #${i + 1}`);
+        formData.append('image', belongingPhotos[i]);
+        await api.post(`/job-carts/${cartId}/belongings`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      } catch { failed.push(`belonging photo ${i + 1}`); }
+    }
 
-      // 4. Upload personal belongings photos
-      if (belongingPhotos.length > 0) {
-        for (let i = 0; i < belongingPhotos.length; i++) {
-          try {
-            const formData = new FormData();
-            formData.append('description', personalItemsNotes ? `Item #${i + 1}: ${personalItemsNotes}` : `Personal Item Photo #${i + 1}`);
-            formData.append('image', belongingPhotos[i]);
-            await api.post(`/job-carts/${cartId}/belongings`, formData, {
-              headers: { 'Content-Type': 'multipart/form-data' },
-            });
-          } catch (bErr) {
-            console.warn('Failed to upload belonging photo:', bErr);
-          }
-        }
-      }
-
-      // 4. Submit if requested
+    // 3. Submit if requested
+    try {
       if (submitAfter) {
         await api.patch(`/job-carts/${cartId}/submit`);
-        toast('success', 'Job card created and submitted!');
+        toast('success', 'Job card created and submitted — customer notified on WhatsApp');
       } else {
         toast('success', 'Job card saved as draft');
       }
-
-      navigate(`/admin/job-carts/${cartId}`);
-    } catch (err: any) {
-      toast('error', err?.response?.data?.error || 'Failed to create job card');
-    } finally {
-      setSubmitting(false);
+    } catch (e: any) {
+      toast('error', `Job card saved as draft, but submit failed: ${e.message}`);
     }
+    if (failed.length) toast('error', `Saved, but could not upload: ${failed.join(', ')}. You can add them from the job card.`);
+    setSubmitting(false);
+    navigate(`/admin/job-carts/${cartId}`);
   };
 
   const serviceOptions = [
@@ -450,7 +499,7 @@ export default function JobCartCreatePage() {
 
   const inventoryOptions = inventory
     .filter(i => !i.is_deleted)
-    .map(i => ({ value: i.id, label: `${i.product_name} (${i.quantity} ${i.unit})` }));
+    .map(i => ({ value: i.id, label: Number(i.quantity) <= 0 ? `${i.product_name} — 0 stock left, kindly reorder from main admin` : `${i.product_name} (${Number(i.quantity)} ${i.unit})`, disabled: Number(i.quantity) <= 0 }));
 
   const handleSelectSuggestion = (item: any) => {
     const clean = (item.registration_no || '').toUpperCase().replace(/\s/g, '');
@@ -482,15 +531,17 @@ export default function JobCartCreatePage() {
 
         {/* ─── SECTION A: Vehicle Registration ─────── */}
         <section className="bg-white rounded-lg p-6 shadow-sm">
-          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-5">Vehicle Registration</h3>
+          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] mb-5">Vehicle Registration</h3>
           <div className="flex gap-3 items-end">
             <div className="flex-1 relative">
               <Input
                 label="Registration Number"
-                placeholder="e.g. GJ06AB1234"
+                placeholder="e.g. MH01AB1234"
                 value={regNo}
+                maxLength={13}
+                error={regNo.length >= 6 ? regError : undefined}
                 onChange={(e) => {
-                  setRegNo(e.target.value.toUpperCase());
+                  setRegNo(normalizeRegNo(e.target.value));
                   setShowRegSuggestions(true);
                 }}
                 onBlur={() => {
@@ -543,16 +594,16 @@ export default function JobCartCreatePage() {
             </div>
           )}
           {lookupNotFound && lookupQuery && (
-            <p className="mt-2 text-xs text-[#5f5e5e] font-medium">🆕 New vehicle — fill customer details below</p>
+            <p className="mt-2 text-xs text-[#64748B] font-medium">🆕 New vehicle — fill customer details below</p>
           )}
         </section>
 
         {/* ─── SECTION B: Customer & Vehicle ────────── */}
         <section className="bg-white rounded-lg p-6 shadow-sm">
-          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-5">Customer & Vehicle</h3>
+          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] mb-5">Customer & Vehicle</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
             <Input label="Customer Name" value={customerName} onChange={e => setCustomerName(e.target.value)} disabled={!!customerId} />
-            <Input label="Mobile Number" value={customerMobile} onChange={e => setCustomerMobile(e.target.value)} disabled={!!customerId} />
+            <Input label="Mobile Number" value={customerMobile} inputMode="numeric" maxLength={10} onChange={e => setCustomerMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} disabled={!!customerId} error={!customerId && customerMobile.length === 10 && !isValidMobile(customerMobile) ? 'Invalid mobile number' : undefined} />
             <Input label="Email (Optional)" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} disabled={!!customerId} />
             <Select
               label="Car Brand"
@@ -575,6 +626,15 @@ export default function JobCartCreatePage() {
                 setCarModel(e.target.value);
                 setCarVariant('');
                 setCustomModel('');
+                // pick the car type from the model (staff can still change it)
+                if (e.target.value && e.target.value !== 'Other') {
+                  const cat = getCategoryForModel(carBrand, e.target.value);
+                  setCarCategory(cat);
+                  setServiceBlocks(prev => prev.map(block => {
+                    const svc = servicesCatalog.find((x: any) => x.name === block.service_name);
+                    return svc ? { ...block, service_price: priceFor(svc, cat) } : block;
+                  }));
+                }
               }}
               placeholder={carBrand ? 'Select model...' : 'Select brand first'}
               disabled={!carBrand || carBrand === 'Others'}
@@ -599,12 +659,27 @@ export default function JobCartCreatePage() {
                 />
               </>
             )}
+            <Input label="Car Colour" value={carColor} onChange={e => setCarColor(e.target.value)} placeholder="e.g. White" />
+            <Input label="KM Reading" inputMode="numeric" value={kmReading} onChange={e => setKmReading(e.target.value.replace(/[^0-9]/g, '').slice(0, 7))} placeholder="e.g. 45230" />
             <Select
               label="Registration Year"
               options={yearOptions}
               value={carRegYear}
               onChange={e => setCarRegYear(e.target.value)}
               placeholder="Select year..."
+            />
+            <Select
+              label="Car Type (decides service price)"
+              options={CAR_CATEGORIES}
+              value={carCategory}
+              onChange={e => {
+                const cat = e.target.value;
+                setCarCategory(cat);
+                setServiceBlocks(prev => prev.map(b => {
+                  const svc = servicesCatalog.find(x => x.name === b.service_name);
+                  return svc && !b.is_custom ? { ...b, service_price: priceFor(svc, cat) } : b;
+                }));
+              }}
             />
             <Select
               label="Variant"
@@ -619,7 +694,7 @@ export default function JobCartCreatePage() {
               label="🔍 Delivery Pre-Inspected By (Inspector Name)"
               value={preInspectorName}
               onChange={e => setPreInspectorName(e.target.value)}
-              placeholder="e.g. Sunil Patel (Quality Inspector)"
+              placeholder="Name of the person who checked the car"
               required
             />
           </div>
@@ -694,17 +769,12 @@ export default function JobCartCreatePage() {
             Capture staff and referral sources for automated commission and incentive distribution upon job completion.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-            <Input
-              label="Referral Person / Source"
-              placeholder="e.g. Rahul Sharma / Instagram / Friend"
-              value={referralPerson}
-              onChange={e => setReferralPerson(e.target.value)}
-            />
+            <ReferrerPicker value={referrer} onChange={setReferrer} />
             <Select
               label="Handling Manager (10% Split)"
               options={[
                 { value: '', label: 'Select Manager...' },
-                ...staffList.map(s => ({ value: s.id.toString(), label: `${s.name} (${s.role || 'Manager'})` }))
+                ...staffList.filter(s => s.role === 'manager').map(s => ({ value: s.id.toString(), label: s.name }))
               ]}
               value={handlerId ? handlerId.toString() : ''}
               onChange={e => setHandlerId(e.target.value ? Number(e.target.value) : '')}
@@ -765,7 +835,26 @@ export default function JobCartCreatePage() {
 
         {/* ─── SECTION C: Services ─────────────────── */}
         <section className="bg-white rounded-lg p-6 shadow-sm">
-          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-5">Services</h3>
+          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] mb-5">Services</h3>
+
+          {custPackages.map((pkg: any) => (
+            <div key={pkg.id} className="mb-5 rounded-lg border border-purple-200 bg-purple-50 p-4">
+              <p className="text-sm font-bold text-purple-800">Customer has a package: {pkg.package_name}</p>
+              <p className="text-[11px] text-purple-600 mb-2">Valid till {new Date(pkg.end_date).toLocaleDateString('en-IN')}. Tap a service to use 1 credit (₹0 on the bill).</p>
+              <div className="flex flex-wrap gap-2">
+                {(pkg.usage || []).map((u: any) => {
+                  const added = serviceBlocks.filter(b => b.use_package && b.service_name === u.service_name).length;
+                  const left = Number(u.remaining) - added;
+                  return (
+                    <button key={u.service_name} type="button" disabled={left <= 0} onClick={() => usePackageService(u.service_name)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-purple-300 text-xs font-bold text-purple-700 disabled:opacity-40">
+                      {u.service_name} · {left} left
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
 
           {serviceBlocks.map((block, blockIdx) => (
             <div key={block.key} className="mb-6 last:mb-0 border border-gray-100 rounded-lg p-5 relative group">
@@ -848,7 +937,7 @@ export default function JobCartCreatePage() {
               {/* Products */}
               <div className="mt-4">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e]">Products Used</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Products Used</span>
                   <button
                     onClick={() => addProduct(block.key)}
                     className="text-xs font-bold text-[#2563EB] hover:underline flex items-center gap-1"
@@ -895,7 +984,7 @@ export default function JobCartCreatePage() {
               {/* Block subtotal */}
               {!isStaff && (
                 <div className="mt-3 pt-3 border-t border-gray-50 text-right">
-                  <span className="text-xs font-bold text-[#5f5e5e]">Subtotal: </span>
+                  <span className="text-xs font-bold text-[#64748B]">Subtotal: </span>
                   <span className="text-sm font-extrabold text-[#0F172A]">
                     ₹{calcBlockSubtotal(block).toLocaleString('en-IN')}
                   </span>
@@ -906,7 +995,7 @@ export default function JobCartCreatePage() {
 
           <button
             onClick={() => setServiceBlocks(prev => [...prev, emptyService()])}
-            className="mt-4 w-full py-3 border-2 border-dashed border-gray-200 rounded-lg text-sm font-bold text-[#5f5e5e] hover:border-[#2563EB] hover:text-[#2563EB] transition-colors flex items-center justify-center gap-2"
+            className="mt-4 w-full py-3 border-2 border-dashed border-gray-200 rounded-lg text-sm font-bold text-[#64748B] hover:border-[#2563EB] hover:text-[#2563EB] transition-colors flex items-center justify-center gap-2"
           >
             <Plus size={16} /> Add Another Service
           </button>
@@ -914,7 +1003,7 @@ export default function JobCartCreatePage() {
 
         {/* ─── SECTION D: Photos ───────────────────── */}
         <section className="bg-white rounded-lg p-6 shadow-sm">
-          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-5">Photos</h3>
+          <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] mb-5">Photos</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <FileUpload
               label="Before Photos"
@@ -971,12 +1060,12 @@ export default function JobCartCreatePage() {
                     onChange={e => setDiscountReason(e.target.value)}
                     required
                   />
-                  <Input
-                    label="Approved By / Reference *"
-                    placeholder="e.g. Branch Manager Rahul, MD Approval, Promo Code..."
-                    value={discountReference}
-                    onChange={e => setDiscountReference(e.target.value)}
-                    required
+                  <Select
+                    label="Approved By *"
+                    options={approvers.map(a => ({ value: String(a.id), label: a.label }))}
+                    value={discountApprovedBy}
+                    onChange={e => setDiscountApprovedBy(e.target.value)}
+                    placeholder="Select Super Admin / Admin…"
                   />
                 </div>
               </div>
@@ -1001,7 +1090,7 @@ export default function JobCartCreatePage() {
               </div>
               {discountValue > 0 && discountReason && (
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Reason: <span className="text-amber-200 font-medium">{discountReason}</span> (Ref: {discountReference || 'N/A'})
+                  Reason: <span className="text-amber-200 font-medium">{discountReason}</span> (Approved by: {approvers.find(a => String(a.id) === discountApprovedBy)?.label || '—'})
                 </p>
               )}
             </div>
@@ -1019,10 +1108,10 @@ export default function JobCartCreatePage() {
           <Button variant="ghost" onClick={() => navigate(cancelPath)} disabled={submitting}>
             Cancel
           </Button>
-          <Button variant="secondary" onClick={() => handleSave(false)} loading={submitting}>
+          <Button variant="secondary" onClick={() => handleSave(false)} loading={submitting} disabled={submitting}>
             Save as Draft
           </Button>
-          <Button onClick={() => handleSave(true)} loading={submitting}>
+          <Button onClick={() => handleSave(true)} loading={submitting} disabled={submitting}>
             Submit Job Card
           </Button>
         </div>

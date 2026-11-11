@@ -1,14 +1,17 @@
+import StudioQr from '../../components/shared/StudioQr';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CreditCard, IndianRupee, Clock, CheckCircle, XCircle, RefreshCw, Plus, Search, Filter, Download, MessageCircle, QrCode } from 'lucide-react';
-import { usePayments, usePaymentStats, useCreatePayment, useCreateRefund, useAdvancePayments, useSendPaymentReminder, useCreateRazorpayOrder, useVerifyRazorpayPayment, useWalletBalance } from '../../api/hooks/usePayments';
+import { usePayments, usePaymentStats, useCreatePayment, useCreateRefund, useAdvancePayments, useSendPaymentReminder, useCollectAdvance, useWalletBalance, useVerifyQrPayment } from '../../api/hooks/usePayments';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
 import { toast } from 'react-hot-toast';
 import { useAuthStore } from '../../store/authStore';
 import api from '../../api/axiosInstance';
+import Dropdown from '../../components/ui/Dropdown';
 
+import { askText } from '../../utils/ask';
 const STATUS_BADGES: Record<string, string> = {
   completed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   captured: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -20,6 +23,16 @@ const STATUS_BADGES: Record<string, string> = {
 
 export default function PaymentsPage() {
   const [activeTab, setActiveTab] = useState<'all' | 'advance'>('all');
+  // Advance owed back on cancelled / rejected bookings
+  const [refunds, setRefunds] = useState<any[]>([]);
+  const loadRefunds = () => api.get('/payments/refunds-due').then(r => setRefunds(r.data?.data || [])).catch(() => setRefunds([]));
+  useEffect(() => { loadRefunds(); }, []);
+  const markRefunded = async (r: any) => {
+    const method = await askText(`Refund ₹${r.refund_due} to ${r.customer_name}. Paid back by:`, 'upi', { title: 'Mark refunded', okLabel: 'Mark refunded', options: [{ value: 'upi', label: 'UPI' }, { value: 'cash', label: 'Cash' }, { value: 'bank transfer', label: 'Bank transfer' }] });
+    if (method === null) return;
+    try { await api.post(`/payments/refunds/${r.booking_id}/done`, { payment_method: method }); loadRefunds(); }
+    catch (e: any) { window.alert(e?.response?.data?.error || 'Could not mark refunded'); }
+  };
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [showPayModal, setShowPayModal] = useState(false);
@@ -38,100 +51,40 @@ export default function PaymentsPage() {
   const [selectedPaymentForRefund, setSelectedPaymentForRefund] = useState<any>(null);
   const [refundForm, setRefundForm] = useState({ amount: '', reason: '' });
   const createRefund = useCreateRefund();
+  const verifyQr = useVerifyQrPayment();
+  const handleVerifyQr = async (p: any, action: 'confirm' | 'reject') => {
+    let reason: string | undefined;
+    if (action === 'confirm') {
+      if (!window.confirm(`Did ₹${p.amount} with UPI ref ${p.transaction_ref} reach the bank account?`)) return;
+    } else {
+      const r = await askText('Why is this payment not accepted?', 'Not found in the bank', { title: 'Reject payment', okLabel: 'Reject' });
+      if (r === null) return;
+      reason = r;
+    }
+    verifyQr.mutate({ id: p.id, action, reason }, {
+      onSuccess: (d: any) => toast.success(d?.message || 'Done'),
+      onError: (err: any) => toast.error(err.response?.data?.error || 'Could not update the payment'),
+    });
+  };
 
   const { data: paymentsData, isLoading: loadingPayments } = usePayments({ status: statusFilter });
   const { data: advanceData, isLoading: loadingAdvances } = useAdvancePayments('advance_paid');
   const { data: stats } = usePaymentStats();
   const createPayment = useCreatePayment();
   const sendReminder = useSendPaymentReminder();
-  const createOrder = useCreateRazorpayOrder();
-  const verifyPayment = useVerifyRazorpayPayment();
-
-  const { data: walletBalance } = useWalletBalance(payForm.customer_id);
-
-  const loadRazorpayScript = () => {
-    return new Promise((resolve) => {
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
+  const collectAdvance = useCollectAdvance();
+  const [collectFor, setCollectFor] = useState<any>(null);
+  const [collectForm, setCollectForm] = useState({ amount: '', payment_method: 'cash' });
+  const handleCollect = () => {
+    const amount = Number(collectForm.amount);
+    if (!amount || amount <= 0) { toast.error('Enter the amount received'); return; }
+    collectAdvance.mutate({ id: collectFor.id, amount, payment_method: collectForm.payment_method }, {
+      onSuccess: (d: any) => { toast.success(d.message || 'Payment recorded'); setCollectFor(null); },
+      onError: (err: any) => toast.error(err.response?.data?.error || 'Failed to record payment'),
     });
   };
 
-  const handleRazorpayPayment = async () => {
-    if (!payForm.amount || parseFloat(payForm.amount) <= 0) {
-      toast.error('Enter a valid amount');
-      return;
-    }
-    const res = await loadRazorpayScript();
-    if (!res) {
-      toast.error('Razorpay SDK failed to load. Are you online?');
-      return;
-    }
-
-    try {
-      const orderRes = await createOrder.mutateAsync({ amount: parseFloat(payForm.amount) });
-      if (!orderRes.success) throw new Error(orderRes.error || 'Failed to create order');
-
-      const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123', // Fallback for dev
-        amount: orderRes.data.amount,
-        currency: orderRes.data.currency,
-        name: 'O3 Car Spaa',
-        description: 'Payment for Services',
-        order_id: orderRes.data.id,
-        handler: async function (response: any) {
-          try {
-            await verifyPayment.mutateAsync({
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-            });
-            
-            createPayment.mutate({ 
-              ...payForm, 
-              amount: parseFloat(payForm.amount) || 0,
-              wallet_spend: parseFloat(payForm.wallet_spend) || 0,
-              payment_method: 'online', 
-              transaction_ref: response.razorpay_payment_id 
-            }, {
-              onSuccess: () => { 
-                toast.success('Payment completed & recorded successfully!');
-                setShowPayModal(false); 
-                setPayForm({ customer_id: '', job_cart_id: '', amount: '', wallet_spend: '', payment_method: 'cash', notes: '' }); 
-              }
-            });
-          } catch (err: any) {
-            toast.error(err.response?.data?.error || 'Payment verification failed');
-          }
-        },
-        theme: { color: '#2196F3' }
-      };
-      
-      if (orderRes.data.id.startsWith('order_mock_')) {
-        const confirmSimulate = window.confirm(
-          "RAZORPAY SANDBOX MODE (Keys Missing)\n\nWould you like to simulate a successful online payment?"
-        );
-        if (confirmSimulate) {
-          await options.handler({
-            razorpay_order_id: orderRes.data.id,
-            razorpay_payment_id: 'pay_mock_' + Date.now(),
-            razorpay_signature: 'sig_mock_' + Date.now()
-          });
-        }
-        return;
-      }
-
-      const rzp1 = new (window as any).Razorpay(options);
-      rzp1.on('payment.failed', function (response: any) {
-        toast.error(`Payment Failed: ${response.error.description}`);
-      });
-      rzp1.open();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to initialize payment gateway');
-    }
-  };
+  const { data: walletBalance } = useWalletBalance(payForm.customer_id);
 
   const handleCreatePayment = () => {
     const finalAmount = parseFloat(payForm.amount) || 0;
@@ -223,6 +176,21 @@ export default function PaymentsPage() {
         actions={<RippleButton onClick={() => setShowPayModal(true)} variant="primary"><Plus size={14} className="mr-1" /> Record Payment</RippleButton>}
       />
 
+      {refunds.length > 0 && (
+        <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+          <p className="text-sm font-extrabold text-rose-800 mb-2">Refunds due ({refunds.length}) — advance paid on cancelled / rejected bookings</p>
+          <div className="space-y-2">
+            {refunds.map(r => (
+              <div key={r.booking_id} className="flex items-center justify-between gap-3 bg-white rounded-xl px-3 py-2 text-sm">
+                <span><b>{r.customer_name}</b> · {r.customer_mobile} · Booking #{r.booking_id} ({r.status})</span>
+                <span className="flex items-center gap-3"><b>₹{Number(r.refund_due).toLocaleString('en-IN')}</b>
+                  <button onClick={() => markRefunded(r)} className="px-3 py-1.5 rounded-lg bg-rose-600 text-white text-xs font-bold">Mark refunded</button></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <PremiumStatCard title="Today's Collection" value={stats?.today_collected || 0} prefix="₹" icon={IndianRupee} color="#4CAF50" gradient="from-emerald-500/10 to-emerald-400/5" />
@@ -254,12 +222,12 @@ export default function PaymentsPage() {
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customer..." className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
           </div>
           {activeTab === 'all' && (
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500/20">
+            <Dropdown value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500/20">
               <option value="">All Status</option>
               <option value="completed">Completed</option>
               <option value="pending">Pending</option>
               <option value="refunded">Refunded</option>
-            </select>
+            </Dropdown>
           )}
         </div>
       </AnimatedCard>
@@ -299,12 +267,19 @@ export default function PaymentsPage() {
                     <td className="py-3 px-4">
                       <div className="capitalize text-gray-600 mb-1">{p.payment_type}</div>
                       <span className="text-[10px] px-2 py-0.5 bg-gray-100 rounded-lg font-medium uppercase">{p.payment_method}</span>
+                      {p.payment_method === 'qr' && p.transaction_ref && <div className="text-[10px] text-gray-400 mt-1">UPI ref {p.transaction_ref}</div>}
                     </td>
                     <td className="py-3 px-4 text-right font-bold text-[#0F172A]">₹{parseFloat(p.amount).toLocaleString('en-IN')}</td>
                     <td className="py-3 px-4 text-center"><span className={`text-xs px-2 py-0.5 rounded-full border font-medium capitalize ${STATUS_BADGES[p.payment_status] || 'bg-gray-50'}`}>{p.payment_status}</span></td>
                     <td className="py-3 px-4 text-gray-500 text-xs">{p.paid_at ? new Date(p.paid_at).toLocaleDateString('en-IN') : '—'}</td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex justify-end gap-1">
+                        {p.payment_method === 'qr' && p.payment_status === 'pending' && (
+                          <>
+                            <button disabled={verifyQr.isPending} onClick={() => handleVerifyQr(p, 'confirm')} className="text-xs px-2 py-1 rounded-lg bg-emerald-600 text-white font-semibold disabled:opacity-50">Confirm</button>
+                            <button disabled={verifyQr.isPending} onClick={() => handleVerifyQr(p, 'reject')} className="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-600 font-semibold disabled:opacity-50">Reject</button>
+                          </>
+                        )}
                         {(p.payment_status === 'captured' || p.payment_status === 'completed' || p.payment_status === 'partial_refund') && (
                           <div title="Initiate Refund" className="inline-block">
                             <RippleButton variant="ghost" className="text-blue-600 hover:bg-blue-50 p-2" onClick={() => handleOpenRefundModal(p)}>
@@ -344,6 +319,11 @@ export default function PaymentsPage() {
                             </RippleButton>
                           </div>
                         )}
+                        {parseFloat(ap.balance_due) > 0 && !ap.job_cart_id && (
+                          <RippleButton variant="ghost" className="text-blue-700 hover:bg-blue-50 px-3 py-1.5 text-xs font-bold" onClick={() => { setCollectFor(ap); setCollectForm({ amount: String(parseFloat(ap.balance_due)), payment_method: 'cash' }); }}>
+                            <IndianRupee size={14} className="mr-1 inline" /> Collect
+                          </RippleButton>
+                        )}
                         {parseFloat(ap.balance_due) > 0 && (
                           <RippleButton variant="ghost" className="text-green-600 hover:bg-green-50 px-3 py-1.5 text-xs font-medium" onClick={() => handleSendReminder(ap.id)}>
                             <MessageCircle size={14} className="mr-1 inline" /> Remind
@@ -363,13 +343,44 @@ export default function PaymentsPage() {
       </AnimatedCard>
 
       {/* Record Payment Modal */}
+      <AnimatedModal isOpen={!!collectFor} onClose={() => setCollectFor(null)}>
+        {collectFor && (
+          <div className="p-4 sm:p-6">
+            <h3 className="text-xl font-bold text-[#0F172A] mb-1">Collect balance</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              {collectFor.customer_name} · due ₹{parseFloat(collectFor.balance_due).toLocaleString('en-IN')}
+              {collectFor.notes ? <span className="block text-xs mt-1">{String(collectFor.notes).split('\n')[0]}</span> : null}
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Amount received (₹)</label>
+                <input type="number" min="1" value={collectForm.amount} onChange={e => setCollectForm(f => ({ ...f, amount: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Paid by</label>
+                <Dropdown value={collectForm.payment_method} onChange={e => setCollectForm(f => ({ ...f, payment_method: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                  <option value="net_banking">Bank transfer</option>
+                </Dropdown>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <RippleButton variant="ghost" onClick={() => setCollectFor(null)}>Cancel</RippleButton>
+              <RippleButton onClick={handleCollect} disabled={collectAdvance.isPending}>{collectAdvance.isPending ? 'Saving…' : 'Save payment'}</RippleButton>
+            </div>
+          </div>
+        )}
+      </AnimatedModal>
+
       <AnimatedModal isOpen={showPayModal} onClose={() => setShowPayModal(false)}>
         <div className="p-4 sm:p-6 max-h-[90vh] overflow-y-auto">
           <h3 className="text-xl font-bold text-[#0F172A] mb-4">Record Payment</h3>
           <div className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Customer *</label>
-              <select
+              <Dropdown
                 value={payForm.customer_id}
                 onChange={e => setPayForm(p => ({ ...p, customer_id: e.target.value }))}
                 className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-medium"
@@ -380,7 +391,7 @@ export default function PaymentsPage() {
                     {c.name} {c.mobile ? `(${c.mobile})` : ''} {c.vehicle_reg_no ? `— [${c.vehicle_reg_no}]` : ''}
                   </option>
                 ))}
-              </select>
+              </Dropdown>
             </div>
 
             <div>
@@ -404,9 +415,9 @@ export default function PaymentsPage() {
 
               <div className="sm:col-span-2">
                 <label className="text-xs font-semibold text-gray-500 uppercase mb-1 block">Payment Method</label>
-                <select value={payForm.payment_method} onChange={e => setPayForm(p => ({ ...p, payment_method: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-medium bg-white">
+                <Dropdown value={payForm.payment_method} onChange={e => setPayForm(p => ({ ...p, payment_method: e.target.value }))} className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-medium bg-white">
                   <option value="cash">Cash</option><option value="upi">UPI / QR Code</option><option value="card">Card</option><option value="net_banking">Net Banking</option>
-                </select>
+                </Dropdown>
               </div>
             </div>
             
@@ -419,11 +430,7 @@ export default function PaymentsPage() {
                       <p className="text-xs text-blue-700">Display QR to customer for ₹{payForm.amount || '0'}</p>
                     </div>
                     <div className="bg-white p-2 rounded-lg shadow-sm">
-                      <img 
-                        src="/qr.jpg" 
-                        alt="UPI QR Code"
-                        className="w-20 h-20 sm:w-24 sm:h-24 object-contain"
-                      />
+                      <StudioQr amount={payForm.amount} className="w-20 h-20 sm:w-24 sm:h-24" />
                     </div>
                   </div>
                 </motion.div>
@@ -437,7 +444,6 @@ export default function PaymentsPage() {
 
             <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-4 border-t border-gray-100">
               <RippleButton variant="ghost" onClick={() => setShowPayModal(false)} className="w-full sm:w-auto">Cancel</RippleButton>
-              <RippleButton variant="ghost" onClick={handleRazorpayPayment} className="w-full sm:w-auto border border-blue-500 text-blue-600 hover:bg-blue-50">Pay via Razorpay</RippleButton>
               <RippleButton variant="primary" onClick={handleCreatePayment} className="w-full sm:w-auto">Record Manual Payment</RippleButton>
             </div>
           </div>

@@ -32,47 +32,6 @@ export function useSubmitFeedback() {
   });
 }
 
-export function useReplyFeedback() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, admin_reply }: { id: number; admin_reply: string }) => {
-      const { data } = await api.put(`/feedback/${id}/reply`, { admin_reply });
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['feedback'] }),
-  });
-}
-
-export function useReferralStats() {
-  return useQuery({
-    queryKey: ['referral-stats'],
-    queryFn: async () => {
-      const { data } = await api.get('/feedback/referral');
-      return data.data;
-    },
-  });
-}
-
-export function useGenerateReferral() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      const { data } = await api.post('/feedback/referral/generate');
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['referral-stats'] }),
-  });
-}
-
-export function useApplyReferral() {
-  return useMutation({
-    mutationFn: async (code: string) => {
-      const { data } = await api.post('/feedback/referral/apply', { code });
-      return data;
-    },
-  });
-}
-
 export function useFeedbackFormContext(token: string | undefined) {
   return useQuery({
     queryKey: ['feedback-form-context', token],

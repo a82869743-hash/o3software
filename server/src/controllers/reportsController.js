@@ -1,10 +1,11 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 const reportService = require('../services/reportService');
 
 // ─── SALES REPORT ───────────────────────────
 exports.salesReport = async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
     const from_date = req.query.from_date || firstDay;
     const to_date = req.query.to_date || today;
@@ -17,7 +18,7 @@ exports.salesReport = async (req, res) => {
              SUM(CASE WHEN direction = 'out' THEN amount ELSE 0 END) AS expenses,
              SUM(CASE WHEN direction = 'in' THEN amount ELSE -amount END) AS net
       FROM transactions
-      WHERE transaction_date >= ? AND transaction_date <= ?
+      WHERE transaction_date >= ? AND transaction_date <= ?${scopeOf(req).and()}
       GROUP BY transaction_date
       ORDER BY transaction_date ASC
     `, [from_date, to_date]);
@@ -33,7 +34,7 @@ exports.salesReport = async (req, res) => {
         COALESCE(SUM(CASE WHEN direction = 'in' THEN amount ELSE 0 END), 0) AS total_income,
         COALESCE(SUM(CASE WHEN direction = 'out' THEN amount ELSE 0 END), 0) AS total_expenses
       FROM transactions
-      WHERE transaction_date >= ? AND transaction_date <= ?
+      WHERE transaction_date >= ? AND transaction_date <= ?${scopeOf(req).and()}
     `, [from_date, to_date]);
 
     const data = {
@@ -75,8 +76,8 @@ exports.inventoryReport = async (req, res) => {
     // Current stock with low-stock flags
     const [stock] = await pool.query(`
       SELECT id, product_name, unit, quantity, low_stock_threshold,
-             (quantity <= low_stock_threshold) AS is_low_stock
-      FROM inventory WHERE is_deleted = 0
+             ((low_stock_threshold > 0 AND quantity <= low_stock_threshold)) AS is_low_stock
+      FROM inventory WHERE is_deleted = 0${scopeOf(req).and()}
       ORDER BY product_name ASC
     `);
 
@@ -87,7 +88,7 @@ exports.inventoryReport = async (req, res) => {
       JOIN inventory inv ON jp.product_id = inv.id
       JOIN job_services js ON jp.job_service_id = js.id
       JOIN job_carts jc ON js.job_cart_id = jc.id
-      WHERE jc.completed_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      WHERE jc.completed_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)${scopeOf(req).and('jc.franchise_id')}
       GROUP BY inv.id
       ORDER BY total_used DESC
     `);
@@ -119,7 +120,7 @@ exports.inventoryReport = async (req, res) => {
 exports.jobCardReport = async (req, res) => {
   try {
     const { from_date, to_date, status, staff_id, format = 'json' } = req.query;
-    let where = '1=1';
+    let where = '1=1' + scopeOf(req).and('jc.franchise_id');
     const params = [];
 
     if (from_date) { where += ' AND jc.visit_date >= ?'; params.push(from_date); }
@@ -133,10 +134,7 @@ exports.jobCardReport = async (req, res) => {
              v.registration_no, v.brand, v.model,
              u.name AS customer_name, u.mobile AS customer_mobile,
              creator.name AS created_by_name,
-             (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0)
-              + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp 
-                          JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)
-              FROM job_services js WHERE js.job_cart_id = jc.id) AS total_amount,
+             COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0))) AS total_amount,
              (SELECT GROUP_CONCAT(js3.service_name SEPARATOR ', ')
               FROM job_services js3 WHERE js3.job_cart_id = jc.id) AS services_done
       FROM job_carts jc
@@ -182,7 +180,7 @@ exports.welcomeRewardsReport = async (req, res) => {
       SELECT cr.*, u.name AS customer_name, u.mobile AS customer_mobile
       FROM customer_rewards cr
       JOIN users u ON cr.customer_id = u.id
-      WHERE cr.reward_type = 'welcome'
+      WHERE cr.reward_type = 'welcome'${scopeOf(req).and('u.franchise_id')}
       ORDER BY cr.created_at DESC
     `);
     res.json({ success: true, data: rows });
@@ -201,7 +199,7 @@ exports.packageHistoryReport = async (req, res) => {
       FROM user_packages up
       JOIN users u ON up.user_id = u.id
       JOIN packages p ON up.package_id = p.id
-      WHERE 1=1
+      WHERE 1=1${scopeOf(req).and('up.franchise_id')}
     `;
     const params = [];
     if (date_from) {
@@ -245,7 +243,7 @@ exports.packageHistoryReport = async (req, res) => {
         });
       });
 
-      const buffer = await workbook.xlsx.writeBuffer();
+      const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=Package_History_Report.xlsx`);
       return res.send(Buffer.from(buffer));
@@ -259,12 +257,107 @@ exports.packageHistoryReport = async (req, res) => {
 };
 
 // ─── SPECIFIC CUSTOMER PACKAGE HISTORY EXPORT (Update 19) ─
+/**
+ * Package History PDF for one customer, in the invoice / job card design.
+ * Per package: car, validity, payment, every service's balance and each use. Same numbers as the app.
+ */
+async function packageStatementPdf(customerId, franchiseId) {
+  const [[customer]] = await pool.query('SELECT id, name, mobile, email FROM users WHERE id = ?', [customerId]);
+  if (!customer) throw new Error('Customer not found');
+  const [packages] = await pool.query(
+    'SELECT up.*, p.name AS package_name FROM user_packages up JOIN packages p ON up.package_id = p.id WHERE up.user_id = ? ORDER BY up.created_at DESC', [customerId]);
+  const [renewals] = await pool.query(
+    'SELECT pr.*, p.name AS package_name FROM v2_package_renewals pr JOIN packages p ON pr.package_id = p.id WHERE pr.customer_id = ? ORDER BY pr.renewal_date DESC', [customerId]);
+  const [usage] = await pool.query(
+    'SELECT ul.*, s.name AS service_name FROM v2_package_usage_logs ul LEFT JOIN services s ON ul.service_id = s.id WHERE ul.customer_id = ? ORDER BY ul.created_at DESC', [customerId]);
+
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const day = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—';
+  const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  const TYPE = { hatchback: 'Hatchback', semi_sedan: 'Mini SUV', sedan: 'Sedan', premium_sedan: 'Luxury', suv: 'SUV', premium_suv: 'Luxury + SUV' };
+  const { getServiceBreakdown, calendarDaysLeft } = require('./userPackagesController');
+  const ids = packages.map(p => p.id);
+  const [cars] = ids.length ? await pool.query('SELECT up.id, v.brand, v.model, v.registration_no, v.category FROM user_packages up LEFT JOIN vehicles v ON v.id = up.vehicle_id WHERE up.id IN (?)', [ids]) : [[]];
+  // balance per service = package's service count − used count (same rule as booking with a package)
+  const [usedRows] = ids.length ? await pool.query('SELECT user_package_id, service_name, used_count, consumed_at, updated_at, job_card_id, booking_id FROM package_usage WHERE user_package_id IN (?)', [ids]) : [[]];
+  const bal = [];
+  for (const p of packages) {
+    for (const sv of await getServiceBreakdown(pool, p.package_id, p.package_name)) {
+      const u = usedRows.find(r => r.user_package_id === p.id && String(r.service_name).trim().toLowerCase() === String(sv.service_name).trim().toLowerCase());
+      const total = Number(sv.total_count || 0), used = Math.min(total, Number(u?.used_count || 0));
+      bal.push({ user_package_id: p.id, service_name: sv.service_name, total_count: total, used_count: used, remaining: Math.max(0, total - used) });
+    }
+  }
+  const [jcs] = await pool.query('SELECT id, invoice_number, booking_id FROM job_carts WHERE booking_id IN (?)', [[0, ...usage.map(u => u.booking_id).filter(Boolean)]]);
+  const uses = [
+    ...usage.map(u => ({ user_package_id: u.customer_package_id, service_name: u.service_name, used_count: u.services_used || 1, created_at: u.created_at,
+      invoice_number: (jcs.find(j => j.booking_id === u.booking_id) || {}).invoice_number, booking_id: u.booking_id })),
+    ...usedRows.filter(r => Number(r.used_count) > 0 && !usage.some(u => u.customer_package_id === r.user_package_id))
+      .map(r => ({ ...r, created_at: r.consumed_at || r.updated_at })),
+  ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  const statusOf = (p) => {
+    const left = p.end_date ? calendarDaysLeft(p.end_date) : null;
+    const st = String(p.package_status || 'active');
+    return st === 'active' && left !== null && left < 0 ? 'expired' : st;
+  };
+  const blocks = packages.map(p => {
+    const car = cars.find(c => c.id === p.id) || {};
+    const rows = bal.filter(r => r.user_package_id === p.id);
+    const used = uses.filter(u => u.user_package_id === p.id);
+    const left = p.end_date ? calendarDaysLeft(p.end_date) : null;
+    const status = statusOf(p);
+    const carText = [car.brand, car.model].filter(Boolean).join(' ') || 'Car not linked';
+    const typeText = TYPE[p.vehicle_segment || car.category] || '';
+    return `<div class="sec">
+      <div class="sec-h"><div><b>${esc(p.package_name)}</b><span class="m">${esc(carText)}${car.registration_no ? ' · ' + esc(car.registration_no) : ''}${typeText ? ' · ' + typeText : ''}</span></div>
+        <span class="pill ${status === 'active' ? 'paid' : 'due'}">${esc(status.toUpperCase())}</span></div>
+      <div class="facts">
+        <div><span>Price paid</span><b>${inr(p.price_paid)}</b></div>
+        <div><span>Payment</span><b>${esc(String(p.payment_status || '—').replace(/_/g, ' '))}</b></div>
+        <div><span>Start</span><b>${day(p.start_date)}</b></div>
+        <div><span>Valid till</span><b>${day(p.end_date)}</b></div>
+        <div><span>Days left</span><b>${left === null ? '—' : left < 0 ? 'Ended' : left}</b></div>
+        <div><span>Services left</span><b>${rows.reduce((a, r) => a + r.remaining, 0)}</b></div>
+      </div>
+      <table class="st"><colgroup><col><col style="width:16%"><col style="width:16%"><col style="width:16%"></colgroup><thead><tr><th>Service</th><th class="r">Total</th><th class="r">Used</th><th class="r">Left</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td>${esc(r.service_name)}</td><td class="r">${r.total_count}</td><td class="r">${r.used_count}</td><td class="r"><b>${r.remaining}</b></td></tr>`).join('')
+          || '<tr><td colspan="4" class="empty">No services set on this package</td></tr>'}</tbody></table>
+      <div class="lbl">Usage history</div>
+      <table class="st"><colgroup><col style="width:18%"><col><col style="width:16%"><col style="width:22%"></colgroup><thead><tr><th>Date</th><th>Service</th><th class="r">Count</th><th>Bill / job card</th></tr></thead>
+        <tbody>${used.map(u => `<tr><td>${day(u.consumed_at || u.created_at)}</td><td>${esc(u.service_name)}</td><td class="r">${Number(u.used_count || 1)}</td><td>${esc(u.invoice_number || (u.job_card_id ? 'JC-' + u.job_card_id : u.booking_id ? 'Booking #' + u.booking_id : '—'))}</td></tr>`).join('')
+          || '<tr><td colspan="4" class="empty">Not used yet</td></tr>'}</tbody></table>
+    </div>`;
+  }).join('');
+  const renewHtml = renewals.length ? `<div class="sec"><div class="sec-h"><b>Purchases &amp; renewals</b></div>
+    <table class="st"><colgroup><col style="width:18%"><col><col style="width:16%"><col style="width:30%"></colgroup><thead><tr><th>Date</th><th>Package</th><th class="r">Amount</th><th>Notes</th></tr></thead><tbody>
+    ${renewals.map(r => `<tr><td>${day(r.renewal_date)}</td><td>${esc(r.package_name)}</td><td class="r">${inr(r.amount_paid)}</td><td>${esc(r.notes || '—')}</td></tr>`).join('')}</tbody></table></div>` : '';
+
+  const active = packages.filter(p => statusOf(p) === 'active').length;
+  return require('../services/invoiceService').renderStatementPDF({
+    franchiseId,
+    title: 'PACKAGE HISTORY',
+    number: `CUST-${customer.id}`, numberLabel: 'Customer ID',
+    date: day(new Date()),
+    billTo: { name: customer.name, mobile: customer.mobile, email: customer.email }, billToLabel: 'Customer',
+    detailsLabel: 'Summary',
+    detailsRows: [
+      ['Packages', `${packages.length} (${active} active)`],
+      ['Total paid', inr(packages.reduce((a, p) => a + Number(p.price_paid || 0), 0))],
+      ['Services left', String(bal.filter(r => packages.some(p => p.id === r.user_package_id && statusOf(p) === 'active')).reduce((a, r) => a + r.remaining, 0))],
+      ['Purchases & renewals', String(renewals.length)],
+    ],
+    bodyHtml: (blocks || '<div class="sec"><table class="st"><tr><td class="empty">No packages bought yet</td></tr></table></div>') + renewHtml,
+  });
+}
+exports.packageStatementPdf = packageStatementPdf;
+
 exports.customerPackageHistoryReport = async (req, res) => {
   try {
     const { id } = req.params;
     const { format = 'xlsx' } = req.query;
 
-    const [user] = await pool.query('SELECT name, mobile, email FROM users WHERE id = ?', [id]);
+    const [user] = await pool.query(`SELECT name, mobile, email FROM users WHERE id = ?${scopeOf(req).and()}`, [id]);
     if (!user.length) return res.status(404).json({ success: false, error: 'Customer not found' });
     const customer = user[0];
 
@@ -348,121 +441,14 @@ exports.customerPackageHistoryReport = async (req, res) => {
         });
       });
 
-      const buffer = await workbook.xlsx.writeBuffer();
+      const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=PackageHistory_${customer.name.replace(/\s+/g, '_')}.xlsx`);
       return res.send(Buffer.from(buffer));
     }
 
     if (format === 'pdf') {
-      const html = `
-      <html>
-      <head>
-        <style>
-          body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px; color: #1c1b1b; }
-          .header { border-bottom: 2px solid #D32F2F; padding-bottom: 20px; margin-bottom: 30px; }
-          .title { font-size: 22px; font-weight: bold; color: #D32F2F; margin: 0; }
-          .subtitle { font-size: 13px; color: #5f5e5e; margin-top: 5px; }
-          .customer-box { margin-bottom: 30px; font-size: 14px; background: #f9f9f9; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0; }
-          h3 { font-size: 16px; font-weight: bold; margin-top: 25px; margin-bottom: 10px; border-bottom: 1px solid #e0e0e0; padding-bottom: 5px; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-          th { background: #f1f1f1; text-align: left; padding: 8px; font-size: 11px; text-transform: uppercase; }
-          td { padding: 8px; border-bottom: 1px solid #e0e0e0; font-size: 12px; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <div class="title">GK AUTO HERB STUDIO</div>
-          <div class="subtitle">CUSTOMER PACKAGE CYCLE & USAGE HISTORY</div>
-        </div>
-        <div class="customer-box">
-          <strong>Customer:</strong> ${customer.name}<br/>
-          <strong>Mobile:</strong> ${customer.mobile}<br/>
-          <strong>Email:</strong> ${customer.email || '—'}<br/>
-        </div>
-
-        <h3>Active & Past Packages</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Package Name</th>
-              <th>Price Paid</th>
-              <th>Start Date</th>
-              <th>End Date</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${packages.map(p => `
-              <tr>
-                <td>${p.package_name}</td>
-                <td>₹${parseFloat(p.price_paid || 0).toLocaleString('en-IN')}</td>
-                <td>${p.start_date ? new Date(p.start_date).toLocaleDateString('en-IN') : 'N/A'}</td>
-                <td>${p.end_date ? new Date(p.end_date).toLocaleDateString('en-IN') : 'N/A'}</td>
-                <td><span style="font-weight: bold; color: ${p.package_status === 'active' ? '#4CAF50' : '#FF9800'};">${p.package_status || 'active'}</span></td>
-              </tr>
-            `).join('')}
-            ${packages.length === 0 ? '<tr><td colspan="5" style="text-align: center; color: #999;">No packages purchased</td></tr>' : ''}
-          </tbody>
-        </table>
-
-        <h3>Redemption / Usage Logs</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Service Redeemed</th>
-              <th>Usage Date</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${usage.map(u => `
-              <tr>
-                <td>${u.service_name || 'N/A'}</td>
-                <td>${new Date(u.created_at).toLocaleDateString('en-IN')}</td>
-                <td>${u.notes || '—'}</td>
-              </tr>
-            `).join('')}
-            ${usage.length === 0 ? '<tr><td colspan="3" style="text-align: center; color: #999;">No service redemptions logged</td></tr>' : ''}
-          </tbody>
-        </table>
-
-        <h3>Renewal Logs</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Renewal Date</th>
-              <th>Package Name</th>
-              <th>Amount Paid</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${renewals.map(r => `
-              <tr>
-                <td>${new Date(r.renewal_date).toLocaleDateString('en-IN')}</td>
-                <td>${r.package_name}</td>
-                <td>₹${parseFloat(r.amount_paid || 0).toLocaleString('en-IN')}</td>
-                <td>${r.notes || '—'}</td>
-              </tr>
-            `).join('')}
-            ${renewals.length === 0 ? '<tr><td colspan="4" style="text-align: center; color: #999;">No renewals processed</td></tr>' : ''}
-          </tbody>
-        </table>
-      </body>
-      </html>`;
-
-      const puppeteer = require('puppeteer');
-      const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      });
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-      const pdf = await page.pdf({ format: 'A4', printBackground: true });
-      await browser.close();
-
+      const pdf = await packageStatementPdf(id, Number(req.franchiseId) || Number(req.user?.franchise_id) || 1);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename=PackageHistory_${customer.name.replace(/\s+/g, '_')}.pdf`);
       return res.send(pdf);

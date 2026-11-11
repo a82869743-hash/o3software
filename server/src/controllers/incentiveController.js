@@ -5,10 +5,10 @@ exports.getRules = async (req, res) => {
   try {
     const fCond = req.getFranchiseCondition
       ? req.getFranchiseCondition('franchise_id')
-      : { clause: ' WHERE (franchise_id = ? OR franchise_id IS NULL)', params: [req.franchiseId || 1] };
+      : { clause: ' AND (franchise_id = ? OR franchise_id IS NULL)', params: [req.franchiseId || 1] };
 
     const [rules] = await pool.query(
-      `SELECT * FROM incentive_rules ${fCond.clause} ORDER BY is_active DESC, id ASC`,
+      `SELECT * FROM incentive_rules WHERE 1=1 ${fCond.clause} ORDER BY is_active DESC, id ASC`,
       fCond.params
     );
 
@@ -254,5 +254,92 @@ exports.updateSplitStatus = async (req, res) => {
   } catch (err) {
     console.error('updateSplitStatus error:', err);
     res.status(500).json({ success: false, error: 'Failed to update split status' });
+  }
+};
+
+// ─── SLAB INCENTIVES: complaints + rate card ───
+const engine = require('../services/incentiveEngine');
+const fidOfReq = (req) => Number(req.franchiseId) || Number(req.user?.franchise_id) || 1;
+
+// POST /incentives/complaints { job_cart_id | booking_id, reason }
+exports.logComplaint = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const jobCartId = req.body.job_cart_id ? Number(req.body.job_cart_id) : null;
+    const bookingId = !jobCartId && req.body.booking_id ? Number(req.body.booking_id) : null;
+    const reason = String(req.body.reason || '').trim();
+    if (!jobCartId && !bookingId) return res.status(400).json({ success: false, error: 'Choose the job card or quick wash' });
+    if (reason.length < 3) return res.status(400).json({ success: false, error: 'Write what the complaint is about' });
+    const fid = fidOfReq(req);
+    const [[src]] = jobCartId
+      ? await conn.query('SELECT id, franchise_id FROM job_carts WHERE id = ?', [jobCartId])
+      : await conn.query('SELECT id, franchise_id FROM bookings WHERE id = ?', [bookingId]);
+    if (!src || (req.user.role !== 'super_admin' && Number(src.franchise_id || 1) !== fid)) return res.status(404).json({ success: false, error: 'Not found' });
+    const [[dup]] = await conn.query(`SELECT id FROM job_complaints WHERE ${jobCartId ? 'job_cart_id' : 'booking_id'} = ?`, [jobCartId || bookingId]);
+    if (dup) return res.status(409).json({ success: false, error: 'A complaint is already logged for this vehicle visit' });
+
+    await conn.beginTransaction();
+    const [ins] = await conn.query('INSERT INTO job_complaints (franchise_id, job_cart_id, booking_id, reason, logged_by) VALUES (?, ?, ?, ?, ?)',
+      [src.franchise_id || 1, jobCartId, bookingId, reason.slice(0, 500), req.user.id]);
+    const affected = await engine.applyComplaint(conn, { complaintId: ins.insertId, jobCartId, bookingId });
+    await conn.commit();
+    const msg = affected.length
+      ? affected.map(a => `${a.name}: ₹${a.withheld} incentive withheld${a.salary_deducted ? ` and ₹${a.withheld} deducted from salary (complaint #${a.complaint_number} this month)` : ` (complaint #${a.complaint_number} this month)`}`).join('; ')
+      : 'Complaint logged. No incentive had been given for this vehicle.';
+    res.status(201).json({ success: true, message: msg, data: { id: ins.insertId, affected } });
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    console.error('logComplaint error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  } finally {
+    conn.release();
+  }
+};
+
+// GET /incentives/complaints?month=2026-11
+exports.listComplaints = async (req, res) => {
+  try {
+    const [y, m] = String(req.query.month || new Date().toISOString().slice(0, 7)).split('-').map(Number);
+    const [rows] = await pool.query(
+      `SELECT c.*, u.name AS logged_by_name,
+              (SELECT GROUP_CONCAT(DISTINCT s.user_name SEPARATOR ', ') FROM incentive_splits s WHERE s.complaint_id = c.id) AS staff,
+              (SELECT COALESCE(SUM(s.penalty_amount), 0) FROM incentive_splits s WHERE s.complaint_id = c.id) AS salary_deduction
+       FROM job_complaints c LEFT JOIN users u ON u.id = c.logged_by
+       WHERE c.franchise_id = ? AND YEAR(c.created_at) = ? AND MONTH(c.created_at) = ? ORDER BY c.id DESC`,
+      [fidOfReq(req), y, m]);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('listComplaints error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// GET /incentives/slabs — this studio's rate card
+exports.getSlabs = async (req, res) => {
+  res.json({ success: true, data: await engine.getSlabs(pool, fidOfReq(req)), free_complaints: engine.FREE_COMPLAINTS });
+};
+
+// PUT /incentives/slabs { washing: { car: [{upto, amount}], bike: [...] }, ... }
+exports.updateSlabs = async (req, res) => {
+  try {
+    const out = {};
+    for (const type of engine.TYPES) {
+      const t = req.body[type];
+      if (!t) continue;
+      out[type] = {};
+      for (const vc of ['car', 'bike']) {
+        if (!Array.isArray(t[vc])) continue;
+        const tiers = t[vc].map(x => ({ upto: x.upto === null || x.upto === '' || x.upto === undefined ? null : Number(x.upto), amount: Number(x.amount) }));
+        if (tiers.some(x => !(x.amount >= 0) || (x.upto !== null && !(x.upto > 0)))) return res.status(400).json({ success: false, error: `Check the ${type} ${vc} amounts` });
+        out[type][vc] = tiers;
+      }
+    }
+    await pool.query(
+      `INSERT INTO settings (franchise_id, key_name, value) VALUES (?, 'incentive_slabs', ?)
+       ON DUPLICATE KEY UPDATE value = VALUES(value)`, [fidOfReq(req), JSON.stringify(out)]);
+    res.json({ success: true, message: 'Incentive rates saved' });
+  } catch (err) {
+    console.error('updateSlabs error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
   }
 };

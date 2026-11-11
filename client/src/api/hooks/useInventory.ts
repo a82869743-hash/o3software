@@ -21,16 +21,6 @@ export const useInventoryCategories = () =>
     placeholderData: (prev) => prev,
   });
 
-export const useInventoryItem = (id: number | undefined) =>
-  useQuery({
-    queryKey: ['inventory-item', id],
-    queryFn: async () => {
-      const res = await api.get<ApiResponse<InventoryItem>>(`/inventory/${id}`);
-      return res.data.data;
-    },
-    enabled: !!id,
-  });
-
 export const useCreateInventory = () => {
   const qc = useQueryClient();
   return useMutation({

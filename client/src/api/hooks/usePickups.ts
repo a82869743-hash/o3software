@@ -10,35 +10,6 @@ export const usePickups = () =>
     },
   });
 
-export const usePickup = (id: number | undefined) =>
-  useQuery({
-    queryKey: ['pickup-request', id],
-    queryFn: async () => {
-      const res = await api.get(`/pickup-requests/${id}`);
-      return res.data.data;
-    },
-    enabled: !!id,
-  });
-
-export const useCreatePickup = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: {
-      booking_id: number;
-      address: string;
-      scheduled_time?: string;
-      notes?: string;
-    }) => {
-      const res = await api.post('/pickup-requests', payload);
-      return res.data;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['pickup-requests'] });
-      qc.invalidateQueries({ queryKey: ['bookings'] });
-    },
-  });
-};
-
 export const useAssignPickupStaff = () => {
   const qc = useQueryClient();
   return useMutation({

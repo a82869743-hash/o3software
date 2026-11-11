@@ -5,7 +5,7 @@ exports.list = async (req, res) => {
   try {
     const { status, source } = req.query;
     const franchiseId = (req.headers && req.headers['x-franchise-id']) ? parseInt(req.headers['x-franchise-id'], 10) : 1;
-    let where = '(i.franchise_id = ? OR (i.franchise_id IS NULL AND ? = 1))';
+    let where = '(i.franchise_id = ? OR (i.franchise_id IS NULL AND ? = 1)) AND i.is_deleted = 0';
     let params = [franchiseId, franchiseId];
     
     if (status && status !== 'all') {
@@ -44,7 +44,7 @@ exports.stats = async (req, res) => {
         SUM(IF(status='followed_up', 1, 0)) as followed_up,
         SUM(IF(status='converted', 1, 0)) as converted
       FROM inquiries
-      WHERE (franchise_id = ? OR (franchise_id IS NULL AND ? = 1))
+      WHERE (franchise_id = ? OR (franchise_id IS NULL AND ? = 1)) AND is_deleted = 0
       GROUP BY source
     `, [franchiseId, franchiseId]);
 
@@ -56,7 +56,7 @@ exports.stats = async (req, res) => {
         SUM(IF(status='lost', 1, 0)) as lost,
         SUM(IF(status='converted', 1, 0)) as converted
       FROM inquiries
-      WHERE (franchise_id = ? OR (franchise_id IS NULL AND ? = 1))
+      WHERE (franchise_id = ? OR (franchise_id IS NULL AND ? = 1)) AND is_deleted = 0
     `, [franchiseId, franchiseId]);
 
     res.json({ success: true, data: { by_source: rows, totals: totals[0] } });
@@ -81,30 +81,62 @@ exports.getOne = async (req, res) => {
 // ─── CREATE INQUIRY (Staff or Website or Socials) ──────
 exports.create = async (req, res) => {
   try {
-    const { source, name, mobile, email, vehicle_brand, vehicle_model, services_interested } = req.body;
-    let submitted_by = null;
-    const franchiseId = (req.headers && req.headers['x-franchise-id']) ? parseInt(req.headers['x-franchise-id'], 10) : 1;
+    const { normalizeMobile, isValidMobile } = require('../utils/validators');
+    const b = req.body || {};
+    const franchiseId = req.user ? (req.franchiseId || req.user.franchise_id || 1) : (Number(b.franchise_id) || 1);
+    const isCustomer = req.user && req.user.role === 'customer';
+    const name = String(b.name || (isCustomer ? req.user.name : '') || '').trim();
+    const mobile = isCustomer ? req.user.mobile : normalizeMobile(b.mobile);
+    if (!name) return res.status(400).json({ success: false, error: 'Name is required' });
+    if (!isCustomer && !isValidMobile(b.mobile)) return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' });
 
-    // Supported inquiry origins
-    const validSources = ['instagram', 'facebook', 'website', 'walk_in', 'staff', 'manual_intake'];
-    const inquirySource = (source && validSources.includes(source)) ? source : (source || 'website');
+    const [[existingCustomer]] = await pool.query("SELECT id FROM users WHERE mobile = ? AND role = 'customer' AND is_deleted = 0", [mobile]);
 
-    if (req.user && req.user.role === 'staff') {
-      submitted_by = req.user.id;
+    // Not a customer yet → this is NEW BUSINESS: goes to Leads, not Inquiries
+    if (!isCustomer && !existingCustomer && b.type !== 'support') {
+      const { upsertLead } = require('../services/leadIntake');
+      const r = await upsertLead({
+        franchiseId, name, phone: mobile, email: b.email, vehicle_model: [b.vehicle_brand, b.vehicle_model].filter(Boolean).join(' ') || null,
+        service_interest: b.services_interested || null, source: ['instagram', 'facebook', 'website', 'walk_in', 'google'].includes(b.source) ? b.source : (req.user ? 'walk_in' : 'website'),
+        notes: b.message || b.subject || null,
+      });
+      return res.status(201).json({ success: true, data: { lead_id: r.id, type: 'lead' }, message: req.user ? 'New person, so this was added to Leads' : 'Thank you! Our team will contact you shortly.' });
     }
 
-    if (!name || !mobile) {
-      return res.status(400).json({ success: false, error: 'Name and mobile are required' });
-    }
-
+    // Existing customer → SUPPORT INQUIRY (questions, complaints, requests)
     const [result] = await pool.query(
-      'INSERT INTO inquiries (source, name, mobile, email, vehicle_brand, vehicle_model, services_interested, submitted_by, franchise_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [inquirySource, name, mobile, email || null, vehicle_brand || null, vehicle_model || null, services_interested || null, submitted_by, franchiseId]
+      `INSERT INTO inquiries (source, name, mobile, email, vehicle_brand, vehicle_model, services_interested, submitted_by, franchise_id,
+         customer_id, subject, message, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+      [isCustomer ? 'customer_app' : (req.user ? (['instagram', 'facebook', 'website', 'walk_in', 'manual_intake', 'whatsapp'].includes(b.source) ? b.source : 'staff') : 'website'), name, mobile, b.email || null, b.vehicle_brand || null, b.vehicle_model || null,
+        b.services_interested || null, req.user && !isCustomer ? req.user.id : null, franchiseId,
+        isCustomer ? req.user.id : (existingCustomer?.id || null), b.subject ? String(b.subject).slice(0, 150) : null, b.message || null]
     );
-
-    res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Inquiry submitted successfully' });
+    const io = req.app.get('io');
+    if (io) io.to(`franchise_${franchiseId}`).emit('inquiry:new', { id: result.insertId });
+    res.status(201).json({ success: true, data: { id: result.insertId, type: 'inquiry' }, message: 'Your question has been sent. We will reply on WhatsApp.' });
   } catch (err) {
+    if (err.status === 400) return res.status(400).json({ success: false, error: err.message });
     console.error('Inquiry create error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// ─── REPLY (WhatsApp) ───────────────────────
+exports.reply = async (req, res) => {
+  try {
+    const msg = String(req.body.reply || '').trim();
+    if (!msg) return res.status(400).json({ success: false, error: 'Reply text is required' });
+    const [[inq]] = await pool.query('SELECT * FROM inquiries WHERE id = ? AND franchise_id = ?', [req.params.id, req.franchiseId || 1]);
+    if (!inq) return res.status(404).json({ success: false, error: 'Inquiry not found' });
+    await require('../services/notificationService').notify({
+      mobile: inq.mobile, customerId: inq.customer_id || null, customMessageBody: msg, channels: ['whatsapp'],
+      franchiseId: inq.franchise_id, referenceType: 'inquiry', referenceId: inq.id,
+    });
+    await pool.query("UPDATE inquiries SET reply = ?, replied_at = NOW(), status = 'answered' WHERE id = ?", [msg, inq.id]);
+    res.json({ success: true, message: 'Reply sent on WhatsApp' });
+  } catch (err) {
+    console.error('Inquiry reply error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
@@ -113,7 +145,7 @@ exports.create = async (req, res) => {
 exports.updateStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    if (!['new', 'followed_up', 'converted', 'cancelled'].includes(status)) {
+    if (!['new', 'followed_up', 'converted', 'open', 'answered', 'closed'].includes(status)) {
       return res.status(400).json({ success: false, error: 'Invalid status' });
     }
 
@@ -132,11 +164,14 @@ exports.updateStatus = async (req, res) => {
 // ─── DELETE ─────────────────────────────────
 exports.delete = async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id FROM inquiries WHERE id = ?', [req.params.id]);
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Inquiry not found' });
+    const [rows] = await pool.query('SELECT id, franchise_id FROM inquiries WHERE id = ? AND is_deleted = 0', [req.params.id]);
+    if (!rows.length || (req.user.role !== 'super_admin' && Number(rows[0].franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1))) {
+      return res.status(404).json({ success: false, error: 'Inquiry not found' });
+    }
 
-    await pool.query('DELETE FROM inquiries WHERE id = ?', [req.params.id]);
-    res.json({ success: true, message: 'Inquiry deleted' });
+    // archived, not erased: kept for records and hidden from the lists
+    await pool.query('UPDATE inquiries SET is_deleted = 1, deleted_at = NOW() WHERE id = ?', [req.params.id]);
+    res.json({ success: true, message: 'Inquiry archived' });
   } catch (err) {
     console.error('Inquiry delete error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
@@ -163,6 +198,20 @@ exports.convert = async (req, res) => {
     // Auto-update status to converted and update source
     await pool.query('UPDATE inquiries SET status = "converted", source = ? WHERE id = ?', [finalSource, req.params.id]);
 
+    // The converted inquiry also becomes a lead, so it shows in Leads with the same source.
+    let leadId = null;
+    try {
+      const leadSource = { manual_intake: 'phone_call', staff: 'referral', customer_app: 'other', whatsapp: 'whatsapp_inbound' }[finalSource] || finalSource;
+      const r = await require('../services/leadIntake').upsertLead({
+        name: inquiry.name, mobile: inquiry.mobile, email: inquiry.email,
+        vehicle_model: [inquiry.vehicle_brand, inquiry.vehicle_model].filter(Boolean).join(' ') || null,
+        service_interest: inquiry.services_interested || null, source: leadSource, direction: 'inbound',
+        notes: `From inquiry #${inquiry.id}${inquiry.message ? `: ${String(inquiry.message).slice(0, 300)}` : ''}`,
+        franchiseId: inquiry.franchise_id || req.user?.franchise_id || 1,
+      });
+      leadId = r?.id || r?.lead_id || null;
+    } catch (e) { console.warn('[Inquiry convert] lead not created:', e.message); }
+
     // Return structured payload matching Job Cart POST body
     res.json({
       success: true,
@@ -172,7 +221,8 @@ exports.convert = async (req, res) => {
         customer_email: inquiry.email,
         car_brand: inquiry.vehicle_brand,
         car_model: inquiry.vehicle_model,
-        notes: `Converted from inquiry #${inquiry.id}. Source: ${finalSource}. Interested in: ${inquiry.services_interested || 'General Service'}`
+        notes: `Converted from inquiry #${inquiry.id}. Source: ${finalSource}. Interested in: ${inquiry.services_interested || 'General Service'}`,
+        lead_id: leadId,
       },
       message: 'Inquiry ready to convert'
     });

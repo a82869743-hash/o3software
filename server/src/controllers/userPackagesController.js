@@ -20,6 +20,13 @@
 
 const pool = require('../config/db');
 
+// Whole calendar days from today to the end date (same count on every screen and in reminders).
+const calendarDaysLeft = (end) => {
+  const a = new Date(new Date(end).toLocaleDateString('en-CA'));
+  const b = new Date(new Date().toLocaleDateString('en-CA'));
+  return Math.round((a - b) / 864e5);
+};
+
 // Helper for dynamic package duration calculation
 function getPackageDurationMonths(packageName) {
   const nameLower = (packageName || '').toLowerCase();
@@ -144,11 +151,19 @@ exports.assignPackage = async (req, res) => {
     // Insert into user_packages — core columns only (safe for any DB schema)
     const [result] = await conn.query(
       `INSERT INTO user_packages
-       (user_id, package_id, end_date, payment_status, package_status, price_paid, vehicle_segment, vehicle_id)
-       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MONTH), 'paid', 'active', ?, ?, ?)`,
-      [user_id, package_id, finalDurationMonths, price_paid || null, vehicle_segment || null, vehicle_id || null]
+       (user_id, package_id, end_date, payment_status, package_status, price_paid, vehicle_segment, vehicle_id, franchise_id)
+       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MONTH), 'paid', 'active', ?, ?, ?, ?)`,
+      [user_id, package_id, finalDurationMonths, price_paid || null, vehicle_segment || null, vehicle_id || null, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
     const userPackageId = result.insertId;
+    const salePaymentId = await require('../services/moneyIn').recordMoneyIn(conn, {
+      customerId: user_id, amount: price_paid, method: req.body.payment_mode || req.body.payment_method || 'cash',
+      type: 'package_sale', refId: userPackageId, packageId: package_id, note: `Package sold (admin): #${userPackageId}`,
+      franchiseId: Number(req.franchiseId) || Number(req.user?.franchise_id) || 1, userId: req.user.id,
+    });
+    // purchase history (Package History PDF, renewals list)
+    await conn.query(`INSERT INTO v2_package_renewals (customer_id, package_id, customer_package_id, renewal_date, amount_paid, payment_id, renewed_by, notes)
+      VALUES (?, ?, ?, CURDATE(), ?, ?, 'admin', 'Package given by admin')`, [user_id, package_id, userPackageId, price_paid || 0, salePaymentId]);
 
     // Create package_usage rows
     if (package_custom_services && Array.isArray(package_custom_services)) {
@@ -196,9 +211,9 @@ exports.assignPackage = async (req, res) => {
         const igst = 0;
 
         await conn.query(
-          `INSERT INTO v2_gst_records (record_type, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year)
-           VALUES ('sales', ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gstin, taxableAmount, cgst, sgst, igst, totalGst, periodMonth, periodYear]
+          `INSERT INTO v2_gst_records (record_type, gstin, taxable_amount, cgst, sgst, igst, total_gst, period_month, period_year, franchise_id)
+           VALUES ('sales', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [gstin, taxableAmount, cgst, sgst, igst, totalGst, periodMonth, periodYear, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
         );
       }
     } catch (gstErr) {
@@ -225,17 +240,18 @@ exports.assignPackage = async (req, res) => {
 // RENEW PACKAGE INTERNAL HELPERS
 // ═══════════════════════════════════════════════════════════
 
-// Internal helper for package renewals (called by renewPackage or paymentsController._processCapturedPayment)
+// Internal helper for package renewals (called by renewPackage)
 exports._renewPackageInternal = async (conn, { user_package_id, package_id, payment_amount, payment_mode, payment_id, renewed_by = 'customer', notes }) => {
   try {
     // 1. Get current package
     const [existing] = await conn.query(
-      'SELECT * FROM user_packages WHERE id = ?', [user_package_id]
+      'SELECT * FROM user_packages WHERE id = ? FOR UPDATE', [user_package_id]
     );
     if (!existing.length) {
       return { success: false, error: 'Package subscription not found' };
     }
     const currentPkg = existing[0];
+    if (currentPkg.package_status === 'renewed') return { success: false, error: 'This package was already renewed' };
 
     // Check if upgrading/downgrading
     let targetPackageId = currentPkg.package_id;
@@ -277,13 +293,13 @@ exports._renewPackageInternal = async (conn, { user_package_id, package_id, paym
     // Insert renewed package — use only core columns (safe for any DB schema)
     const [newResult] = await conn.query(
       `INSERT INTO user_packages
-       (user_id, package_id, start_date, end_date, renewed_from_id, payment_status, package_status, price_paid, vehicle_segment, vehicle_id)
-       VALUES (?, ?, NOW(), DATE_ADD(?, INTERVAL ? MONTH), ?, 'paid', 'active', ?, ?, ?)`,
+       (user_id, package_id, start_date, end_date, renewed_from_id, payment_status, package_status, price_paid, vehicle_segment, vehicle_id, franchise_id)
+       VALUES (?, ?, NOW(), DATE_ADD(?, INTERVAL ? MONTH), ?, 'paid', 'active', ?, ?, ?, ?)`,
       [
         currentPkg.user_id, targetPackageId,
         baseDate, duration_months, user_package_id,
         payment_amount !== undefined ? payment_amount : currentPkg.price_paid, 
-        currentPkg.vehicle_segment, currentPkg.vehicle_id
+        currentPkg.vehicle_segment, currentPkg.vehicle_id, (Number(currentPkg.franchise_id) || 1)
       ]
     );
     const newUserPackageId = newResult.insertId;
@@ -354,12 +370,18 @@ exports.renewPackage = async (req, res) => {
     const { id } = req.params;
     const { duration_months = 12, payment_amount, price_paid, vehicle_segment, new_package_id, payment_mode, payment_id, notes } = req.body;
 
-    const [existing] = await conn.query('SELECT * FROM user_packages WHERE id = ?', [id]);
-    if (!existing.length) {
+    // Lock the package row so "Renew" tapped twice at the same moment renews once.
+    const [existing] = await conn.query('SELECT * FROM user_packages WHERE id = ? FOR UPDATE', [id]);
+    const myFid = Number(req.franchiseId) || Number(req.user?.franchise_id) || 1;
+    if (!existing.length || (req.user.role !== 'super_admin' && req.user.role !== 'customer' && Number(existing[0].franchise_id || 1) !== myFid)) {
       await conn.rollback();
       return res.status(404).json({ success: false, error: 'Package subscription not found' });
     }
     const currentPkg = existing[0];
+    if (['renewed', 'cancelled'].includes(currentPkg.package_status)) {
+      await conn.rollback();
+      return res.status(409).json({ success: false, error: currentPkg.package_status === 'renewed' ? 'This package was already renewed' : 'This package is cancelled' });
+    }
 
     // Check if customer is renewing their own package
     if (req.user.role === 'customer' && currentPkg.user_id !== req.user.id) {
@@ -367,12 +389,16 @@ exports.renewPackage = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Forbidden: You do not own this package subscription' });
     }
 
-    const amount = payment_amount !== undefined ? payment_amount : (price_paid !== undefined ? price_paid : currentPkg.price_paid);
-    const mode = payment_mode || 'cash';
+    const amount = Number(payment_amount !== undefined ? payment_amount : (price_paid !== undefined ? price_paid : currentPkg.price_paid));
+    if (!Number.isFinite(amount) || amount < 0) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Enter a valid amount (0 or more)' });
+    }
+    const mode = require('../services/moneyIn').toPaymentMethod(payment_mode);
     let dbPaymentId = payment_id || null;
 
-    // If it's an offline cash/upi payment (not razorpay), let's record a v2_payments row
-    if (mode !== 'razorpay' && amount > 0) {
+    // Record the payment (cash / UPI / card at the studio)
+    if (amount > 0) {
       const [pmtResult] = await conn.query(
         `INSERT INTO v2_payments 
          (customer_id, booking_id, invoice_id, package_id, amount, payment_method, status, notes)
@@ -387,6 +413,11 @@ exports.renewPackage = async (req, res) => {
         [dbPaymentId, amount]
       );
     }
+    // Accounts entry for the renewal (Payments row above)
+    await require('../services/moneyIn').recordMoneyIn(conn, {
+      amount, type: 'package_sale', refId: id, skipPayment: true, note: `Package renewal #${id} (${mode})`,
+      franchiseId: Number(req.franchiseId) || Number(req.user?.franchise_id) || 1, userId: req.user.id,
+    });
 
     const renewed_by = req.user.role === 'admin' ? 'admin' : 'customer';
 
@@ -435,18 +466,27 @@ exports.bulkRenewPackages = async (req, res) => {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'package_ids array is required' });
     }
+    const amount = Number(price_paid || 0);
+    if (!Number.isFinite(amount) || amount < 0) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Enter a valid amount (0 or more)' });
+    }
+    const [owners] = await conn.query('SELECT DISTINCT user_id FROM user_packages WHERE id IN (?)', [package_ids]);
+    if (owners.length !== 1) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: 'Bulk renew works for the packages of one customer at a time' });
+    }
 
     const renewedPackages = [];
 
-    // Create a shared payment record for bulk offline payment
+    // Create a shared payment record for bulk offline payment (saved under the customer, not the admin)
     let paymentId = null;
-    const amount = price_paid || 0;
     if (amount > 0) {
       const [pmtResult] = await conn.query(
         `INSERT INTO v2_payments 
          (customer_id, booking_id, invoice_id, package_id, amount, payment_method, status, notes)
          VALUES (?, NULL, NULL, NULL, ?, 'cash', 'captured', ?)`,
-        [req.user.id, amount, `Bulk package renewal for ${package_ids.length} packages`]
+        [owners[0].user_id, amount, `Bulk package renewal for ${package_ids.length} packages`]
       );
       paymentId = pmtResult.insertId;
       
@@ -455,6 +495,10 @@ exports.bulkRenewPackages = async (req, res) => {
         [paymentId, amount]
       );
     }
+    await require('../services/moneyIn').recordMoneyIn(conn, {
+      amount, type: 'package_sale', refId: paymentId, skipPayment: true, note: `Bulk package renewal (${package_ids.length})`,
+      franchiseId: Number(req.franchiseId) || Number(req.user?.franchise_id) || 1, userId: req.user.id,
+    });
 
     for (const id of package_ids) {
       const individualPrice = price_paid ? (price_paid / package_ids.length) : undefined;
@@ -514,8 +558,12 @@ exports.getRenewalsHistory = async (req, res) => {
 // CHECK SERVICE AVAILABILITY (read-only — for deferred deduction)
 // Does NOT reserve or deduct. Just checks if customer can use a service.
 // ═══════════════════════════════════════════════════════════
-exports.checkServiceAvailability = async (conn, userId, serviceName, vehicleId) => {
-  // Find active package
+/**
+ * Looks at EVERY active package of the customer (this car's first, then ones not tied to a car)
+ * and returns the first one that has this service. A customer with two cars / two packages
+ * no longer gets "not included" just because the newest package was checked.
+ */
+async function findPackageForService(conn, userId, serviceName, vehicleId, preferId) {
   let queryStr = `
      SELECT up.id, up.package_id, p.name AS package_name
      FROM user_packages up
@@ -528,37 +576,45 @@ exports.checkServiceAvailability = async (conn, userId, serviceName, vehicleId) 
     queryStr += ' AND (up.vehicle_id = ? OR up.vehicle_id IS NULL)';
     params.push(vehicleId);
   }
-  queryStr += ' ORDER BY (up.vehicle_id IS NOT NULL) DESC, up.start_date DESC LIMIT 1';
-
+  queryStr += ' ORDER BY (up.id = ?) DESC, (up.vehicle_id IS NOT NULL) DESC, up.end_date ASC';
+  params.push(Number(preferId) || 0);
   const [activePackages] = await conn.query(queryStr, params);
+  if (!activePackages.length) return { none: true };
 
-  if (!activePackages.length) {
-    return { has_package: false, can_use: false, remaining: 0, reason: 'No active package found' };
+  const req = (serviceName || '').toLowerCase().trim();
+  let firstMatch = null;
+  for (const pk of activePackages) {
+    const breakdown = await getServiceBreakdown(conn, pk.package_id, pk.package_name);
+    const entry = breakdown.find(s => s.service_name.toLowerCase().trim() === req)
+      || breakdown.find(s => {
+        const dbName = s.service_name.toLowerCase();
+        return dbName.includes(req) || req.includes(dbName);
+      });
+    if (!entry) continue;
+    const [usage] = await conn.query(
+      'SELECT used_count FROM package_usage WHERE user_package_id = ? AND service_name = ?',
+      [pk.id, entry.service_name]
+    );
+    const left = entry.total_count - (usage.length ? usage[0].used_count : 0);
+    const hit = { pk, entry, left };
+    if (left > 0) return hit;
+    if (!firstMatch) firstMatch = hit;
   }
+  return firstMatch || { notIncluded: true };
+}
+exports.findPackageForService = findPackageForService;
 
-  const userPackageId = activePackages[0].id;
-  const packageId = activePackages[0].package_id;
-  const packageName = activePackages[0].package_name;
-
-  // Get total_count for this service
-  const serviceBreakdown = await getServiceBreakdown(conn, packageId, packageName);
-  let serviceEntry = serviceBreakdown.find(s => s.service_name.toLowerCase().trim() === serviceName?.toLowerCase().trim());
-
-  if (!serviceEntry) {
-    serviceEntry = serviceBreakdown.find(s => {
-      const dbName = s.service_name.toLowerCase();
-      const reqName = serviceName?.toLowerCase() || '';
-      return dbName.includes(reqName) || reqName.includes(dbName) || 
-             (reqName.includes("wash") && dbName.includes("wash"));
-    });
+exports.checkServiceAvailability = async (conn, userId, serviceName, vehicleId, preferId) => {
+  const found = await findPackageForService(conn, userId, serviceName, vehicleId, preferId);
+  if (found.none) {
+    return { has_package: false, can_use: false, remaining: 0, reason: 'No active package found for this car' };
   }
-
-  if (!serviceEntry) {
-    console.log('--- checkServiceAvailability FAILED ---');
-    console.log('serviceName requested:', serviceName);
-    console.log('serviceBreakdown:', serviceBreakdown);
-    return { has_package: true, can_use: false, remaining: 0, reason: `Service not included in your package: ${serviceName}` };
+  if (found.notIncluded) {
+    return { has_package: true, can_use: false, remaining: 0, reason: `Service not included in this car's package: ${serviceName}` };
   }
+  const userPackageId = found.pk.id;
+  const packageName = found.pk.package_name;
+  const serviceEntry = found.entry;
 
   const canonicalServiceName = serviceEntry.service_name;
 
@@ -591,48 +647,13 @@ exports.checkServiceAvailability = async (conn, userId, serviceName, vehicleId) 
 // CHECK & RESERVE SERVICE (booking-time)
 // Does NOT consume — only reserves. Consumed after job completion.
 // ═══════════════════════════════════════════════════════════
-exports.checkAndUseService = async (conn, userId, serviceName, vehicleId) => {
-  // Find active package
-  let queryStr = `
-     SELECT up.id, up.package_id, p.name AS package_name
-     FROM user_packages up
-     JOIN packages p ON p.id = up.package_id
-     WHERE up.user_id = ? AND up.package_status = 'active'
-       AND (up.end_date IS NULL OR up.end_date > NOW())
-  `;
-  const params = [userId];
-  if (vehicleId) {
-    queryStr += ' AND (up.vehicle_id = ? OR up.vehicle_id IS NULL)';
-    params.push(vehicleId);
-  }
-  queryStr += ' ORDER BY (up.vehicle_id IS NOT NULL) DESC, up.start_date DESC LIMIT 1';
-
-  const [activePackages] = await conn.query(queryStr, params);
-
-  if (!activePackages.length) {
-    return { has_package: false, can_use: false, remaining: 0 };
-  }
-
-  const userPackageId = activePackages[0].id;
-  const packageId = activePackages[0].package_id;
-  const packageName = activePackages[0].package_name;
-
-  // Get total_count for this service
-  const serviceBreakdown = await getServiceBreakdown(conn, packageId, packageName);
-  let serviceEntry = serviceBreakdown.find(s => s.service_name.toLowerCase().trim() === serviceName?.toLowerCase().trim());
-
-  if (!serviceEntry) {
-    serviceEntry = serviceBreakdown.find(s => {
-      const dbName = s.service_name.toLowerCase();
-      const reqName = serviceName?.toLowerCase() || '';
-      return dbName.includes(reqName) || reqName.includes(dbName) || 
-             (reqName.includes("wash") && dbName.includes("wash"));
-    });
-  }
-
-  if (!serviceEntry) {
-    return { has_package: true, can_use: false, remaining: 0, reason: 'Service not in package' };
-  }
+exports.checkAndUseService = async (conn, userId, serviceName, vehicleId, preferId) => {
+  const found = await findPackageForService(conn, userId, serviceName, vehicleId, preferId);
+  if (found.none) return { has_package: false, can_use: false, remaining: 0 };
+  if (found.notIncluded) return { has_package: true, can_use: false, remaining: 0, reason: 'Service not in package' };
+  const userPackageId = found.pk.id;
+  const packageName = found.pk.package_name;
+  const serviceEntry = found.entry;
 
   const canonicalServiceName = serviceEntry.service_name;
 
@@ -758,12 +779,30 @@ exports.getActivePackage = async (req, res) => {
       queryStr += ' AND (up.vehicle_id = ? OR up.vehicle_id IS NULL)';
       params.push(vehicle_id);
     }
-    queryStr += ' ORDER BY (up.vehicle_id IS NOT NULL) DESC, up.start_date DESC LIMIT 1';
+    const wantAll = req.query.all === '1' || req.query.all === 'true';
+    queryStr += ' ORDER BY (up.vehicle_id IS NOT NULL) DESC, up.start_date DESC' + (wantAll ? '' : ' LIMIT 1');
 
     const [packages] = await pool.query(queryStr, params);
 
     if (!packages.length) {
-      return res.json({ success: true, data: null, message: 'No active package' });
+      return res.json({ success: true, data: wantAll ? [] : null, message: 'No active package' });
+    }
+
+    // ?all=1 → every active package (one per car), each with services used / left
+    if (wantAll) {
+      const list = [];
+      for (const pk of packages) {
+        const map = await getServiceBreakdown(pool, pk.package_id, pk.package_name);
+        const [used] = await pool.query('SELECT service_name, used_count FROM package_usage WHERE user_package_id = ?', [pk.id]);
+        const [[veh]] = await pool.query('SELECT brand, model, registration_no FROM vehicles WHERE id = ?', [pk.vehicle_id || 0]);
+        list.push({
+          ...pk, vehicle: veh || null,
+          usage: map.map(sv => { const u = used.find(x => x.service_name === sv.service_name); const n = u ? u.used_count : 0;
+            return { service_name: sv.service_name, total_count: sv.total_count, used_count: n, remaining: sv.total_count - n }; }),
+          days_remaining: pk.end_date ? Math.max(0, calendarDaysLeft(pk.end_date)) : null,
+        });
+      }
+      return res.json({ success: true, data: list });
     }
 
     const activePackage = packages[0];
@@ -790,7 +829,7 @@ exports.getActivePackage = async (req, res) => {
 
     // Calculate days remaining
     const daysRemaining = activePackage.end_date
-      ? Math.max(0, Math.ceil((new Date(activePackage.end_date) - new Date()) / (1000 * 60 * 60 * 24)))
+      ? Math.max(0, calendarDaysLeft(activePackage.end_date))
       : null;
 
     res.json({
@@ -815,7 +854,8 @@ exports.listUserPackages = async (req, res, next) => {
     const [packages] = await pool.query(`
       SELECT up.id, up.package_id, up.start_date, up.end_date, up.created_at,
              up.package_status, up.payment_status, up.price_paid,
-             up.vehicle_segment, up.renewed_from_id, up.renewed_at,
+             up.vehicle_segment, up.renewed_from_id, up.renewed_at, up.vehicle_id, up.cancel_reason,
+             (SELECT registration_no FROM vehicles WHERE id = up.vehicle_id) AS vehicle_reg_no,
              p.name AS package_name, p.description
       FROM user_packages up
       JOIN packages p ON up.package_id = p.id
@@ -844,7 +884,7 @@ exports.listUserPackages = async (req, res, next) => {
 
       // Calculate days remaining
       pkg.days_remaining = pkg.end_date
-        ? Math.max(0, Math.ceil((new Date(pkg.end_date) - new Date()) / (1000 * 60 * 60 * 24)))
+        ? Math.max(0, calendarDaysLeft(pkg.end_date))
         : null;
     }
 
@@ -860,9 +900,18 @@ exports.listUserPackages = async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 exports.exportUserPackages = async (req, res, next) => {
   try {
-    const userId = req.user.role === 'admin' && req.query.user_id
-      ? req.query.user_id
-      : req.user.id;
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const userId = isAdmin && req.query.user_id ? req.query.user_id : req.user.id;
+    if ((req.query.format || 'excel') === 'pdf') {
+      if (isAdmin && req.query.user_id) { // admin: same checks (franchise scope) as the customer page button
+        req.params.id = req.query.user_id;
+        return require('./reportsController').customerPackageHistoryReport(req, res);
+      }
+      const pdf = await require('./reportsController').packageStatementPdf(userId, Number(req.user.franchise_id) || 1);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=Package_History.pdf');
+      return res.send(pdf);
+    }
 
     const [packages] = await pool.query(`
       SELECT up.id, up.package_id, up.start_date, up.end_date, up.created_at,
@@ -893,33 +942,7 @@ exports.exportUserPackages = async (req, res, next) => {
       pkg.usage_detail = usageStr.join(' | ');
     }
 
-    if (format === 'pdf') {
-      const PDFDocument = require('pdfkit');
-      const doc = new PDFDocument({ margin: 50 });
-      
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'attachment; filename=Package_History.pdf');
-      doc.pipe(res);
-
-      doc.fontSize(20).text('Package History', { align: 'center' });
-      doc.moveDown();
-
-      packages.forEach(pkg => {
-        doc.fontSize(14).text(`Package: ${pkg.package_name}`, { underline: true });
-        doc.fontSize(10).text(`Status: ${pkg.package_status} | Payment: ${pkg.payment_status}`);
-        doc.text(`Price Paid: INR ${pkg.price_paid || 0}`);
-        doc.text(`Valid: ${pkg.start_date ? new Date(pkg.start_date).toLocaleDateString() : ''} to ${pkg.end_date ? new Date(pkg.end_date).toLocaleDateString() : ''}`);
-        if (pkg.vehicle_segment) doc.text(`Vehicle Segment: ${pkg.vehicle_segment}`);
-        doc.moveDown(0.5);
-        doc.text(`Usage Details:`);
-        doc.text(pkg.usage_detail);
-        doc.moveDown();
-        doc.text('---------------------------------------------------------');
-        doc.moveDown();
-      });
-
-      doc.end();
-    } else {
+    {
       const ExcelJS = require('exceljs');
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet('Package History');
@@ -1012,7 +1035,7 @@ exports.getDashboardPackageData = async (userId) => {
 
     const endDate = pkg.end_date ? new Date(pkg.end_date) : null;
     const daysRemaining = endDate
-      ? Math.ceil((endDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      ? calendarDaysLeft(endDate)
       : null;
 
     let reminderStage = null;
@@ -1087,6 +1110,35 @@ exports.getDashboardPackageData = async (userId) => {
 };
 
 // ═══════════════════════════════════════════════════════════
+// CANCEL A CUSTOMER'S PACKAGE (kept for history; credits can no longer be used)
+// ═══════════════════════════════════════════════════════════
+exports.cancelUserPackage = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) { await conn.rollback(); return res.status(400).json({ success: false, error: 'Write the reason for cancelling' }); }
+    const [[up]] = await conn.query('SELECT id, package_status FROM user_packages WHERE id = ? FOR UPDATE', [req.params.id]);
+    if (!up) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Package not found' }); }
+    if (up.package_status !== 'active') { await conn.rollback(); return res.status(400).json({ success: false, error: `Only an active package can be cancelled (this one is ${up.package_status})` }); }
+    await conn.query(
+      "UPDATE user_packages SET package_status = 'cancelled', cancelled_at = NOW(), cancel_reason = ?, cancelled_by = ? WHERE id = ?",
+      [reason.slice(0, 255), req.user.id, up.id]);
+    // upcoming visits of this package are stopped too
+    await conn.query(
+      "UPDATE package_service_schedules SET status = 'cancelled' WHERE user_package_id = ? AND status = 'pending'", [up.id]);
+    const [open] = await conn.query(
+      "SELECT id FROM bookings WHERE user_package_id = ? AND status IN ('pending_approval','confirmed')", [up.id]);
+    await conn.commit();
+    res.json({ success: true, message: 'Package cancelled', open_bookings: open.map(b => b.id) });
+  } catch (err) {
+    await conn.rollback();
+    console.error('Cancel user package error:', err);
+    res.status(500).json({ success: false, error: 'Failed to cancel package' });
+  } finally { conn.release(); }
+};
+
+// ═══════════════════════════════════════════════════════════
 // EXPIRE CHECK (called by cron)
 // ═══════════════════════════════════════════════════════════
 exports.expirePackages = async () => {
@@ -1116,6 +1168,7 @@ exports.getAllUserPackages = async (req, res) => {
       SELECT up.id, up.package_id, up.user_id, up.start_date, up.end_date, up.created_at,
              up.package_status, up.payment_status, up.price_paid,
              up.vehicle_segment, up.renewed_from_id, up.renewed_at,
+             up.cancelled_at, up.cancel_reason, p.is_active AS plan_active,
              p.name AS package_name, p.description,
              u.name AS customer_name, u.mobile AS customer_mobile,
              v.brand AS vehicle_brand, v.model AS vehicle_model, v.registration_no AS vehicle_reg_no
@@ -1169,7 +1222,7 @@ exports.getAllUserPackages = async (req, res) => {
 
       const endDate = pkg.end_date ? new Date(pkg.end_date) : null;
       const daysRemaining = endDate
-        ? Math.ceil((endDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+        ? calendarDaysLeft(endDate)
         : null;
 
       let reminderStage = null;
@@ -1226,6 +1279,25 @@ exports.adjustCredits = async (req, res) => {
     if (!service_name || new_used_count === undefined) {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'service_name and new_used_count are required' });
+    }
+
+    // The used count must be a whole number from 0 up to what the package gives for this service
+    const [[upRow]] = await conn.query('SELECT package_id FROM user_packages WHERE id = ?', [id]);
+    if (!upRow) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, error: 'Package not found' });
+    }
+    const svcList = await getServiceBreakdown(conn, upRow.package_id, null);
+    const svc = svcList.find(s => String(s.service_name).toLowerCase() === String(service_name).toLowerCase());
+    if (!svc) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: `${service_name} is not part of this package` });
+    }
+    const maxCount = Number(svc.total_count) || 0;
+    const usedNum = Number(new_used_count);
+    if (!Number.isInteger(usedNum) || usedNum < 0 || usedNum > maxCount) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, error: `Used count must be a whole number from 0 to ${maxCount}` });
     }
 
     // 1. Get current used count
@@ -1297,15 +1369,18 @@ exports.getExpiryAlerts = async (req, res) => {
         v.registration_no,
         v.brand,
         v.model,
-        DATEDIFF(up.end_date, NOW()) AS days_remaining
+        DATEDIFF(up.end_date, NOW()) AS days_remaining,
+        up.last_reminder_at, up.reminder_count, up.last_reminder_stage, up.package_status
       FROM user_packages up
       JOIN packages p ON up.package_id = p.id
       JOIN users u ON up.user_id = u.id
       LEFT JOIN vehicles v ON up.vehicle_id = v.id
-      WHERE up.package_status = 'active'
+      WHERE up.package_status IN ('active', 'expired')
+        AND COALESCE(u.is_active, 1) = 1 AND COALESCE(u.is_deleted, 0) = 0
         AND up.end_date IS NOT NULL
         AND up.end_date <= DATE_ADD(NOW(), INTERVAL 30 DAY)
-        AND up.end_date >= NOW()
+        AND up.end_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        AND NOT EXISTS (SELECT 1 FROM user_packages n WHERE n.renewed_from_id = up.id)
         AND (up.franchise_id = ? OR (up.franchise_id IS NULL AND ? = 1) OR u.franchise_id = ? OR (u.franchise_id IS NULL AND ? = 1))
       ORDER BY up.end_date ASC
     `, [activeFranchiseId, activeFranchiseId, activeFranchiseId, activeFranchiseId]);
@@ -1335,13 +1410,16 @@ exports.getExpiryAlerts = async (req, res) => {
       } else if (days <= 7) {
         reminder_stage = '1_week';
         reminder_label = '1 Week Before Reminder';
+      } else if (days <= 15) {
+        reminder_stage = '15_days';
+        reminder_label = '15 Days Before Reminder';
       } else {
         reminder_stage = '1_month';
         reminder_label = '1 Month Before Reminder (11 Months Mark)';
       }
 
       const vehicleStr = r.registration_no ? `${r.registration_no} (${r.brand || ''} ${r.model || ''})` : 'your vehicle';
-      const whatsapp_msg = `Hi ${r.customer_name},\n\nYour *${r.package_name}* package for *${vehicleStr}* is about to expire next month (*${formattedEndDate}*).\n\nDays Remaining: ${days > 0 ? days : 0} day(s)\n\nKindly visit O3 Car Spaa to redeem your remaining service sessions!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
+      const whatsapp_msg = `Hi ${r.customer_name},\n\nYour *${r.package_name}* package for *${vehicleStr}* ${days > 0 ? `ends on *${formattedEndDate}* (${days} day(s) left).\n\nPlease use your remaining services or renew.` : `ended on *${formattedEndDate}*.\n\nPlease renew to keep getting your services.`}\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
 
       return {
         ...r,
@@ -1465,6 +1543,11 @@ exports.getSchedulesForUserPackage = getSchedulesForUserPackage;
 exports.getPackageServiceSchedules = async (req, res) => {
   try {
     const { userPackageId } = req.params;
+    // A customer may only see their own package's visits
+    if (req.user.role === 'customer') {
+      const [[own]] = await pool.query('SELECT id FROM user_packages WHERE id = ? AND user_id = ?', [userPackageId, req.user.id]);
+      if (!own) return res.status(404).json({ success: false, error: 'Package not found' });
+    }
     const rows = await getSchedulesForUserPackage(pool, userPackageId);
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -1474,3 +1557,82 @@ exports.getPackageServiceSchedules = async (req, res) => {
 };
 
 
+
+
+// ─── Expiry reminder sent (admin) — remembered so the screen can show "sent · next in X days" ───
+exports.markReminderSent = async (req, res) => {
+  try {
+    const [r] = await pool.query('UPDATE user_packages SET last_reminder_at = NOW(), reminder_count = reminder_count + 1 WHERE id = ?', [req.params.userPackageId]);
+    if (!r.affectedRows) return res.status(404).json({ success: false, error: 'Package not found' });
+    res.json({ success: true, message: 'Reminder recorded' });
+  } catch (err) {
+    console.error('Mark reminder error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// PACKAGE RENEWAL REMINDERS — 30, 15, 7 and 1 day before, and on expiry.
+// Each stage is sent once (last_reminder_stage). If the server was off on the day,
+// the next run still sends the stage that is now due, so nothing is missed.
+// ═══════════════════════════════════════════════════════════
+const REMINDER_STAGES = [
+  { key: 'expired', max: 0 },
+  { key: '1d', max: 1 },
+  { key: '7d', max: 7 },
+  { key: '15d', max: 15 },
+  { key: '30d', max: 30 },
+];
+const stageFor = (days) => (REMINDER_STAGES.find(s => days <= s.max) || {}).key || null;
+exports.reminderStageFor = stageFor;
+
+exports.runPackageReminders = async () => {
+  await exports.expirePackages();
+  const [rows] = await pool.query(`
+    SELECT up.id, up.user_id, up.vehicle_id, up.package_id, up.end_date, up.package_status, up.last_reminder_stage,
+           up.franchise_id, p.name AS package_name, u.name, u.mobile, v.registration_no,
+           DATEDIFF(DATE(up.end_date), CURDATE()) AS days_left
+    FROM user_packages up
+    JOIN packages p ON p.id = up.package_id
+    JOIN users u ON u.id = up.user_id
+    LEFT JOIN vehicles v ON v.id = up.vehicle_id
+    WHERE up.end_date IS NOT NULL AND u.mobile IS NOT NULL
+      AND COALESCE(u.is_active, 1) = 1 AND COALESCE(u.is_deleted, 0) = 0
+      AND up.package_status IN ('active', 'expired')
+      AND DATE(up.end_date) <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      AND DATE(up.end_date) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      AND NOT EXISTS (SELECT 1 FROM user_packages n WHERE n.renewed_from_id = up.id)`);
+  let sent = 0;
+  for (const r of rows) {
+    const days = Number(r.days_left);
+    const stage = stageFor(days);
+    if (!stage || r.last_reminder_stage === stage) continue;
+    // Already sent the expired one → nothing more.
+    if (r.last_reminder_stage === 'expired') continue;
+    const car = r.registration_no ? ` for ${r.registration_no}` : '';
+    const end = new Date(r.end_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const body = stage === 'expired'
+      ? `Hi ${r.name}, your package "${r.package_name}"${car} ended on ${end}. Renew it at O3 Car Spaa to keep getting your services. Call 7225030303.`
+      : `Hi ${r.name}, your package "${r.package_name}"${car} ends on ${end} (${days === 1 ? '1 day' : days + ' days'} left). Please use your remaining services or renew. Call 7225030303. - O3 Car Spaa`;
+    try {
+      await require('../services/notificationService').notify({
+        customerId: r.user_id, customMessageBody: body, channels: ['whatsapp'],
+        eventTrigger: 'PACKAGE_EXPIRY_REMINDER', franchiseId: r.franchise_id || 1,
+        referenceType: 'user_package', referenceId: r.id,
+      });
+      await pool.query(
+        'UPDATE user_packages SET last_reminder_stage = ?, last_reminder_at = NOW(), reminder_count = COALESCE(reminder_count,0) + 1 WHERE id = ?',
+        [stage, r.id]);
+      sent++;
+    } catch (e) { console.error('[PackageReminder] failed for', r.id, e.message); }
+  }
+  return sent;
+};
+
+// POST /user-packages/expiry-alerts/send-now — admin runs the reminders straight away
+exports.sendRemindersNow = async (req, res, next) => {
+  try { res.json({ success: true, data: { sent: await exports.runPackageReminders() } }); }
+  catch (err) { next(err); }
+};
+
+exports.calendarDaysLeft = calendarDaysLeft;

@@ -1,10 +1,12 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { getLocation, locationPermission, distanceM, Fix } from '../../utils/location';
+import GpsOffPrompt, { GpsProblem } from '../../components/shared/GpsOffPrompt';
 import { Clock, LogIn, LogOut, Calendar, CheckCircle2, AlertCircle, Loader2, Camera, MapPin } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import ErrorState from '../../components/shared/ErrorState';
 import { useMyAttendance, useCheckOut } from '../../api/hooks/useStaff';
-import { formatTime } from '../../utils/formatters';
+import { formatTime, ymd, dateOnly } from '../../utils/formatters';
 import api from '../../api/axiosInstance';
 
 export default function CheckInOutPage() {
@@ -14,40 +16,58 @@ export default function CheckInOutPage() {
   const [checkingIn, setCheckingIn] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [photoData, setPhotoData] = useState<string | null>(null);
-  const [gpsLocation, setGpsLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsLocation, setGpsLocation] = useState<Fix | null>(null);
+  const [studio, setStudio] = useState<{ name: string; lat: number; lng: number; radius: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [gpsProblem, setGpsProblem] = useState<GpsProblem>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const attendanceRecords = attRes?.data || [];
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayRecord = attendanceRecords.find((r: any) => r.att_date.startsWith(todayStr));
+  const todayStr = ymd();
+  const todayRecord = attendanceRecords.find((r: any) => dateOnly(r.att_date) === todayStr);
+
+  // Studio pin + radius set by the admin; if location is already allowed, detect it right away
+  useEffect(() => {
+    api.get('/staff/premises').then(r => {
+      const f = r.data.data;
+      if (f?.latitude != null) setStudio({ name: f.name, lat: parseFloat(f.latitude), lng: parseFloat(f.longitude), radius: f.geofence_radius_m || 150 });
+    }).catch(() => {});
+    locationPermission().then(st => { if (st === 'granted') locate().catch(() => {}); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const locate = async () => {
+    setLocating(true);
+    try {
+      const fix = await getLocation();
+      setGpsLocation(fix);
+      return fix;
+    } catch (p: any) {
+      setGpsProblem(p);
+      throw p;
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const away = gpsLocation && studio ? distanceM(gpsLocation, studio) : null;
+  const dist = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`);
+  const inside = away != null && studio ? away <= studio.radius + Math.min(gpsLocation!.accuracy, 100) : null;
 
   const startCamera = async () => {
-    // 1. Get GPS Location first
-    if (!navigator.geolocation) {
-      toast.error('Geolocation is not supported by your browser.');
+    // 1. Location first (asks to turn on / allow location if needed)
+    let fix: Fix;
+    try { fix = await locate(); } catch { return; }
+    if (studio && distanceM(fix, studio) > studio.radius + Math.min(fix.accuracy, 100)) {
+      toast.error(`You are ${dist(distanceM(fix, studio))} from the studio. Check in at ${studio.name}.`);
       return;
     }
-    toast.loading('Fetching your GPS location...', { id: 'gps' });
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        toast.dismiss('gps');
-        setGpsLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setShowCamera(true);
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        } catch {
-          toast.error('Camera access denied or not available.');
-        }
-      },
-      (err) => {
-        toast.dismiss('gps');
-        toast.error(`GPS Location error: ${err.message}. Please enable location services.`);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+    setShowCamera(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+      if (videoRef.current) videoRef.current.srcObject = stream;
+    } catch {
+      toast.error('Camera access denied or not available.');
+    }
   };
 
   const capturePhoto = () => {
@@ -76,9 +96,10 @@ export default function CheckInOutPage() {
       await api.post('/staff/check-in', {
         latitude: gpsLocation.lat,
         longitude: gpsLocation.lng,
+        accuracy: gpsLocation.accuracy,
         face_photo_url: photoData
       });
-      toast.success('Clocked in successfully! (Anand premises verified)');
+      toast.success('Checked in — studio location verified');
       setShowCamera(false);
       setPhotoData(null);
       refetch();
@@ -92,16 +113,21 @@ export default function CheckInOutPage() {
   const handleCheckOut = async () => {
     if (!confirm('Are you sure you want to check out for today?')) return;
     try {
-      await checkOutMut.mutateAsync();
+      // location is checked on the server: check-out only works at the studio
+      let fix: Fix;
+      try { fix = await locate(); } catch { return; }
+      const loc = { latitude: fix.lat, longitude: fix.lng, accuracy: fix.accuracy };
+      await checkOutMut.mutateAsync(loc);
       toast.success('Clocked out successfully');
       refetch();
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to clock out');
+      toast.error(err.response?.data?.error || err.message || 'Failed to clock out');
     }
   };
 
   return (
     <>
+      <GpsOffPrompt purpose="attendance" problem={gpsProblem} onClose={() => setGpsProblem(null)} onRetry={() => { setGpsProblem(null); locate().catch(() => {}); }} />
       <AdminTopBar title="Staff Check-In / Check-Out" subtitle="Log your daily attendance and shift hours" />
 
       <div className="max-w-xl mx-auto mt-6">
@@ -169,6 +195,22 @@ export default function CheckInOutPage() {
                 )}
               </div>
 
+              {/* Where am I vs the studio */}
+              <div className={`mb-4 rounded-xl px-3.5 py-2.5 text-xs font-bold flex items-center gap-2 border ${
+                inside == null ? 'bg-slate-50 border-slate-200 text-slate-600' : inside ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
+                {locating ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                <span className="flex-1">
+                  {locating ? 'Finding your location…'
+                    : !studio ? 'Studio location not set yet — ask your admin'
+                    : away == null ? 'Location not checked yet'
+                    : inside ? `At the studio (${away} m from the pin)` : `${dist(away)} away — come within ${studio.radius} m of ${studio.name}`}
+                  {!locating && gpsLocation && gpsLocation.accuracy > 300 && (
+                    <span className="block font-semibold mt-0.5">This device gives only a rough location (±{dist(gpsLocation.accuracy)}, from Wi-Fi/internet — no GPS). Use your phone with location ON for check-in.</span>
+                  )}
+                </span>
+                {!locating && <button type="button" onClick={() => locate().catch(() => {})} className="underline">{away == null ? 'Check' : 'Refresh'}</button>}
+              </div>
+
               {/* Actions */}
               <div className="flex gap-4">
                 {!todayRecord ? (
@@ -178,7 +220,7 @@ export default function CheckInOutPage() {
                     className="flex-1 py-3.5 bg-gradient-to-r from-emerald-600 to-green-700 text-white font-extrabold rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-sm uppercase tracking-wider disabled:opacity-50"
                   >
                     {checkingIn ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
-                    Take Selfie & Clock In (Anand Only)
+                    Take Selfie & Clock In
                   </button>
                 ) : !todayRecord.check_out_time ? (
                   <button
@@ -259,7 +301,7 @@ export default function CheckInOutPage() {
             {gpsLocation && (
               <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-xl p-2.5 text-xs font-bold flex items-center justify-center gap-1.5">
                 <MapPin size={14} className="text-[#2563EB]" />
-                Geotag: {gpsLocation.lat.toFixed(4)}, {gpsLocation.lng.toFixed(4)} (O3 Anand Premises)
+                Geotag: {gpsLocation.lat.toFixed(5)}, {gpsLocation.lng.toFixed(5)} (±{gpsLocation.accuracy} m){away != null ? ` · ${away} m from studio` : ''}
               </div>
             )}
 

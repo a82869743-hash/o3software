@@ -57,20 +57,6 @@ export function useCreatePayment() {
   });
 }
 
-export function useCreateAdvancePayment() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: any) => {
-      const { data } = await api.post('/payments/advance', payload);
-      return data;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['advance-payments'] });
-      qc.invalidateQueries({ queryKey: ['payment-stats'] });
-    },
-  });
-}
-
 export function useCreateRefund() {
   const qc = useQueryClient();
   return useMutation({
@@ -79,6 +65,20 @@ export function useCreateRefund() {
       return data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['payments'] }),
+  });
+}
+
+/** Record money received against a balance due (old / imported / manual dues). */
+export function useCollectAdvance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, amount, payment_method }: { id: number; amount: number; payment_method: string }) => {
+      const { data } = await api.post(`/payments/advances/${id}/collect`, { amount, payment_method });
+      return data;
+    },
+    onSuccess: () => {
+      ['advance-payments', 'payment-stats', 'payments', 'user-packages'].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+    },
   });
 }
 
@@ -91,20 +91,18 @@ export function useSendPaymentReminder() {
   });
 }
 
-export function useCreateRazorpayOrder() {
+// Studio checked the bank app for a customer's UPI QR payment: confirm (counts it) or reject.
+export function useVerifyQrPayment() {
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (payload: { amount: number; currency?: string; receipt?: string }) => {
-      const { data } = await api.post('/payments/razorpay/order', payload);
+    mutationFn: async ({ id, action, reason }: { id: number; action: 'confirm' | 'reject'; reason?: string }) => {
+      const { data } = await api.post(`/payments/${id}/qr-verify`, { action, reason });
       return data;
     },
-  });
-}
-
-export function useVerifyRazorpayPayment() {
-  return useMutation({
-    mutationFn: async (payload: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
-      const { data } = await api.post('/payments/razorpay/verify', payload);
-      return data;
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['payments'] });
+      qc.invalidateQueries({ queryKey: ['payment-stats'] });
+      qc.invalidateQueries({ queryKey: ['advance-payments'] });
     },
   });
 }

@@ -1,4 +1,4 @@
-export const APP_NAME = 'O3 Car Spaaa';
+export const APP_NAME = 'O3 Car Spaa';
 
 export const APP_VERSION = '2.0.0';
 

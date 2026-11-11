@@ -1,3 +1,4 @@
+import catalogJson from '../data/carCatalog.json';
 /**
  * ─── CAR BRAND, MODEL & VARIANT DATASET ──────────────────────────────
  * Auto-generated from car model dataset.csv (1277 entries)
@@ -10,7 +11,8 @@ export interface CarModelData {
   variants: Record<string, string[]>;
 }
 
-export const carDataFull: Record<string, CarModelData> = {
+// Older models from the first dataset (kept so customers with older cars still find them).
+const legacyCarData: Record<string, CarModelData> = {
   "Aston Martin": {
     models: ["Db 11","Rapide","Vantage"],
     variants: {
@@ -433,10 +435,53 @@ export const carDataFull: Record<string, CarModelData> = {
   }
 };
 
-/** Sorted list of brand names for dropdowns */
-export const carBrands: string[] = [...Object.keys(carDataFull), "Others"];
-
 /** Legacy compat: brand -> model list (without variants) */
+// ─── The car list: data/carCatalog.json (same file as the server's). Brand → model → [car type, trims]. ───
+type Catalog = Record<string, Record<string, [string, string]>>;
+const CATALOG: Catalog = Object.fromEntries(Object.entries(catalogJson as any).filter(([k]) => !k.startsWith('_'))) as Catalog;
+const keyOf = (s: string) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const BRAND_SAME: Record<string, string> = { mercedesbenz: 'Mercedes-Benz', mercedes: 'Mercedes-Benz', benz: 'Mercedes-Benz', maruti: 'Maruti Suzuki', suzuki: 'Maruti Suzuki', tatamotors: 'Tata', vw: 'Volkswagen', mgmotor: 'MG', rangerover: 'Land Rover', forcemotors: 'Force', rollsroyce: 'Rolls-Royce' };
+const catalogBrand = (b: string) => BRAND_SAME[keyOf(b)] || Object.keys(CATALOG).find(x => keyOf(x) === keyOf(b)) || null;
+
+/** Car type from the car list for this exact model (null when the model is not in the list). */
+export function catalogCategory(brand: string, model: string): string | null {
+  const m = keyOf(model);
+  if (!m) return null;
+  const b = catalogBrand(brand);
+  const find = (models: Record<string, [string, string]>, exact = false) => {
+    let best: [string, string] | null = null, len = 0;
+    for (const [name, v] of Object.entries(models)) {
+      const k = keyOf(name);
+      // exact name, or a longer name like "Creta SX (O)" that starts with the model
+      if ((m === k || (!exact && m.startsWith(k))) && k.length > len) { best = v; len = k.length; }
+    }
+    return best?.[0] || null;
+  };
+  if (b && CATALOG[b]) return find(CATALOG[b]);
+  // brand unknown: only an exact model name counts (short names like "ES" would match too much)
+  for (const models of Object.values(CATALOG)) { const t = find(models, true); if (t) return t; }
+  return null;
+}
+
+// Full list = the car list first, then older models it does not have.
+export const carDataFull: Record<string, CarModelData> = {};
+for (const [brand, models] of Object.entries(CATALOG)) {
+  carDataFull[brand] = { models: Object.keys(models), variants: Object.fromEntries(Object.entries(models).map(([m, [, trims]]) => [m, trims.split('|')])) };
+}
+for (const [brand, d] of Object.entries(legacyCarData)) {
+  const b = catalogBrand(brand) || brand;
+  const entry = carDataFull[b] || (carDataFull[b] = { models: [], variants: {} });
+  const have = new Set(entry.models.map(keyOf));
+  for (const m of d.models) {
+    if (have.has(keyOf(m))) continue;
+    entry.models.push(m); entry.variants[m] = d.variants[m] || [];
+  }
+}
+for (const d of Object.values(carDataFull)) d.models.sort((a, b) => a.localeCompare(b));
+
+/** Sorted list of brand names for dropdowns */
+export const carBrands: string[] = [...Object.keys(carDataFull).sort((a, b) => a.localeCompare(b)), "Others"];
+
 export const carData: Record<string, string[]> = Object.fromEntries(
   Object.entries(carDataFull).map(([brand, d]) => [brand, [...d.models, "Other"]])
 );
@@ -470,7 +515,7 @@ const modelCategoryMap: Record<string, string> = {
   "wagon r": "hatchback",
   "wagonr": "hatchback",
   "swift": "hatchback",
-  "ignis": "hatchback",
+  "ignis": "semi_sedan",
   "omni": "hatchback",
   "eeco": "hatchback",
   "ritz": "hatchback",
@@ -478,17 +523,17 @@ const modelCategoryMap: Record<string, string> = {
   "estilo": "hatchback",
   "zen": "hatchback",
   "800": "hatchback",
-  "baleno": "medium_hatchback",
-  "baleno rs": "medium_hatchback",
+  "baleno": "hatchback",
+  "baleno rs": "hatchback",
   "dzire": "sedan",
   "dzire tour": "sedan",
   "swift dzire": "sedan",
   "sx4": "sedan",
   "esteem": "sedan",
-  "ciaz": "premium_sedan",
-  "fronx": "suv",
-  "brezza": "suv",
-  "vitara brezza": "suv",
+  "ciaz": "sedan",
+  "fronx": "semi_sedan",
+  "brezza": "semi_sedan",
+  "vitara brezza": "semi_sedan",
   "grand vitara": "suv",
   "jimny": "suv",
   "s-cross": "suv",
@@ -505,18 +550,18 @@ const modelCategoryMap: Record<string, string> = {
   "grand i10 prime": "hatchback",
   "i10": "hatchback",
   "getz": "hatchback",
-  "i20": "medium_hatchback",
-  "elite i20": "medium_hatchback",
-  "i20 active": "medium_hatchback",
-  "exter": "medium_hatchback",
+  "i20": "hatchback",
+  "elite i20": "hatchback",
+  "i20 active": "hatchback",
+  "exter": "semi_sedan",
   "xcent": "sedan",
   "xcent prime": "sedan",
   "aura": "sedan",
   "accent": "sedan",
   "verna": "sedan",
-  "elantra": "premium_sedan",
-  "sonata": "premium_sedan",
-  "venue": "suv",
+  "elantra": "sedan",
+  "sonata": "sedan",
+  "venue": "semi_sedan",
   "creta": "suv",
   "alcazar": "suv",
   "tucson": "suv",
@@ -529,16 +574,16 @@ const modelCategoryMap: Record<string, string> = {
   "indica": "hatchback",
   "tiago": "hatchback",
   "tiago nrg": "hatchback",
-  "altroz": "medium_hatchback",
-  "punch": "medium_hatchback",
+  "altroz": "hatchback",
+  "punch": "semi_sedan",
   "indigo": "sedan",
   "manza": "sedan",
   "zest": "sedan",
   "tigor": "sedan",
   "tigor ev": "sedan",
   "bolt": "hatchback",
-  "nexon": "suv",
-  "nexon ev": "suv",
+  "nexon": "semi_sedan",
+  "nexon ev": "semi_sedan",
   "curvv": "suv",
   "harrier": "suv",
   "safari": "suv",
@@ -548,7 +593,7 @@ const modelCategoryMap: Record<string, string> = {
   "winger": "suv",
 
   // Mahindra
-  "kuv100": "hatchback",
+  "kuv100": "semi_sedan",
   "kuv100 nxt": "hatchback",
   "e2o plus": "hatchback",
   "verito": "sedan",
@@ -556,58 +601,58 @@ const modelCategoryMap: Record<string, string> = {
   "e verito": "sedan",
   "bolero": "suv",
   "bolero power plus": "suv",
-  "bolero neo": "suv",
+  "bolero neo": "semi_sedan",
   "thar": "suv",
-  "xuv 3xo": "suv",
-  "xuv300": "suv",
+  "xuv 3xo": "semi_sedan",
+  "xuv300": "semi_sedan",
   "xuv500": "suv",
   "xuv700": "suv",
   "scorpio": "suv",
   "scorpio n": "suv",
   "scorpio classic": "suv",
   "marazzo": "suv",
-  "nuvosport": "suv",
-  "tuv300": "suv",
+  "nuvosport": "semi_sedan",
+  "tuv300": "semi_sedan",
   "tuv300 plus": "suv",
   "xylo": "suv",
-  "alturas g4": "suv",
+  "alturas g4": "premium_suv",
 
   // Honda
   "brio": "hatchback",
   "jazz": "hatchback",
-  "wr-v": "medium_hatchback",
+  "wr-v": "semi_sedan",
   "amaze": "sedan",
   "city": "sedan",
   "civic": "sedan",
-  "accord hybrid": "premium_sedan",
+  "accord hybrid": "sedan",
   "elevate": "suv",
   "brv": "suv",
   "cr-v": "suv",
 
   // Toyota
   "etios liva": "hatchback",
-  "glanza": "medium_hatchback",
+  "glanza": "hatchback",
   "etios cross": "suv",
   "platinum etios": "sedan",
   "yaris": "sedan",
   "corolla altis": "sedan",
-  "camry": "premium_sedan",
-  "prius": "premium_sedan",
-  "taisor": "suv",
+  "camry": "sedan",
+  "prius": "sedan",
+  "taisor": "semi_sedan",
   "hyryder": "suv",
   "innova": "suv",
   "innova crysta": "suv",
   "innova hycross": "suv",
-  "fortuner": "suv",
-  "land cruiser": "suv",
-  "land cruiser prado": "suv",
+  "fortuner": "premium_suv",
+  "land cruiser": "premium_suv",
+  "land cruiser prado": "premium_suv",
 
   // Kia
-  "sonet": "suv",
+  "sonet": "semi_sedan",
   "seltos": "suv",
   "carens": "suv",
-  "syros": "suv",
-  "carnival": "suv",
+  "syros": "semi_sedan",
+  "carnival": "premium_suv",
   "ev6": "suv",
 
   // Skoda
@@ -616,34 +661,34 @@ const modelCategoryMap: Record<string, string> = {
   "slavia": "sedan",
   "octavia": "sedan",
   "monte carlo": "sedan",
-  "superb": "premium_sedan",
-  "superb sportline": "premium_sedan",
-  "kylaq": "suv",
+  "superb": "sedan",
+  "superb sportline": "sedan",
+  "kylaq": "semi_sedan",
   "kushaq": "suv",
-  "kodiaq": "suv",
-  "kodiaq scout": "suv",
+  "kodiaq": "premium_suv",
+  "kodiaq scout": "premium_suv",
 
   // Volkswagen
   "polo": "hatchback",
   "ameo": "sedan",
   "vento": "sedan",
   "virtus": "sedan",
-  "passat": "premium_sedan",
+  "passat": "sedan",
   "taigun": "suv",
-  "tiguan": "suv",
+  "tiguan": "premium_suv",
 
   // Ford
   "figo": "hatchback",
-  "freestyle": "medium_hatchback",
+  "freestyle": "hatchback",
   "aspire": "sedan",
-  "ecosport": "suv",
-  "endeavour": "suv",
+  "ecosport": "semi_sedan",
+  "endeavour": "premium_suv",
   "mustang": "premium_sedan",
 
   // Renault
   "kwid": "hatchback",
   "pulse": "hatchback",
-  "kiger": "suv",
+  "kiger": "semi_sedan",
   "triber": "suv",
   "duster": "suv",
   "captur": "suv",
@@ -654,7 +699,7 @@ const modelCategoryMap: Record<string, string> = {
   "micra active": "hatchback",
   "sunny": "sedan",
   "kicks": "suv",
-  "magnite": "suv",
+  "magnite": "semi_sedan",
   "terrano": "suv",
   "x-trail": "suv",
   "gtr": "premium_sedan",
@@ -665,7 +710,7 @@ const modelCategoryMap: Record<string, string> = {
   "hector": "suv",
   "windsor": "suv",
   "zs ev": "suv",
-  "gloster": "suv",
+  "gloster": "premium_suv",
 
   // Citroen & Jeep
   "c3": "hatchback",
@@ -673,9 +718,9 @@ const modelCategoryMap: Record<string, string> = {
   "aircross": "suv",
   "compass": "suv",
   "compass trailhawk": "suv",
-  "meridian": "suv",
-  "wrangler": "suv",
-  "grand cherokee": "suv",
+  "meridian": "premium_suv",
+  "wrangler": "premium_suv",
+  "grand cherokee": "premium_suv",
 
   // Fiat & Datsun & Isuzu & Force
   "go": "hatchback",
@@ -690,91 +735,91 @@ const modelCategoryMap: Record<string, string> = {
   "linea classic": "sedan",
   "gurkha": "suv",
   "dmax v-cross": "suv",
-  "mu-x": "suv",
+  "mu-x": "premium_suv",
   "extreme": "suv",
   "rio": "suv",
   "qute (re60)": "hatchback",
 
   // Luxury & Premium Brands (BMW, Mercedes, Audi, Jaguar, Land Rover, Porsche, Lexus, Volvo, Exotic)
-  "2-series": "sedan",
-  "3-series": "sedan",
-  "5-series": "sedan",
-  "6-series": "sedan",
+  "2-series": "premium_sedan",
+  "3-series": "premium_sedan",
+  "5-series": "premium_sedan",
+  "6-series": "premium_sedan",
   "7-series": "premium_sedan",
   "m2 competition": "premium_sedan",
   "m4": "premium_sedan",
   "m5": "premium_sedan",
-  "x1": "suv",
-  "x3": "suv",
-  "x4": "suv",
-  "x5": "suv",
-  "x7": "suv",
+  "x1": "premium_suv",
+  "x3": "premium_suv",
+  "x4": "premium_suv",
+  "x5": "premium_suv",
+  "x7": "premium_suv",
   "z4 roadster": "premium_sedan",
-  "a-class": "sedan",
-  "c-class": "sedan",
-  "e-class": "sedan",
+  "a-class": "premium_sedan",
+  "c-class": "premium_sedan",
+  "e-class": "premium_sedan",
   "s-class": "premium_sedan",
-  "gla": "suv",
-  "glc": "suv",
-  "gle": "suv",
-  "gls": "suv",
-  "g-class": "suv",
-  "a3": "sedan",
-  "a3 cabriolet": "sedan",
-  "a4": "sedan",
-  "a5": "sedan",
-  "a5 cabriolet": "sedan",
-  "a6": "sedan",
+  "gla": "premium_suv",
+  "glc": "premium_suv",
+  "gle": "premium_suv",
+  "gls": "premium_suv",
+  "g-class": "premium_suv",
+  "a3": "premium_sedan",
+  "a3 cabriolet": "premium_sedan",
+  "a4": "premium_sedan",
+  "a5": "premium_sedan",
+  "a5 cabriolet": "premium_sedan",
+  "a6": "premium_sedan",
   "a8 l": "premium_sedan",
-  "q3": "suv",
-  "q5": "suv",
-  "q7": "suv",
-  "q8": "suv",
+  "q3": "premium_suv",
+  "q5": "premium_suv",
+  "q7": "premium_suv",
+  "q8": "premium_suv",
   "r8": "premium_sedan",
   "rs5": "premium_sedan",
   "rs7": "premium_sedan",
   "s5": "premium_sedan",
-  "xe": "sedan",
-  "xf": "sedan",
+  "xe": "premium_sedan",
+  "xf": "premium_sedan",
   "xj": "premium_sedan",
-  "f-pace": "suv",
+  "f-pace": "premium_suv",
   "f-type": "premium_sedan",
-  "discovery": "suv",
-  "discovery sport": "suv",
-  "range": "suv",
-  "range evoque": "suv",
-  "range evoque convertible": "suv",
-  "range sport": "suv",
-  "range velar": "suv",
+  "discovery": "premium_suv",
+  "discovery sport": "premium_suv",
+  "range": "premium_suv",
+  "range evoque": "premium_suv",
+  "range evoque convertible": "premium_suv",
+  "range sport": "premium_suv",
+  "range velar": "premium_suv",
   "718": "premium_sedan",
   "911": "premium_sedan",
-  "cayenne": "suv",
-  "cayenne coupe": "suv",
-  "macan": "suv",
+  "cayenne": "premium_suv",
+  "cayenne coupe": "premium_suv",
+  "macan": "premium_suv",
   "panamera": "premium_sedan",
-  "s60": "sedan",
-  "s60 cross country": "sedan",
+  "s60": "premium_sedan",
+  "s60 cross country": "premium_sedan",
   "s90": "premium_sedan",
   "v40": "hatchback",
   "v40 cross country": "hatchback",
-  "v90 cross country": "suv",
-  "xc40": "suv",
-  "xc60": "suv",
-  "xc90": "suv",
+  "v90 cross country": "premium_suv",
+  "xc40": "premium_suv",
+  "xc60": "premium_suv",
+  "xc90": "premium_suv",
   "es": "premium_sedan",
   "lc 500h": "premium_sedan",
   "ls 500h": "premium_sedan",
-  "lx 450d": "suv",
-  "lx 570": "suv",
-  "nx 300h": "suv",
-  "rx 450h": "suv",
-  "bentayga": "suv",
+  "lx 450d": "premium_suv",
+  "lx 570": "premium_suv",
+  "nx 300h": "premium_suv",
+  "rx 450h": "premium_suv",
+  "bentayga": "premium_suv",
   "continental gt": "premium_sedan",
   "flying spur": "premium_sedan",
   "mulsanne": "premium_sedan",
   "aventador": "premium_sedan",
   "huracan": "premium_sedan",
-  "urus": "suv",
+  "urus": "premium_suv",
   "458 speciale": "premium_sedan",
   "458 spider": "premium_sedan",
   "488 gtb": "premium_sedan",
@@ -784,7 +829,7 @@ const modelCategoryMap: Record<string, string> = {
   "ghibli": "premium_sedan",
   "grancabrio": "premium_sedan",
   "granturismo": "premium_sedan",
-  "levante": "suv",
+  "levante": "premium_suv",
   "quattroporte": "premium_sedan",
   "chiron": "premium_sedan",
   "avanti": "premium_sedan"
@@ -795,6 +840,8 @@ export function getCategoryForModel(brand: string, model: string): string {
   const m = model ? model.toLowerCase().trim() : '';
   
   if (!m) return 'sedan';
+  const listed = catalogCategory(brand, model);
+  if (listed) return listed;
 
   const cleanModel = m
     .replace(/\s+gt\s*.*$/i, '')
@@ -826,17 +873,21 @@ export function getCategoryForModel(brand: string, model: string): string {
   // 3. Brand & Pattern-based Heuristics for Luxuries and Off-catalog models
   if (b.includes('audi') || b.includes('bmw') || b.includes('mercedes') || b.includes('porsche') || b.includes('jaguar') || b.includes('land rover') || b.includes('lexus') || b.includes('volvo') || b.includes('bentley') || b.includes('ferrari') || b.includes('lamborghini') || b.includes('maserati') || b.includes('aston martin') || b.includes('bugatti')) {
     if (m.includes('q') || m.includes('x') || m.includes('macan') || m.includes('cayenne') || m.includes('gl') || m.includes('pace') || m.includes('discovery') || m.includes('range') || m.includes('levante') || m.includes('urus') || m.includes('bentayga')) {
-      return 'suv';
+      return 'premium_suv';
     }
     return 'premium_sedan';
   }
 
   // 4. Keyword heuristics for SUV, Hatchback, and Sedan
-  if (m.includes('suv') || m.includes('xuv') || m.includes('sport') || m.includes('cross') || m.includes('ranger') || m.includes('safari') || m.includes('harrier') || m.includes('nexon') || m.includes('creta') || m.includes('seltos') || m.includes('fortuner') || m.includes('innova') || m.includes('scorpio') || m.includes('bolero') || m.includes('thar') || m.includes('trax') || m.includes('gurkha')) {
+  if (m.includes('suv') || m.includes('xuv') || m.includes('sport') || m.includes('cross') || m.includes('ranger') || m.includes('safari') || m.includes('harrier') || m.includes('creta') || m.includes('seltos') || m.includes('fortuner') || m.includes('innova') || m.includes('scorpio') || m.includes('bolero') || m.includes('thar') || m.includes('trax') || m.includes('gurkha')) {
     return 'suv';
   }
 
-  if (m.includes('sedan') || m.includes('verna') || m.includes('city') || m.includes('amaze') || m.includes('slavia') || m.includes('virtus') || m.includes('ciaz') || m.includes('dzire') || m.includes('aura') || m.includes('tigor') || m.includes('linea') || m.includes('sunny')) {
+  if (m.includes('dzire') || m.includes('amaze') || m.includes('aura') || m.includes('tigor') || m.includes('xcent') || m.includes('aspire') || m.includes('zest')) {
+    return 'sedan';
+  }
+
+  if (m.includes('sedan') || m.includes('verna') || m.includes('city') || m.includes('slavia') || m.includes('virtus') || m.includes('ciaz') || m.includes('linea') || m.includes('sunny')) {
     return 'sedan';
   }
 
@@ -844,8 +895,8 @@ export function getCategoryForModel(brand: string, model: string): string {
     return 'hatchback';
   }
 
-  if (m.includes('i20') || m.includes('baleno') || m.includes('altroz') || m.includes('glanza') || m.includes('punch') || m.includes('exter') || m.includes('freestyle')) {
-    return 'medium_hatchback';
+  if (m.includes('i20') || m.includes('baleno') || m.includes('altroz') || m.includes('glanza') || m.includes('freestyle')) {
+    return 'hatchback';
   }
 
   return 'sedan';

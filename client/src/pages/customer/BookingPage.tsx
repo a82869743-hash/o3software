@@ -1,6 +1,13 @@
+import { useVehicleStore } from '../../store/vehicleStore';
+import { formatDuration } from '../../utils/formatters';
+import { regNoError, normalizeRegNo } from '../../utils/validators';
+import { CAR_TYPES, carTypeLabel } from '../../utils/carTypes';
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Check, Calendar, Clock, Car, Sparkles, Loader2, ArrowLeft, CreditCard, QrCode, Gift } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Check, Calendar, Clock, Car, Sparkles, Loader2, ArrowLeft, CreditCard, QrCode, Gift, Crosshair } from 'lucide-react';
+import GpsOffPrompt, { GpsProblem } from '../../components/shared/GpsOffPrompt';
+import { getLocation, addressFor, locationPermission, pointFor } from '../../utils/location';
+import PinPicker from '../../components/shared/PinPicker';
 import { useSlots, useSlotClosures } from '../../api/hooks/useSlots';
 import { useCreateBooking } from '../../api/hooks/useBookings';
 import Button from '../../components/ui/Button';
@@ -15,6 +22,9 @@ import api from '../../api/axiosInstance';
 import { useAuthStore } from '../../store/authStore';
 import QrPaymentModal from '../../components/shared/QrPaymentModal';
 import Modal from '../../components/ui/Modal';
+import { carImage } from '../../utils/carImage';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 const STEPS = ['Service & Vehicle', 'Date', 'Time', 'Confirm'];
 
@@ -31,6 +41,8 @@ function getServicePriority(name: string): number {
 }
 
 function sortServicesByPriority(services: any[]): any[] {
+  // the studio set its own display order → keep it exactly as the server sends it
+  if (services.some(s => Number(s.sort_order) > 0)) return services;
   return [...services].sort((a, b) => getServicePriority(a.name) - getServicePriority(b.name));
 }
 
@@ -90,7 +102,7 @@ export default function BookingPage() {
   const [bookingResult, setBookingResult] = useState<any>(null);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [submittingOnline, setSubmittingOnline] = useState(false);
-  const [payAdvance, setPayAdvance] = useState<'full' | 'part' | 'none'>('full');
+  const [payAdvance, setPayAdvance] = useState<'full' | 'part' | 'none'>('none');
 
   // Pickup options
   const [pickupOption, setPickupOption] = useState<'none' | 'pickup' | 'drop' | 'both'>('none');
@@ -102,10 +114,63 @@ export default function BookingPage() {
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('Gujarat');
   const [pincode, setPincode] = useState('');
+  const [pickupPin, setPickupPin] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
+  // A rough device location (laptops, weak GPS) must be checked by the customer before booking.
+  const [pinConfirmed, setPinConfirmed] = useState(false);
+  const pinNeedsCheck = !!pickupPin && pickupPin.accuracy > 100 && !pinConfirmed;
+  const [locating, setLocating] = useState(false);
+  const [findingOnMap, setFindingOnMap] = useState(false);
+  // Typed address -> pin on the map (the customer then drags it to the exact gate)
+  const findOnMap = async () => {
+    setFindingOnMap(true);
+    const p = await pointFor([pickupAddress, landmark, city, stateName, pincode]);
+    setFindingOnMap(false);
+    if (p) { setPickupPin({ ...p, accuracy: 0 }); setPinConfirmed(false); toast('success', 'Address found. Drag the pin to your exact gate.'); }
+    else toast('error', 'Could not find this address on the map. Drag the pin to your place.');
+  };
+  const [gpsProblem, setGpsProblem] = useState<GpsProblem>(null);
+
+  // Pickup/drop: fill the address from the phone's location (asks to turn on / allow location if needed)
+  const detectPickup = async (silent = false) => {
+    setLocating(true);
+    try {
+      const fix = await getLocation();
+      // auto-fill on page open only with a good fix; a rough one would put the driver at the wrong place
+      if (silent && fix.accuracy > 100) return;
+      setPickupPin(fix);
+      setPinConfirmed(false);
+      const place = await addressFor(fix.lat, fix.lng);
+      setSelectedAddressId('new');
+      if (place.address) setPickupAddress(place.address);
+      if (place.landmark) setLandmark(place.landmark);
+      if (place.city) setCity(place.city);
+      if (place.state) setStateName(place.state);
+      if (place.pincode) setPincode(place.pincode);
+      if (!silent) toast(fix.accuracy > 100 ? 'error' : 'success', fix.accuracy > 100
+        ? `Only a rough location (about ${fix.accuracy} m off). Drag the pin to your exact gate.`
+        : `Location found (±${fix.accuracy} m). Check the address.`);
+    } catch (p: any) {
+      if (!silent) setGpsProblem(p);
+    } finally {
+      setLocating(false);
+    }
+  };
+  useEffect(() => {
+    // location already allowed and no saved address → fill it in without asking
+    if (pickupOption === 'none' || pickupPin || pickupAddress) return;
+    locationPermission().then(st => { if (st === 'granted') detectPickup(true); });
+  }, [pickupOption]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Autocomplete data
   const { data: brandsRes } = useBrands();
   const { data: modelsRes } = useModels(brand);
+
+  // Admin changed services / packages / offer while the customer is booking: refresh those lists, keep their choices
+  useLiveReload(() => {
+    api.get('/services', { params: { for_app: true } }).then(r => setServices(sortServicesByPriority(r.data.data || []))).catch(() => {});
+    api.get('/packages').then(r => setPackages(r.data.data || [])).catch(() => {});
+    api.get('/settings/public').then(r => { if (r.data.success) setSettings(r.data.data || {}); }).catch(() => {});
+  });
 
   // Load services, packages, vehicles
   useEffect(() => {
@@ -114,12 +179,12 @@ export default function BookingPage() {
         const initialVehicleId = new URLSearchParams(window.location.search).get('vehicle_id');
         const activePkgUrl = initialVehicleId ? `/user-packages/active?vehicle_id=${initialVehicleId}` : '/user-packages/active';
         const [svcRes, pkgRes, myVehiclesRes, activePkgRes, settingsRes, dashboardRes, lastAddressRes, addressesRes, fwRes] = await Promise.all([
-          api.get('/services').catch(() => ({ data: { data: [] } })),
+          api.get('/services', { params: { for_app: true } }).catch(() => ({ data: { data: [] } })),
           api.get('/packages').catch(() => ({ data: { data: [] } })),
           api.get('/vehicles/my-vehicles').catch(() => ({ data: { data: [] } })),
           api.get(activePkgUrl).catch(() => ({ data: { data: [] } })),
-          api.get('/settings').catch(() => ({ data: { data: {} } })),
-          api.get('/dashboard').catch(() => ({ data: {} })),
+          api.get('/settings/public').catch(() => ({ data: { data: {} } })),
+          api.get('/dashboard/customer').catch(() => ({ data: {} })),
           api.get('/pickup-requests/last-address').catch(() => ({ data: { address: '' } })),
           api.get('/pickup-requests/addresses').catch(() => ({ data: { success: false, data: [] } })),
           api.get('/bookings/first-wash-eligibility').catch(() => ({ data: { is_eligible: false } })),
@@ -131,9 +196,11 @@ export default function BookingPage() {
         setUserVehicles(fetchedVehicles);
         
         if (fetchedVehicles.length > 0) {
-          const primary = initialVehicleId
-            ? (fetchedVehicles.find((v: any) => v.id.toString() === initialVehicleId) || fetchedVehicles.find((v: any) => v.is_primary) || fetchedVehicles[0])
-            : (fetchedVehicles.find((v: any) => v.is_primary) || fetchedVehicles[0]);
+          // car chosen in the app header (vehicle switcher) wins over the primary car
+          const current = useVehicleStore.getState().selectedId;
+          const primary = (initialVehicleId && fetchedVehicles.find((v: any) => v.id.toString() === initialVehicleId))
+            || fetchedVehicles.find((v: any) => v.id === current)
+            || fetchedVehicles.find((v: any) => v.is_primary) || fetchedVehicles[0];
           setSelectedVehicleId(primary.id);
           setBrand(primary.brand);
           setModel(primary.model);
@@ -171,6 +238,7 @@ export default function BookingPage() {
             const defAddr = addrs.find((a: any) => a.is_default) || addrs[0];
             setSelectedAddressId(defAddr.id);
             setPickupAddress(defAddr.address);
+            if (defAddr.latitude && defAddr.longitude) setPickupPin({ lat: Number(defAddr.latitude), lng: Number(defAddr.longitude), accuracy: 0 });
             setLandmark(defAddr.landmark || '');
             setCity(defAddr.city || '');
             setStateName(defAddr.state || 'Gujarat');
@@ -216,13 +284,15 @@ export default function BookingPage() {
         const brandValid = brand === 'Others' ? customBrand.trim().length > 0 : brand.trim().length > 0;
         const modelValid = (brand === 'Others' || model === 'Other') ? customModel.trim().length > 0 : model.trim().length > 0;
         const servicesValid = isPackageBooking ? selectedPackageServiceNames.length > 0 : selectedServices.length > 0;
-        return servicesValid && brandValid && modelValid;
+        // a typed-in car needs a valid number plate (saved cars already have one)
+        const regValid = selectedVehicleId ? true : (regNo.trim().length > 0 && !regNoError(regNo));
+        return servicesValid && brandValid && modelValid && regValid;
       }
       case 1: return selectedDate.length > 0;
       case 2: return selectedSlot !== null;
       default: return true;
     }
-  }, [step, selectedServices, selectedPackage, selectedPackageServiceNames, isPackageBooking, brand, model, customBrand, customModel, selectedDate, selectedSlot]);
+  }, [step, selectedServices, selectedPackage, selectedPackageServiceNames, isPackageBooking, brand, model, customBrand, customModel, selectedDate, selectedSlot, regNo, selectedVehicleId]);
 
   const selectedServicesObjs = services.filter((s) => selectedServices.includes(s.id));
   const selectedPackageObj = activePackages.find((p) => p.package_id === selectedPackage) || packages.find((p) => p.id === selectedPackage);
@@ -293,11 +363,11 @@ export default function BookingPage() {
           if (uName.includes('two wheeler') && sName.includes('two wheeler')) return true;
           return false;
         });
-        if (matched) sum += Number(matched.duration_minutes) || 0;
+        if (matched && matched.show_duration !== 0) sum += Number(matched.duration_minutes) || 0;
       }
       return sum;
     } else {
-      return selectedServicesObjs.reduce((sum, s) => sum + (Number(s.duration_minutes) || 0), 0);
+      return selectedServicesObjs.reduce((sum, s) => sum + (s.show_duration !== 0 ? Number(s.duration_minutes) || 0 : 0), 0);
     }
   }, [isPackageBooking, selectedPackageServiceNames, selectedServicesObjs, services]);
 
@@ -327,9 +397,9 @@ export default function BookingPage() {
   const pickupCharge = useMemo(() => {
     if (pickupOption === 'none') return 0;
     if (activePackageHasFreePickup) return 0;
-    if (pickupOption === 'pickup') return parseFloat(settings.pickup_charge || '150');
-    if (pickupOption === 'drop') return parseFloat(settings.drop_charge || '150');
-    if (pickupOption === 'both') return parseFloat(settings.pickup_drop_charge || '250');
+    if (pickupOption === 'pickup') return parseFloat(settings.pickup_charge || '0');
+    if (pickupOption === 'drop') return parseFloat(settings.drop_charge || '0');
+    if (pickupOption === 'both') return parseFloat(settings.pickup_drop_charge || '0');
     return 0;
   }, [pickupOption, activePackageHasFreePickup, settings]);
 
@@ -338,9 +408,23 @@ export default function BookingPage() {
     return Math.round(washServicesTotal * 0.50);
   }, [isPackageBooking, isFirstWashEligible, washServicesTotal]);
 
+  // Offer code (from the home-screen offer or typed in) — checked by the server, never trusted from the app
+  const [offerCode, setOfferCode] = useState<string>(() => { try { return sessionStorage.getItem('o3-offer') || ''; } catch { return ''; } });
+  const [offerInfo, setOfferInfo] = useState<{ discount: number; label: string; code: string } | null>(null);
+  const [offerErr, setOfferErr] = useState('');
+  const checkOffer = async (code = offerCode) => {
+    if (!code.trim() || isPackageBooking || estimatedTotal <= 0) { setOfferInfo(null); return; }
+    try {
+      const { data } = await api.get('/bookings/offer-check', { params: { code: code.trim(), amount: estimatedTotal } });
+      setOfferInfo({ discount: data.discount, label: data.label, code: data.code }); setOfferErr('');
+    } catch (e: any) { setOfferInfo(null); setOfferErr(e?.response?.data?.error || 'Code not valid'); }
+  };
+  useEffect(() => { if (offerCode && estimatedTotal > 0) checkOffer(); /* re-check when the services change */ }, [estimatedTotal, isPackageBooking]); // eslint-disable-line react-hooks/exhaustive-deps
+  const offerDiscount = offerInfo && offerInfo.discount > firstWashDiscountAmount ? offerInfo.discount : 0;
+
   const totalAfterFirstWashDiscount = useMemo(() => {
-    return Math.max(0, estimatedTotal - firstWashDiscountAmount);
-  }, [estimatedTotal, firstWashDiscountAmount]);
+    return Math.max(0, estimatedTotal - (offerDiscount || firstWashDiscountAmount));
+  }, [estimatedTotal, firstWashDiscountAmount, offerDiscount]);
 
   const discountAmount = useMemo(() => {
     if (isPackageBooking || useFreeWash || payAdvance !== 'full') return 0;
@@ -363,103 +447,6 @@ export default function BookingPage() {
   }, [payAdvance, finalTotal]);
 
 
-  const loadRazorpayScript = () => {
-    return new Promise<boolean>((resolve) => {
-      if ((window as any).Razorpay) return resolve(true);
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
-  const handlePayOnline = async (bookingId: number, advanceAmt: number, fullBookingResponse: any) => {
-    setSubmittingOnline(true);
-    try {
-      const sdkLoaded = await loadRazorpayScript();
-      if (!sdkLoaded) {
-        toast('error', 'Razorpay SDK failed to load. Are you online?');
-        setSubmittingOnline(false);
-        return;
-      }
-
-      const resOrder = await api.post('/payments/razorpay/order', {
-        amount: advanceAmt,
-        booking_id: bookingId
-      });
-
-      if (!resOrder.data.success) {
-        throw new Error(resOrder.data.error || 'Failed to create payment order');
-      }
-
-      const orderData = resOrder.data.data;
-
-      const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
-        amount: orderData.amount,
-        currency: orderData.currency,
-        name: 'O3 Car Spaa',
-        description: `Booking Advance Payment (Booking #${bookingId})`,
-        order_id: orderData.id,
-        prefill: {
-          name: useAuthStore.getState().user?.name || '',
-          email: useAuthStore.getState().user?.email || '',
-          contact: useAuthStore.getState().user?.mobile || ''
-        },
-        handler: async function (response: any) {
-          try {
-            const resVerify = await api.post('/payments/razorpay/verify', {
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
-            });
-
-            if (resVerify.data.success) {
-              toast('success', 'Payment successful! Your booking is registered.');
-              setBookingResult(fullBookingResponse);
-              setChoiceBookingData(null);
-            } else {
-              throw new Error('Payment verification failed');
-            }
-          } catch (err: any) {
-            toast('error', err.response?.data?.error || 'Payment verification failed. Please contact support.');
-          }
-        },
-        modal: {
-          ondismiss: function () {
-            toast('warning', 'Payment cancelled. Your booking slot is reserved for 10 minutes. You can pay from bookings list.');
-          }
-        },
-        theme: { color: '#2563EB' }
-      };
-
-      if (orderData.id.startsWith('order_mock_')) {
-        const confirmSimulate = window.confirm(
-          "RAZORPAY SANDBOX MODE (Keys Missing)\n\nWould you like to simulate a successful online payment?"
-        );
-        if (confirmSimulate) {
-          await options.handler({
-            razorpay_order_id: orderData.id,
-            razorpay_payment_id: 'pay_mock_' + Date.now(),
-            razorpay_signature: 'sig_mock_' + Date.now()
-          });
-        } else {
-          options.modal.ondismiss();
-        }
-        return;
-      }
-
-      const rzp = new (window as any).Razorpay(options);
-      rzp.open();
-    } catch (err: any) {
-      console.error('RAZORPAY ERROR:', err);
-      toast('error', err.message || 'An error occurred during Razorpay checkout.');
-    } finally {
-      setSubmittingOnline(false);
-    }
-  };
-
   const handleBook = async () => {
     try {
       setSubmittingOnline(true);
@@ -467,7 +454,7 @@ export default function BookingPage() {
         slot_id: selectedSlot.id,
         service_ids: !isPackageBooking && selectedServices.length > 0 ? selectedServices : undefined,
         package_service_name: isPackageBooking && selectedPackageServiceNames.length > 0 ? selectedPackageServiceNames.join(',') : undefined,
-        package_id: selectedPackage || undefined,
+        package_id: isPackageBooking ? (selectedPackage || undefined) : undefined,
         vehicle_id: selectedVehicleId || undefined,
         vehicle_brand: brand === 'Others' ? customBrand : brand,
         vehicle_model: (brand === 'Others' || model === 'Other') ? customModel : model,
@@ -476,13 +463,16 @@ export default function BookingPage() {
         use_package: isPackageBooking ? true : undefined,
         is_free_wash: useFreeWash || undefined,
         pay_advance: !isPackageBooking && !useFreeWash ? payAdvance : undefined,
+        offer_code: offerDiscount > 0 && offerInfo ? offerInfo.code : undefined,
         pickup_type: pickupOption,
         pickup_address_details: pickupOption !== 'none' ? {
           address: pickupAddress,
           landmark,
           city,
           state: stateName,
-          pincode
+          pincode,
+          latitude: pickupPin?.lat,
+          longitude: pickupPin?.lng
         } : undefined
       });
 
@@ -493,6 +483,8 @@ export default function BookingPage() {
           booking_id: bookingData.id,
           address: `${pickupAddress}${landmark ? ', Landmark: ' + landmark : ''}, ${city}, ${stateName} - ${pincode}`,
           scheduled_time: pickupTime || undefined,
+          latitude: pickupPin?.lat,
+          longitude: pickupPin?.lng,
           request_type: pickupOption
         });
       }
@@ -518,28 +510,28 @@ export default function BookingPage() {
           <Check size={36} className="text-green-600" />
         </div>
         <h2 className="text-2xl font-extrabold text-[#0F172A] mb-2">Booking Requested!</h2>
-        <p className="text-sm text-[#5f5e5e] mb-1">Your appointment request has been submitted for approval.</p>
+        <p className="text-sm text-[#64748B] mb-1">Your appointment request has been submitted for approval.</p>
         {isPackageBooking && (
           <p className="text-xs text-purple-600 font-semibold mb-1">📦 Package credit will be deducted once admin approves your booking.</p>
         )}
-        <p className="text-xs text-[#5f5e5e] mb-6">Reference: <span className="font-bold">#{bookingResult.data?.id}</span></p>
+        <p className="text-xs text-[#64748B] mb-6">Reference: <span className="font-bold">#{bookingResult.data?.id}</span></p>
         <div className="bg-white rounded-lg p-6 shadow-sm max-w-sm w-full text-left space-y-2">
           <div className="flex justify-between text-sm">
-            <span className="text-[#5f5e5e]">Service(s)</span>
+            <span className="text-[#64748B]">Service(s)</span>
             <span className="font-bold text-right ml-4">
               {isPackageBooking ? selectedPackageServiceNames.join(', ') : selectedServicesObjs.length > 0 ? selectedServicesObjs.map(s => s.name).join(', ') : (selectedPackageObj?.package_name || selectedPackageObj?.name)}
             </span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-[#5f5e5e]">Date</span>
+            <span className="text-[#64748B]">Date</span>
             <span className="font-bold">{new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-[#5f5e5e]">Time</span>
+            <span className="text-[#64748B]">Time</span>
             <span className="font-bold">{formatTime(selectedSlot.start_time)} – {formatTime(selectedSlot.end_time)}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-[#5f5e5e]">Vehicle</span>
+            <span className="text-[#64748B]">Vehicle</span>
             <span className="font-bold">{brand} {model}</span>
           </div>
         </div>
@@ -555,7 +547,7 @@ export default function BookingPage() {
     );
   }
 
-  if (settings.bookings_paused === '1') {
+  if (String(settings.bookings_paused) === '1' || String(settings.bookings_paused) === 'true') {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center max-w-md mx-auto">
         <div className="w-20 h-20 rounded-full bg-blue-50 flex items-center justify-center mb-6 border border-blue-100">
@@ -583,7 +575,7 @@ export default function BookingPage() {
           if (step > 0 && !window.confirm('You have unsaved booking progress. Leave this page?')) return;
           navigate('/customer/bookings');
         }}
-        className="flex items-center gap-2 text-gray-500 hover:text-gray-900 mb-4 text-sm font-medium transition-colors"
+        className="hidden lg:flex items-center gap-2 text-gray-500 hover:text-gray-900 mb-4 text-sm font-medium transition-colors"
       >
         <ArrowLeft size={14} /> Back to My Bookings
       </button>
@@ -593,7 +585,7 @@ export default function BookingPage() {
         {STEPS.map((label, i) => (
           <div key={label} className="flex items-center">
             <div className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-extrabold transition-colors ${
-              i < step ? 'bg-[#2563EB] text-white' : i === step ? 'bg-[#2563EB] text-white ring-4 ring-blue-100' : 'bg-[#f6f3f2] text-[#5f5e5e]'
+              i < step ? 'bg-[#2563EB] text-white' : i === step ? 'bg-[#2563EB] text-white ring-4 ring-blue-100' : 'bg-[#F1F5F9] text-[#64748B]'
             }`}>
               {i < step ? <Check size={14} /> : i + 1}
             </div>
@@ -613,32 +605,29 @@ export default function BookingPage() {
           <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100 mb-6 space-y-4 text-left">
             {userVehicles.length > 0 && !manualEntry ? (
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Select Your Vehicle</p>
-                <select
-                  value={selectedVehicleId || ''}
-                  onChange={(e) => {
-                    const vid = parseInt(e.target.value);
-                    const v = userVehicles.find((veh: any) => veh.id === vid);
-                    if (v) {
-                      setSelectedVehicleId(v.id);
-                      setBrand(v.brand);
-                      setModel(v.model);
-                      setRegNo(v.registration_no || '');
-                      if (v.category) {
-                        setFilter(v.category);
-                      } else {
-                        setFilter(getCategoryForModel(v.brand, v.model));
-                      }
-                    }
-                  }}
-                  className="w-full px-4 py-3 bg-[#f6f3f2] border border-transparent rounded-lg text-[#0F172A] font-bold focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 cursor-pointer text-sm"
-                >
-                  {userVehicles.map((v: any) => (
-                    <option key={v.id} value={v.id}>
-                      🚗 {v.brand} {v.model} {v.registration_no ? `(${v.registration_no})` : ''} {v.is_primary ? '★ Primary' : ''}
-                    </option>
-                  ))}
-                </select>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2">Select Your Vehicle</p>
+                {/* Saved cars as picture cards */}
+                <div className="flex gap-2.5 overflow-x-auto -mx-1 px-1 pb-1 snap-x">
+                  {userVehicles.map((v: any) => {
+                    const on = selectedVehicleId === v.id;
+                    return (
+                      <button type="button" key={v.id}
+                        onClick={() => {
+                          setSelectedVehicleId(v.id);
+                          useVehicleStore.getState().select(v.id);
+                          setBrand(v.brand);
+                          setModel(v.model);
+                          setRegNo(v.registration_no || '');
+                          setFilter(v.category || getCategoryForModel(v.brand, v.model));
+                        }}
+                        className={`snap-start shrink-0 w-[150px] rounded-xl border-2 bg-white p-2 text-left transition ${on ? 'border-[#2563EB] shadow-md shadow-blue-500/15' : 'border-slate-100 hover:border-blue-200'}`}>
+                        <img src={carImage(v)} alt="" className="w-full h-20 object-contain" loading="lazy" />
+                        <span className="block text-[12.5px] font-extrabold text-slate-900 truncate">{v.brand} {v.model}</span>
+                        <span className="block text-[10.5px] font-semibold text-slate-500 truncate">{v.registration_no || 'No number'}{v.is_primary ? ' · ★ Primary' : ''}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <button
                   type="button"
                   onClick={() => { setManualEntry(true); setSelectedVehicleId(null); setBrand(''); setModel(''); setRegNo(''); setFilter('hatchback'); }}
@@ -654,7 +643,7 @@ export default function BookingPage() {
                     type="button"
                     onClick={() => {
                       setManualEntry(false);
-                      const primary = userVehicles.find((v: any) => v.is_primary) || userVehicles[0];
+                      const primary = userVehicles.find((v: any) => v.id === useVehicleStore.getState().selectedId) || userVehicles.find((v: any) => v.is_primary) || userVehicles[0];
                       setSelectedVehicleId(primary.id);
                       setBrand(primary.brand);
                       setModel(primary.model);
@@ -696,6 +685,7 @@ export default function BookingPage() {
                     onChange={(e) => {
                       setModel(e.target.value);
                       setCustomModel('');
+                      if (e.target.value && e.target.value !== 'Other') setFilter(getCategoryForModel(brand, e.target.value));
                     }}
                     placeholder={brand ? "Select Model" : "Select brand first"}
                     disabled={!brand || brand === 'Others'}
@@ -705,26 +695,26 @@ export default function BookingPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-left mt-2">
                     {brand === 'Others' && (
                       <div>
-                        <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">Enter Brand Name *</label>
+                        <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">Enter Brand Name *</label>
                         <input
                           type="text"
                           value={customBrand}
                           onChange={(e) => setCustomBrand(e.target.value)}
                           placeholder="e.g. Porsche"
-                          className="w-full px-4 py-3 bg-[#f6f3f2] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 text-sm"
+                          className="w-full px-4 py-3 bg-[#F1F5F9] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 text-sm"
                           required
                         />
                       </div>
                     )}
                     {(brand === 'Others' || model === 'Other') && (
                       <div>
-                        <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">Enter Model Name *</label>
+                        <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">Enter Model Name *</label>
                         <input
                           type="text"
                           value={customModel}
                           onChange={(e) => setCustomModel(e.target.value)}
                           placeholder="e.g. Cayenne"
-                          className="w-full px-4 py-3 bg-[#f6f3f2] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 text-sm"
+                          className="w-full px-4 py-3 bg-[#F1F5F9] border border-transparent rounded-lg text-[#0F172A] font-medium focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 text-sm"
                           required
                         />
                       </div>
@@ -732,20 +722,17 @@ export default function BookingPage() {
                   </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Input label="Registration No (Optional)" placeholder="e.g. GJ01AB1234" value={regNo} onChange={(e) => setRegNo(e.target.value.toUpperCase())} />
+                  <Input label="Registration No *" placeholder="e.g. GJ01AB1234" maxLength={11} value={regNo} onChange={(e) => setRegNo(normalizeRegNo(e.target.value))}
+                    error={regNo && regNoError(regNo) ? regNoError(regNo) || undefined : undefined} />
                   <div>
-                    <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">Vehicle Category *</label>
-                    <select
+                    <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">Vehicle Category *</label>
+                    <Dropdown
                       value={filter}
                       onChange={(e) => setFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#f6f3f2] border border-transparent rounded-lg text-sm font-bold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 cursor-pointer"
+                      className="w-full px-3 py-2 bg-[#F1F5F9] border border-transparent rounded-lg text-sm font-bold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all duration-200 cursor-pointer"
                     >
-                      <option value="hatchback">Hatchback</option>
-                      <option value="medium_hatchback">Medium Hatchback</option>
-                      <option value="sedan">Sedan</option>
-                      <option value="premium_sedan">Premium Sedan</option>
-                      <option value="suv">SUV</option>
-                    </select>
+                      {CAR_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </Dropdown>
                   </div>
                 </div>
               </div>
@@ -773,7 +760,7 @@ export default function BookingPage() {
                   </div>
 
                   {/* Package services with remaining counts */}
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-3">Available Package Services</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-3">Available Package Services</p>
                   <div className="grid gap-3">
                     {(() => {
                       const packageUsage = activePackages[0]?.usage || [];
@@ -783,7 +770,7 @@ export default function BookingPage() {
                         return (
                           <div className="text-center py-8 bg-white rounded-lg border border-gray-100">
                             <Sparkles size={32} className="text-gray-300 mx-auto mb-2" />
-                            <p className="text-[#5f5e5e] font-medium">All package credits have been used</p>
+                            <p className="text-[#64748B] font-medium">All package credits have been used</p>
                             <p className="text-xs text-gray-400 mt-1">Please purchase a new package or book a regular service</p>
                           </div>
                         );
@@ -830,7 +817,7 @@ export default function BookingPage() {
                                   }`}>
                                     {usage.complimentary > 0 ? 'Free' : 'Mandatory'}
                                   </span>
-                                  {matchedService?.duration_minutes ? ` · ~${matchedService.duration_minutes} min` : ''}
+                                  {matchedService?.duration_minutes && matchedService.show_duration !== 0 ? ` · approx. ${formatDuration(matchedService.duration_minutes)}` : ''}
                                 </p>
                               </div>
                               <div className="flex items-center gap-3">
@@ -847,7 +834,7 @@ export default function BookingPage() {
                               </div>
                             </div>
                             {matchedService?.description && (
-                              <p className="text-xs text-[#5f5e5e] mt-1 ml-[22px] line-clamp-2">{matchedService.description}</p>
+                              <p className="text-xs text-[#64748B] mt-1 ml-[22px] line-clamp-2">{matchedService.description}</p>
                             )}
                           </button>
                         );
@@ -862,7 +849,7 @@ export default function BookingPage() {
                 <div className="text-center py-12 bg-white rounded-xl border border-gray-100">
                   <Sparkles size={48} className="text-gray-300 mx-auto mb-3" />
                   <h3 className="text-lg font-bold text-[#0F172A] mb-2">No Active or Valid Package</h3>
-                  <p className="text-sm text-[#5f5e5e] mb-4">You do not have an active package. Your previous package may have expired or ran out of credits. Please purchase a new package or book a regular service.</p>
+                  <p className="text-sm text-[#64748B] mb-4">You do not have an active package. Your previous package may have expired or ran out of credits. Please purchase a new package or book a regular service.</p>
                   <div className="flex justify-center gap-3">
                     <button
                       onClick={() => navigate('/customer/bookings/new')}
@@ -876,10 +863,33 @@ export default function BookingPage() {
             </div>
           ) : (
             <div>
+                  {/* Package first: a customer with credits should use them before paying */}
+                  {activePackages.length > 0 && (
+                    <div className="bg-gradient-to-r from-purple-50 to-purple-100 border border-purple-200 rounded-xl p-4 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-purple-200 flex items-center justify-center">
+                          <Sparkles size={16} className="text-purple-700" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-purple-800">You have an active <strong>{activePackages[0].package_name}</strong> package!</p>
+                          <p className="text-[10px] text-purple-600 mt-0.5">
+                            {(activePackages[0].usage || []).filter((u: any) => u.remaining > 0).map((u: any) => `${u.remaining} ${u.service_name}`).join(', ')} remaining
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => navigate('/customer/bookings/new?from_package=1')}
+                          className="px-3 py-1.5 bg-purple-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg hover:bg-purple-700 transition-colors flex-shrink-0"
+                        >
+                          Use Package
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
               {/* Vehicle category filter (read-only label since it matches chosen car) */}
               <div className="mb-4 text-left">
                 <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                  Pricing Category: <span className="text-[#2563EB] font-extrabold">{filter === 'medium_hatchback' ? 'Medium Hatchback' : filter === 'premium_sedan' ? 'Premium Sedan' : filter.toUpperCase().replace('_', ' ')}</span>
+                  Pricing Category: <span className="text-[#2563EB] font-extrabold">{carTypeLabel(filter)}</span>
                 </span>
               </div>
 
@@ -889,7 +899,7 @@ export default function BookingPage() {
                 <div className="space-y-6">
                   {services.length > 0 && (
                     <div>
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-3">Services</p>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-3">Services</p>
                       <div className="grid gap-3">
                         {sortServicesByPriority(services.filter(s => s.is_active && (!useFreeWash || s.name.toLowerCase().includes('wash')))).map((svc) => {
                           const isSelected = selectedServices.includes(svc.id);
@@ -906,13 +916,13 @@ export default function BookingPage() {
                               }`}
                             >
                               <div className="flex items-center justify-between">
-                                <p className="font-bold text-[#0F172A]">{svc.name}{svc.duration_minutes ? ` · ~${svc.duration_minutes} min` : ''}</p>
+                                <p className="font-bold text-[#0F172A]">{svc.name}{svc.duration_minutes && svc.show_duration !== 0 ? ` · approx. ${formatDuration(svc.duration_minutes)}` : ''}</p>
                                 <div className={`w-5 h-5 rounded border flex items-center justify-center ${isSelected ? 'bg-[#2563EB] border-[#2563EB]' : 'border-gray-300'}`}>
                                   {isSelected && <Check size={12} className="text-white" />}
                                 </div>
                               </div>
-                            {svc.description && <p className="text-xs text-[#5f5e5e] mt-1 line-clamp-2">{svc.description}</p>}
-                            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-[#5f5e5e]">
+                            {svc.description && <p className="text-xs text-[#64748B] mt-1 line-clamp-2">{svc.description}</p>}
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-[#64748B]">
                               <span className="font-bold text-[#2563EB]">
                                 {(() => {
                                   const p = parseFloat(String(svc[`price_${filter}`] || svc.price_sedan || 0));
@@ -958,31 +968,8 @@ export default function BookingPage() {
                     </div>
                   )}
 
-                  {/* Info-only: Show active package reminder if user has one */}
-                  {activePackages.length > 0 && (
-                    <div className="bg-gradient-to-r from-purple-50 to-purple-100 border border-purple-200 rounded-xl p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-lg bg-purple-200 flex items-center justify-center">
-                          <Sparkles size={16} className="text-purple-700" />
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-xs font-bold text-purple-800">You have an active <strong>{activePackages[0].package_name}</strong> package!</p>
-                          <p className="text-[10px] text-purple-600 mt-0.5">
-                            {(activePackages[0].usage || []).filter((u: any) => u.remaining > 0).map((u: any) => `${u.remaining} ${u.service_name}`).join(', ')} remaining
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => navigate('/customer/bookings/new?from_package=1')}
-                          className="px-3 py-1.5 bg-purple-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg hover:bg-purple-700 transition-colors flex-shrink-0"
-                        >
-                          Use Package
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
                   {!services.length && (
-                    <p className="text-center py-8 text-[#5f5e5e]">No services available yet. Please check back later.</p>
+                    <p className="text-center py-8 text-[#64748B]">No services available yet. Please check back later.</p>
                   )}
                 </div>
               )}
@@ -1029,7 +1016,7 @@ export default function BookingPage() {
 
           <div className="grid grid-cols-7 gap-1 mb-2">
             {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
-              <div key={d} className="text-center text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] py-2">{d}</div>
+              <div key={d} className="text-center text-[10px] font-bold uppercase tracking-widest text-[#64748B] py-2">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7 gap-1">
@@ -1052,7 +1039,7 @@ export default function BookingPage() {
                     isSelected ? 'bg-[#2563EB] text-white font-bold shadow-sm' :
                     isClosedDay ? 'bg-rose-50 text-rose-700 font-bold border border-rose-200 hover:bg-rose-100' :
                     isToday ? 'bg-blue-50 text-[#2563EB] font-bold border border-blue-200' :
-                    'hover:bg-[#f6f3f2] text-[#0F172A]'
+                    'hover:bg-[#F1F5F9] text-[#0F172A]'
                   }`}
                 >
                   <span className="text-sm font-bold">{d.getDate()}</span>
@@ -1068,7 +1055,7 @@ export default function BookingPage() {
             })}
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-4 mt-4 pt-3 border-t border-gray-100 text-[11px] text-[#5f5e5e]">
+          <div className="flex flex-wrap items-center justify-center gap-4 mt-4 pt-3 border-t border-gray-100 text-[11px] text-[#64748B]">
             <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-full bg-blue-50 border border-blue-200"></div>
               <span>Today</span>
@@ -1089,16 +1076,19 @@ export default function BookingPage() {
       {step === 2 && (
         <div className="bg-white rounded-lg p-6 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-            <p className="text-xs text-[#5f5e5e]">
+            <p className="text-xs text-[#64748B]">
               Available slots for <span className="font-bold text-[#0F172A]">{new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
             </p>
             {totalBookingDuration > 0 && (
               <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#2563EB] bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100 w-fit">
                 <Clock size={13} />
-                Duration: {totalBookingDuration} min ({Math.max(1, Math.ceil(totalBookingDuration / 60))} hr slot{Math.ceil(totalBookingDuration / 60) > 1 ? 's' : ''})
+                Approx. {formatDuration(totalBookingDuration)}
               </span>
             )}
           </div>
+          {totalBookingDuration > 0 && (
+            <p className="text-[11px] text-[#64748B] -mt-2 mb-3">Times are approximate. The studio will tell you the actual time after checking your car.</p>
+          )}
 
           {selectedDateClosure && (
             <div className="mb-4 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 flex items-start gap-3">
@@ -1124,20 +1114,21 @@ export default function BookingPage() {
           ) : (
             (() => {
               const rawSlots = (slotsData?.data || []).slice().sort((a: any, b: any) => a.start_time.localeCompare(b.start_time));
-              const requiredSlotCount = Math.max(1, Math.ceil(totalBookingDuration / 60));
+              // Service times are only a rough guide: the customer just picks a drop-off slot, the studio decides the real time.
+              const requiredSlotCount = 1;
 
               if (rawSlots.length === 0) {
                 return (
                   <div className="text-center py-12 bg-gray-50 rounded-xl border border-gray-100">
                     <Calendar size={36} className="text-gray-300 mx-auto mb-2" />
                     <p className="font-bold text-[#0F172A]">No slots scheduled for this date</p>
-                    <p className="text-xs text-[#5f5e5e] mt-1">Please pick another date or check back later.</p>
+                    <p className="text-xs text-[#64748B] mt-1">Please pick another date or check back later.</p>
                   </div>
                 );
               }
 
               return (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {rawSlots.map((slot: any, idx: number) => {
                     const isSelected = selectedSlot?.id === slot.id;
                     const isBlocked = !!slot.is_blocked;
@@ -1254,120 +1245,79 @@ export default function BookingPage() {
       {/* ═══ Step 3: Confirm ═══ */}
       {step === 3 && (
         <div className="bg-white rounded-lg p-6 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-4">Booking Summary</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-4">Booking Summary</p>
 
           <div className="space-y-3 text-sm mb-6">
             <div className="flex items-center gap-3 py-2 border-b border-gray-50">
               <Sparkles size={16} className="text-[#2563EB] shrink-0" />
-              <span className="text-[#5f5e5e]">Service(s)</span>
+              <span className="text-[#64748B]">Service(s)</span>
               <span className="ml-auto font-bold text-[#0F172A] text-right ml-4">
                 {isPackageBooking ? selectedPackageServiceNames.join(', ') : selectedServicesObjs.length > 0 ? selectedServicesObjs.map(s => s.name).join(', ') : (selectedPackageObj?.package_name || selectedPackageObj?.name)}
               </span>
             </div>
             <div className="flex items-center gap-3 py-2 border-b border-gray-50">
-              <Car size={16} className="text-[#2563EB] shrink-0" />
-              <span className="text-[#5f5e5e]">Vehicle</span>
+              <img src={carImage({ brand, model, category: filter })} alt="" className="w-12 h-8 object-contain shrink-0 -ml-1" />
+              <span className="text-[#64748B]">Vehicle</span>
               <span className="ml-auto font-bold text-[#0F172A]">{brand} {model} {regNo && `(${regNo})`}</span>
             </div>
             <div className="flex items-center gap-3 py-2 border-b border-gray-50">
               <Calendar size={16} className="text-[#2563EB] shrink-0" />
-              <span className="text-[#5f5e5e]">Date</span>
+              <span className="text-[#64748B]">Date</span>
               <span className="ml-auto font-bold text-[#0F172A]">{new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
             </div>
             <div className="flex items-center gap-3 py-2 border-b border-gray-50">
               <Clock size={16} className="text-[#2563EB] shrink-0" />
-              <span className="text-[#5f5e5e]">Time</span>
+              <span className="text-[#64748B]">Time</span>
               <span className="ml-auto font-bold text-[#0F172A]">{formatTime(selectedSlot?.start_time)} – {formatTime(selectedSlot?.end_time)}</span>
             </div>
             {totalBookingDuration > 0 && (
               <div className="flex items-center gap-3 py-2 border-b border-gray-50">
                 <Clock size={16} className="text-[#2563EB] shrink-0" />
-                <span className="text-[#5f5e5e]">Est. Duration</span>
-                <span className="ml-auto font-bold text-[#0F172A]">~{totalBookingDuration} mins</span>
+                <span className="text-[#64748B]">Approx. time</span>
+                <span className="ml-auto font-bold text-[#0F172A]">{formatDuration(totalBookingDuration)}</span>
               </div>
             )}
-            {/* Payment Option Selection */}
-            {!isPackageBooking && !useFreeWash && requiredAdvancePossible > 0 && (
-              <div className="mt-4 space-y-3 pb-4 border-b border-gray-100">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] text-left">Select Payment Option</p>
-                <div className="flex flex-col gap-3 text-left">
-
-                  {/* Part Advance — Priority */}
-                  <button
-                    type="button"
-                    onClick={() => setPayAdvance('part')}
-                    className={`p-4 rounded-xl border-2 text-left transition-all relative overflow-hidden ${
-                      payAdvance === 'part' ? 'border-[#2563EB] bg-blue-50/30 shadow-md' : 'border-gray-200 bg-white hover:border-gray-300'
-                    }`}
-                  >
-                    {payAdvance === 'part' && <div className="absolute top-0 left-0 w-1 h-full bg-[#2563EB] rounded-r" />}
-                    <div className="flex flex-wrap justify-between items-center w-full gap-2">
-                      <span className="font-extrabold text-sm text-[#0F172A]">₹200 Part Advance</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="bg-emerald-100 text-emerald-700 text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">⚡ 1st Priority</span>
-                        <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full">Part Pay</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-[#5f5e5e] mt-1.5 leading-relaxed font-medium">Pay ₹200 online now to secure your slot with <strong className="text-emerald-700">first priority</strong>. Pay remaining balance at the studio.</p>
-                  </button>
-
-                  {/* Full Advance — Priority + Discount */}
-                  <button
-                    type="button"
-                    onClick={() => setPayAdvance('full')}
-                    className={`p-4 rounded-xl border-2 text-left transition-all relative overflow-hidden ${
-                      payAdvance === 'full' ? 'border-[#2563EB] bg-blue-50/30 shadow-md' : 'border-gray-200 bg-white hover:border-gray-300'
-                    }`}
-                  >
-                    {payAdvance === 'full' && <div className="absolute top-0 left-0 w-1 h-full bg-[#2563EB] rounded-r" />}
-                    <div className="flex flex-wrap justify-between items-center w-full gap-2">
-                      <span className="font-extrabold text-sm text-[#0F172A]">Full Advance</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="bg-emerald-100 text-emerald-700 text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">⚡ 1st Priority</span>
-                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Save 10%</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-[#5f5e5e] mt-1.5 leading-relaxed font-medium">Pay full amount online now — get <strong className="text-green-700">10% discount</strong> and <strong className="text-emerald-700">first priority</strong> service.</p>
-                  </button>
-
-                  {/* Pay at Studio — No Priority */}
-                  <button
-                    type="button"
-                    onClick={() => setPayAdvance('none')}
-                    className={`p-4 rounded-xl border-2 text-left transition-all relative overflow-hidden ${
-                      payAdvance === 'none' ? 'border-[#2563EB] bg-blue-50/30 shadow-md' : 'border-gray-200 bg-white hover:border-gray-300'
-                    }`}
-                  >
-                    {payAdvance === 'none' && <div className="absolute top-0 left-0 w-1 h-full bg-[#2563EB] rounded-r" />}
-                    <div className="flex flex-wrap justify-between items-center w-full gap-2">
-                      <span className="font-extrabold text-sm text-[#0F172A]">Pay at Studio</span>
-                      <span className="bg-gray-100 text-gray-500 text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">No Priority</span>
-                    </div>
-                    <p className="text-xs text-[#5f5e5e] mt-1.5 leading-relaxed font-medium">Book your slot without paying advance. Pay full price at studio after service.</p>
-                    <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
-                      <p className="text-[10px] text-amber-700 font-bold leading-snug">⚠️ Advance-paying customers will be given first priority. Your service may be delayed if the studio is busy.</p>
-                    </div>
-                  </button>
-
-                </div>
+            {/* Payment: pay at the studio by UPI QR or cash */}
+            {!isPackageBooking && !useFreeWash && (
+              <div className="mt-4 mb-2 flex items-start gap-3 rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-left">
+                <QrCode size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+                <p className="text-xs text-emerald-800"><b>Pay at the studio</b> — scan our UPI QR or pay cash after your service. No advance needed.</p>
               </div>
             )}
-
             <div className="space-y-2 border-t border-gray-100 pt-4">
               {!isPackageBooking && (
                 <>
                   <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-gray-700">
-                    <span className="text-[#5f5e5e] font-normal">Original Total Price</span>
+                    <span className="text-[#64748B] font-normal">Original Total Price</span>
                     <span className="ml-auto">₹{estimatedTotal}</span>
                   </div>
-                  {firstWashDiscountAmount > 0 && (
+                  {/* Offer code */}
+                  <div className="py-2">
+                    <div className="flex gap-2">
+                      <input value={offerCode} onChange={e => { setOfferCode(e.target.value.toUpperCase()); setOfferErr(''); }} placeholder="Offer code (e.g. DIWALI30)"
+                        className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-[#F1F5F9] text-sm font-bold uppercase tracking-wide outline-none focus:ring-2 focus:ring-[#2563EB]/20" />
+                      <button type="button" onClick={() => checkOffer()} className="px-4 rounded-xl bg-[#0F172A] text-white text-sm font-bold">Apply</button>
+                    </div>
+                    {offerErr && <p className="text-[11px] text-rose-600 font-semibold mt-1">{offerErr}</p>}
+                    {offerInfo && !offerDiscount && <p className="text-[11px] text-slate-500 mt-1">Your first-wash discount is bigger, so we kept that.</p>}
+                  </div>
+                  {offerDiscount > 0 && (
+                    <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-emerald-700 bg-emerald-50/70 px-2.5 rounded-lg">
+                      <span className="flex items-center gap-1.5"><Sparkles size={14} className="text-amber-500" />{offerInfo?.label}</span>
+                      <span className="ml-auto font-extrabold">-₹{offerDiscount}</span>
+                    </div>
+                  )}
+                  {firstWashDiscountAmount > 0 && !offerDiscount && (
                     <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-blue-600 bg-blue-50/70 px-2.5 rounded-lg">
                       <span className="text-blue-700 font-bold flex items-center gap-1.5">
                         <Sparkles size={14} className="text-amber-500" />
-                        First Wash Special (50% OFF)
+                        First wash offer: 50% off {selectedServicesObjs.filter((sv: any) => /wash/i.test(sv.name)).map((sv: any) => sv.name).join(', ') || 'wash'}
                       </span>
                       <span className="ml-auto text-blue-700 font-extrabold">-₹{firstWashDiscountAmount}</span>
                     </div>
+                  )}
+                  {firstWashDiscountAmount > 0 && !offerDiscount && (
+                    <p className="text-[11px] text-slate-500 px-1 pt-1">The 50% first-wash offer applies to the wash only. Other services are charged in full.</p>
                   )}
                   {discountAmount > 0 && (
                     <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-green-600">
@@ -1379,24 +1329,24 @@ export default function BookingPage() {
               )}
               {pickupOption !== 'none' && (
                 <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-gray-700">
-                  <span className="text-[#5f5e5e] font-normal">Pickup & Drop ({pickupOption})</span>
+                  <span className="text-[#64748B] font-normal">Pickup & Drop ({pickupOption})</span>
                   <span className="ml-auto text-gray-800">
                     {pickupCharge > 0 ? `₹${pickupCharge}` : 'Free (Waived)'}
                   </span>
                 </div>
               )}
               <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-gray-700">
-                <span className="text-[#5f5e5e] font-normal">Total Price</span>
+                <span className="text-[#64748B] font-normal">Total Price</span>
                 <span className="ml-auto">₹{finalTotal}</span>
               </div>
               {requiredAdvance > 0 && (
                 <>
                   <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-base text-[#2563EB]">
-                    <span className="text-[#5f5e5e] font-normal text-sm">Advance Required</span>
+                    <span className="text-[#64748B] font-normal text-sm">Advance Required</span>
                     <span className="ml-auto">₹{requiredAdvance}</span>
                   </div>
                   <div className="flex items-center gap-3 py-2 border-b border-gray-50 font-bold text-sm text-gray-700">
-                    <span className="text-[#5f5e5e] font-normal">Balance Due at Studio</span>
+                    <span className="text-[#64748B] font-normal">Balance Due at Studio</span>
                     <span className="ml-auto">₹{finalTotal - requiredAdvance}</span>
                   </div>
                 </>
@@ -1409,15 +1359,15 @@ export default function BookingPage() {
                   <span className="text-purple-700 font-bold text-xs">Package Credit</span>
                   <span className="ml-auto text-xs font-bold text-purple-800">{activePackages[0]?.package_name}</span>
                 </div>
-                <p className="text-[10px] text-purple-600 ml-[28px]">Credit will be deducted only after admin approves this booking. If rejected or cancelled, your balance is restored.</p>
+                <p className="text-[10px] text-purple-600 ml-[28px]">This uses 1 credit from your package now. If the booking is rejected or cancelled, the credit comes back.</p>
               </div>
             )}
 
             {/* Pickup & Drop Option Section */}
             <div className="mt-4 p-4 rounded-xl border border-gray-100 bg-gray-50/50 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">Pickup & Drop Option</label>
-                <select
+                <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">Pickup & Drop Option</label>
+                <Dropdown
                   value={pickupOption}
                   onChange={(e) => setPickupOption(e.target.value as any)}
                   className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30 transition-all cursor-pointer"
@@ -1426,22 +1376,28 @@ export default function BookingPage() {
                   <option value="pickup">Pickup Only</option>
                   <option value="drop">Drop Only</option>
                   <option value="both">Pickup + Drop</option>
-                </select>
-                <p className="text-[11px] text-[#5f5e5e] mt-1">
+                </Dropdown>
+                <p className="text-[11px] text-[#64748B] mt-1">
                   {pickupOption === 'none' ? 'No extra charges apply.' :
                    activePackageHasFreePickup ? '🎉 Free Pickup & Drop under your active package!' :
-                   pickupOption === 'pickup' ? `Pickup charge: ₹${settings.pickup_charge || 150}` :
-                   pickupOption === 'drop' ? `Drop charge: ₹${settings.drop_charge || 150}` :
-                   `Pickup + Drop charge: ₹${settings.pickup_drop_charge || 250}`}
+                   pickupOption === 'pickup' ? `Pickup charge: ₹${settings.pickup_charge || 0}` :
+                   pickupOption === 'drop' ? `Drop charge: ₹${settings.drop_charge || 0}` :
+                   `Pickup + Drop charge: ₹${settings.pickup_drop_charge || 0}`}
                 </p>
               </div>
 
               {pickupOption !== 'none' && (
                 <div className="space-y-3 pt-2 border-t border-gray-200/50 animate-fade-in-up">
+                  <GpsOffPrompt purpose="pickup" problem={gpsProblem} onClose={() => setGpsProblem(null)} onRetry={() => { setGpsProblem(null); detectPickup(); }} />
+                  <button type="button" onClick={() => detectPickup()} disabled={locating}
+                    className="w-full py-2.5 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60">
+                    {locating ? <Loader2 size={15} className="animate-spin" /> : <Crosshair size={15} />}
+                    {locating ? 'Finding your location…' : pickupPin ? `Location pinned (±${pickupPin.accuracy} m) · Update` : 'Use my current location'}
+                  </button>
                   {savedAddresses.length > 0 && (
                     <div>
                       <label className="block text-xs font-semibold text-gray-700 mb-1">Select Saved Address</label>
-                      <select
+                      <Dropdown
                         value={selectedAddressId}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -1449,6 +1405,7 @@ export default function BookingPage() {
                           if (val !== 'new') {
                             const addr = savedAddresses.find(a => a.id === parseInt(val));
                             if (addr) {
+                              setPickupPin(addr.latitude && addr.longitude ? { lat: Number(addr.latitude), lng: Number(addr.longitude), accuracy: 0 } : null);
                               setPickupAddress(addr.address);
                               setLandmark(addr.landmark || '');
                               setCity(addr.city || '');
@@ -1456,6 +1413,7 @@ export default function BookingPage() {
                               setPincode(addr.pincode || '');
                             }
                           } else {
+                            setPickupPin(null);
                             setPickupAddress('');
                             setLandmark('');
                             setCity('');
@@ -1471,7 +1429,7 @@ export default function BookingPage() {
                           </option>
                         ))}
                         <option value="new">+ Add New Address</option>
-                      </select>
+                      </Dropdown>
                     </div>
                   )}
 
@@ -1541,6 +1499,32 @@ export default function BookingPage() {
                     </div>
                   </div>
 
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-semibold text-gray-700">Exact pin for the driver *</label>
+                      <button type="button" onClick={findOnMap} disabled={findingOnMap || !pickupAddress.trim()} className="text-xs font-bold text-blue-600 disabled:opacity-50">
+                        {findingOnMap ? 'Finding…' : 'Find this address on map'}
+                      </button>
+                    </div>
+                    {pickupPin ? (
+                      <>
+                        <PinPicker pin={pickupPin} onChange={p => { setPickupPin({ ...p, accuracy: 0 }); setPinConfirmed(true); }} />
+                        <p className="text-[11px] text-gray-500">
+                          Drag the pin or tap the map on your exact gate. The driver navigates to this pin.
+                        </p>
+                        {pinNeedsCheck && (
+                          <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[12px] text-amber-900 space-y-2">
+                            <p className="font-bold">Your device gave only a rough location (about {pickupPin.accuracy} m off).</p>
+                            <p>Move the pin to your gate, or tap "Find this address on map".</p>
+                            <button type="button" onClick={() => setPinConfirmed(true)} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-bold">The pin is at my gate</button>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-gray-500">Use your current location or tap "Find this address on map", then drag the pin to your exact gate.</p>
+                    )}
+                  </div>
+
                   {(pickupOption === 'pickup' || pickupOption === 'both') && (
                     <div>
                       <label className="block text-xs font-semibold text-gray-700 mb-1">Preferred Pickup Time (Optional)</label>
@@ -1561,7 +1545,7 @@ export default function BookingPage() {
             className="w-full" 
             onClick={handleBook} 
             loading={createMut.isPending || submittingOnline}
-            disabled={(pickupOption !== 'none' && !pickupAddress.trim()) || createMut.isPending || submittingOnline}
+            disabled={(pickupOption !== 'none' && (!pickupAddress.trim() || !pickupPin || pinNeedsCheck)) || createMut.isPending || submittingOnline}
           >
             {requiredAdvance > 0 ? `Pay Advance (₹${requiredAdvance})` : 'Confirm Booking'}
           </Button>
@@ -1602,20 +1586,13 @@ export default function BookingPage() {
         <Modal 
           open={!!choiceBookingData} 
           onClose={() => setChoiceBookingData(null)} 
-          title="Choose Advance Payment Method"
+          title="Pay the advance"
           size="sm"
         >
           <div className="flex flex-col gap-3 py-2 text-center">
             <p className="text-sm text-gray-600 mb-2">
               An advance payment of <span className="font-extrabold text-[#2563EB]">₹{choiceBookingData.bookingData.advance_amount}</span> is required to reserve your slot.
             </p>
-            <button
-              onClick={() => handlePayOnline(choiceBookingData.bookingData.id, choiceBookingData.bookingData.advance_amount, choiceBookingData.fullRes)}
-              className="w-full py-3 px-4 bg-[#2563EB] text-white rounded-xl font-extrabold text-sm hover:bg-[#1E40AF] shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"
-            >
-              <CreditCard size={16} />
-              Pay Online (Razorpay)
-            </button>
             <button
               onClick={() => {
                 setQrAmount(choiceBookingData.bookingData.advance_amount);

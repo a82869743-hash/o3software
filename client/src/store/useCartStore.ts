@@ -10,10 +10,11 @@ export interface ServiceCartItem {
   process_json?: any;
   image_url?: string;
   price_hatchback?: number | string;
-  price_medium_hatchback?: number | string;
+  price_semi_sedan?: number | string;
   price_sedan?: number | string;
   price_premium_sedan?: number | string;
   price_suv?: number | string;
+  price_premium_suv?: number | string;
   duration_minutes?: number;
   [key: string]: any;
 }

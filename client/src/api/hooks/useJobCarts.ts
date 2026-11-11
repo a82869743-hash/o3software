@@ -62,7 +62,7 @@ export const useSubmitJobCart = () => {
 export const useCompleteJobCart = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...body }: { id: number; credits_awarded?: number; free_washes_awarded?: number; wax_awarded?: number }) => {
+    mutationFn: async ({ id, ...body }: { id: number; credits_awarded?: number; free_washes_awarded?: number; wax_awarded?: number; amount_received?: number; payment_method?: string }) => {
       const res = await api.patch(`/job-carts/${id}/complete`, body);
       return res.data.data;
     },

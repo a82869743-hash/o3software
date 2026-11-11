@@ -8,17 +8,21 @@ import { useUIStore } from '../../store/uiStore';
 import { useUpdateProfile } from '../../api/hooks/useAuth';
 import api from '../../api/axiosInstance';
 import { Link } from 'react-router-dom';
+import { fileUrl } from '../../utils/endpoints';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 function ActiveCustomerPackageWidget() {
   const [pkg, setPkg] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
+  const [live, setLive] = useState(0);
+  useLiveReload(() => setLive(n => n + 1)); // reload when anything changes elsewhere
   useEffect(() => {
     api.get('/user-packages/active')
       .then(res => setPkg(res.data?.data || null))
       .catch(() => setPkg(null))
       .finally(() => setLoading(false));
-  }, []);
+  }, [live]);
 
   if (loading || !pkg) return null;
 
@@ -74,7 +78,7 @@ export default function ProfilePage() {
   });
 
   const [picPreview, setPicPreview] = useState<string | null>(
-    user?.profile_picture ? `http://localhost:5000${user.profile_picture}` : null
+    user?.profile_picture ? fileUrl(user.profile_picture) : null
   );
 
   const handleSave = async () => {
@@ -125,7 +129,7 @@ export default function ProfilePage() {
       }
     } catch (err: any) {
       toast('error', err?.response?.data?.error || 'Failed to upload photo');
-      setPicPreview(user?.profile_picture ? `http://localhost:5000${user.profile_picture}` : null);
+      setPicPreview(user?.profile_picture ? fileUrl(user.profile_picture) : null);
     } finally {
       setUploading(false);
     }
@@ -147,7 +151,7 @@ export default function ProfilePage() {
             <div className="relative group">
               <div
                 onClick={handlePictureClick}
-                className="w-24 h-24 rounded-2xl bg-gradient-to-br from-[#f6f3f2] to-[#ebe7e7] flex items-center justify-center text-[#2563EB] text-3xl font-black shadow-inner relative overflow-hidden cursor-pointer"
+                className="w-24 h-24 rounded-2xl bg-gradient-to-br from-[#F1F5F9] to-[#ebe7e7] flex items-center justify-center text-[#2563EB] text-3xl font-black shadow-inner relative overflow-hidden cursor-pointer"
               >
                 {picPreview ? (
                   <img src={picPreview} alt="Profile" className="w-full h-full object-cover" />
@@ -185,7 +189,7 @@ export default function ProfilePage() {
 
             <div>
               <h2 className="text-2xl font-black text-[#0F172A] mb-1 tracking-tight">{form.name || 'User Profile'}</h2>
-              <p className="text-[#5f5e5e] font-medium">{form.mobile}</p>
+              <p className="text-[#64748B] font-medium">{form.mobile}</p>
               <span className="inline-block mt-2 px-3 py-1 bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 text-xs font-bold uppercase tracking-wider rounded-lg border border-blue-200">
                 {user?.role || 'Customer'}
               </span>

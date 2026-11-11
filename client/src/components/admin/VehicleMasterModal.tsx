@@ -1,3 +1,4 @@
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Check, Car, Search } from 'lucide-react';
 import Modal from '../ui/Modal';
@@ -6,6 +7,7 @@ import api from '../../api/axiosInstance';
 import { toast } from 'react-hot-toast';
 
 import { getCategoryForModel } from '../../utils/carData';
+import Dropdown from '../ui/Dropdown';
 
 interface VehicleMasterItem {
   id: number;
@@ -155,17 +157,13 @@ export default function VehicleMasterModal({ open, onClose }: VehicleMasterModal
               onChange={(e) => setVariantInput(e.target.value)}
               className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             />
-            <select
+            <Dropdown
               value={categoryInput}
               onChange={(e) => setCategoryInput(e.target.value)}
               className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-medium"
             >
-              <option value="hatchback">Hatchback</option>
-              <option value="medium_hatchback">Medium Hatchback</option>
-              <option value="sedan">Sedan</option>
-              <option value="premium_sedan">Premium Sedan</option>
-              <option value="suv">SUV</option>
-            </select>
+              {CAR_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </Dropdown>
           </div>
           <div className="flex justify-end">
             <Button size="sm" loading={submitting} onClick={handleCreate} icon={<Plus size={14} />}>
@@ -257,17 +255,13 @@ export default function VehicleMasterModal({ open, onClose }: VehicleMasterModal
                           />
                         </td>
                         <td className="p-2">
-                          <select
+                          <Dropdown
                             value={editCategory}
                             onChange={(e) => setEditCategory(e.target.value)}
                             className="w-full px-2 py-1 border border-blue-400 rounded text-xs bg-white"
                           >
-                            <option value="hatchback">Hatchback</option>
-                            <option value="medium_hatchback">Medium Hatchback</option>
-                            <option value="sedan">Sedan</option>
-                            <option value="premium_sedan">Premium Sedan</option>
-                            <option value="suv">SUV</option>
-                          </select>
+                            {CAR_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                          </Dropdown>
                         </td>
                         <td className="p-2 text-right">
                           <div className="flex justify-end gap-1">

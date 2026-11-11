@@ -5,16 +5,17 @@ const ctrl = require('../controllers/staffHRController');
 
 // Tasks
 router.get('/tasks', auth, role(['admin', 'staff']), ctrl.getStaffTasks);
-router.post('/tasks', auth, role(['admin']), ctrl.createStaffTask);
+router.post('/tasks', auth, role(['staff']), ctrl.createStaffTask);
 router.put('/tasks/:id/status', auth, role(['admin', 'staff']), ctrl.updateTaskStatus);
 
 // Leaves
 router.get('/leaves', auth, role(['admin', 'staff']), ctrl.getStaffLeaves);
 router.post('/leaves', auth, role(['admin', 'staff']), ctrl.requestLeave);
-router.put('/leaves/:id/status', auth, role(['admin']), ctrl.updateLeaveStatus);
+router.put('/leaves/:id/status', auth, role(['staff']), ctrl.updateLeaveStatus);
 
 // Attendance
 router.get('/attendance', auth, role(['admin', 'staff']), ctrl.getStaffAttendanceList);
+router.get('/performance', auth, role(['admin', 'manager']), ctrl.getPerformance);
 
 // Payroll
 router.get('/payroll', auth, role(['admin', 'staff']), ctrl.getPayrollList);

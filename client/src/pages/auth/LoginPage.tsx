@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
 import api from '../../api/axiosInstance';
+import { landingPath } from '../../utils/access';
 import { useAuthStore } from '../../store/authStore';
 import Logo from '../../components/shared/Logo';
 
@@ -20,8 +21,11 @@ export default function LoginPage() {
   const { login } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
   const [isPending, setIsPending] = useState(false);
+  const [mode, setMode] = useState<'password' | 'otp'>('password');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otp, setOtp] = useState('');
 
-  const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>({
+  const { register, handleSubmit, getValues, formState: { errors } } = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
   });
 
@@ -37,13 +41,8 @@ export default function LoginPage() {
 
       login(result.token, result.user);
 
-      toast.success(`Welcome to O3 Car Spaaa, ${result.user?.name || 'User'}!`);
-      const redirects: Record<string, string> = {
-        admin: '/admin',
-        customer: '/customer',
-        staff: '/staff/job-carts',
-      };
-      navigate(redirects[result.user?.role] || '/');
+      toast.success(`Welcome to O3 Car Spaa, ${result.user?.name || 'User'}!`);
+      navigate(landingPath(result.user));
     } catch (err: any) {
       const message = err.response?.data?.error || err.response?.data?.message || 'Invalid credentials';
       toast.error(message);
@@ -52,10 +51,39 @@ export default function LoginPage() {
     }
   };
 
+  const sendOtp = async () => {
+    const mobile = (getValues('mobile') || '').replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(mobile)) { toast.error('Enter a valid 10-digit mobile number'); return; }
+    try {
+      setIsPending(true);
+      const { data } = await api.post('/auth/otp/send', { mobile });
+      setOtpSent(true);
+      toast.success(data.message || 'OTP sent');
+      if (data.dev_otp) toast.success(`Dev OTP: ${data.dev_otp}`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not send OTP');
+    } finally { setIsPending(false); }
+  };
+
+  const verifyOtp = async () => {
+    const mobile = (getValues('mobile') || '').replace(/\D/g, '');
+    if (otp.length !== 6) { toast.error('Enter the 6-digit OTP'); return; }
+    try {
+      setIsPending(true);
+      const { data } = await api.post('/auth/otp/login', { mobile, otp });
+      login(data.data.token, data.data.user);
+      toast.success(`Welcome to O3 Car Spaa, ${data.data.user?.name || ''}!`);
+      navigate(landingPath(data.data.user));
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Invalid OTP');
+    } finally { setIsPending(false); }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex">
       {/* Left — brand panel */}
       <div className="hidden lg:flex w-1/2 bg-[#0F172A] relative overflow-hidden items-center justify-center pattern-overlay">
+        <img src="/photos/studio-hero.webp" alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
         <div className="absolute inset-0 bg-gradient-to-br from-[#0284C7]/20 via-transparent to-[#0369A1]/10 animate-gradient-shift" />
         <div className="relative z-10 px-16 max-w-md">
           <div className="mb-6">
@@ -89,12 +117,15 @@ export default function LoginPage() {
       </div>
 
       {/* Right — login form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-white">
+      <div className="w-full lg:w-1/2 flex items-start lg:items-center justify-center px-5 pt-6 pb-10 lg:p-8 bg-white">
         <div className="w-full max-w-md animate-fade-in-up">
-          {/* Mobile brand header */}
-          <div className="lg:hidden text-center mb-8 flex flex-col items-center">
-            <Logo size="lg" />
-            <div className="w-12 h-1 bg-[#0284C7] mx-auto mt-4 rounded-full" />
+          {/* Mobile app hero */}
+          <div className="lg:hidden -mx-5 -mt-6 mb-6 px-6 pt-10 pb-16 rounded-b-[32px] bg-gradient-to-br from-[#0F172A] via-[#1E3A8A] to-[#2563EB] text-white text-center relative overflow-hidden">
+            <img src="/photos/studio-hero.webp" alt="" className="absolute inset-0 w-full h-full object-cover opacity-45" />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#0B1F4D]/40 via-[#0B1F4D]/60 to-[#1D4ED8]/80" />
+            <div className="relative inline-flex bg-white rounded-2xl p-2 shadow-xl"><Logo size="md" /></div>
+            <p className="relative mt-5 text-2xl font-black leading-tight">At your time.<br /><span className="text-sky-300">Showroom shine.</span></p>
+            <p className="relative mt-2 text-xs text-white/80">Ceramic · PPF · Detailing · Premium wash</p>
           </div>
 
           <div className="mb-8">
@@ -105,11 +136,20 @@ export default function LoginPage() {
               Sign In to O3
             </h2>
             <p className="text-sm text-slate-500 mt-1.5 font-medium">
-              Enter your mobile & password to access your account
+              Sign in with your password or a one-time code sent to your mobile
             </p>
           </div>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl mb-5">
+            {(['password', 'otp'] as const).map(m => (
+              <button key={m} type="button" onClick={() => { setMode(m); setOtpSent(false); setOtp(''); }}
+                className={`py-2 rounded-lg text-xs font-extrabold uppercase tracking-wider ${mode === m ? 'bg-white text-[#0284C7] shadow-sm' : 'text-slate-500'}`}>
+                {m === 'password' ? 'Password' : 'Login with OTP'}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={mode === 'password' ? handleSubmit(onSubmit) : (e) => { e.preventDefault(); otpSent ? verifyOtp() : sendOtp(); }} className="space-y-5">
             {/* Mobile Number */}
             <div>
               <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
@@ -136,7 +176,25 @@ export default function LoginPage() {
               )}
             </div>
 
+            {mode === 'otp' && (
+              <div className="space-y-3">
+                {otpSent && (
+                  <input type="text" inputMode="numeric" maxLength={6} value={otp} autoFocus
+                    onChange={e => setOtp(e.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit OTP"
+                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-center text-xl tracking-[0.4em] font-bold" />
+                )}
+                <button type="submit" disabled={isPending}
+                  className="w-full py-4 bg-[#0284C7] hover:bg-[#0369A1] text-white font-bold rounded-xl uppercase tracking-wider text-sm disabled:opacity-50">
+                  {isPending ? 'Please wait…' : otpSent ? 'Verify & Sign In' : 'Send OTP'}
+                </button>
+                {otpSent && (
+                  <button type="button" onClick={sendOtp} disabled={isPending} className="w-full text-xs font-bold text-[#0284C7]">Resend OTP</button>
+                )}
+              </div>
+            )}
+
             {/* Password */}
+            {mode === 'password' && (<>
             <div>
               <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-600 mb-1.5">
                 Password
@@ -196,20 +254,8 @@ export default function LoginPage() {
                 'Sign In'
               )}
             </button>
+            </>)}
 
-            {/* Quick 1-Click Login Helper */}
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  onSubmit({ mobile: '9316668760', password: 'admin' });
-                }}
-                disabled={isPending}
-                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition shadow-sm border border-slate-700 cursor-pointer"
-              >
-                <span>⚡ 1-Click Admin Login (9316668760)</span>
-              </button>
-            </div>
           </form>
 
 
@@ -227,7 +273,7 @@ export default function LoginPage() {
           {/* Footer */}
           <div className="mt-8 text-center">
             <p className="text-[10px] text-slate-400 font-medium">
-              O3 Car Spaaa v2.0 · Anand, Gujarat (388121)
+              O3 Car Spaa v2.0 · Anand, Gujarat (388121)
             </p>
           </div>
         </div>

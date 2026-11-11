@@ -4,6 +4,7 @@ import { Shield, Search, Filter, Clock, User, Activity, AlertTriangle, Eye } fro
 import { useAuditLogs, useAuditSummary } from '../../api/hooks/useAudit';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
+import Dropdown from '../../components/ui/Dropdown';
 
 const ACTION_COLORS: Record<string, string> = {
   create: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -71,7 +72,7 @@ export default function AuditLogPage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[180px]">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <select value={filters.action} onChange={e => setFilters(p => ({ ...p, action: e.target.value }))}
+            <Dropdown value={filters.action} onChange={e => setFilters(p => ({ ...p, action: e.target.value }))}
               className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 appearance-none bg-white">
               <option value="">All Actions</option>
               <option value="create">Create</option>
@@ -79,9 +80,9 @@ export default function AuditLogPage() {
               <option value="delete">Delete</option>
               <option value="login">Login</option>
               <option value="payment">Payment</option>
-            </select>
+            </Dropdown>
           </div>
-          <select value={filters.entity_type} onChange={e => setFilters(p => ({ ...p, entity_type: e.target.value }))}
+          <Dropdown value={filters.entity_type} onChange={e => setFilters(p => ({ ...p, entity_type: e.target.value }))}
             className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-purple-500/20 min-w-[140px]">
             <option value="">All Entities</option>
             <option value="job_cart">Job Card</option>
@@ -89,7 +90,7 @@ export default function AuditLogPage() {
             <option value="user">User</option>
             <option value="booking">Booking</option>
             <option value="inventory">Inventory</option>
-          </select>
+          </Dropdown>
           <input type="date" value={filters.from} onChange={e => setFilters(p => ({ ...p, from: e.target.value }))}
             className="text-xs border border-gray-200 rounded-xl px-3 py-2" />
           <span className="text-gray-400 text-xs">to</span>

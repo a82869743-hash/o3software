@@ -31,6 +31,12 @@ const roleMiddleware = (allowedRoles = []) => {
       return next();
     }
 
+    // 1b. Internal users already cleared by the central permission matrix (accessControl)
+    //     for this module/action — the matrix is the source of truth for staff access.
+    if (req.rbacGranted && ['admin', 'manager', 'staff'].includes(userRole) && !allowedRoles.every(r => r === 'customer')) {
+      return next();
+    }
+
     // 2. Direct exact role match
     if (allowedRoles.includes(userRole)) {
       return next();

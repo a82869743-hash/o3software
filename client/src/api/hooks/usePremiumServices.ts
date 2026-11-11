@@ -65,17 +65,3 @@ export const useDeleteAddon = () => {
     },
   });
 };
-
-/** Toggle premium flag for a service */
-export const useTogglePremium = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, is_premium }: { id: number; is_premium: boolean }) => {
-      const res = await api.put(`/services/${id}`, { is_premium: is_premium ? 1 : 0 });
-      return res.data;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['services'] });
-    },
-  });
-};

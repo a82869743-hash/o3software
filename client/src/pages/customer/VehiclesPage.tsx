@@ -7,6 +7,9 @@ import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { useCustomerVehicles } from '../../api/hooks/useVehicles';
 import AddCarModal from '../../components/shared/AddCarModal';
 import api from '../../api/axiosInstance';
+import { carImage } from '../../utils/carImage';
+import PhotoBanner from '../../components/customer/PhotoBanner';
+import { PHOTOS as BANNER_PHOTOS } from '../../components/customer/serviceVisuals';
 import { useQueryClient } from '@tanstack/react-query';
 
 export default function VehiclesPage() {
@@ -41,6 +44,7 @@ export default function VehiclesPage() {
 
   return (
     <>
+      <PhotoBanner img={BANNER_PHOTOS.showroom} kicker="Your garage" line="Prices are shown for your car" />
       <AdminTopBar 
         title="My Vehicles" 
         subtitle="Manage your registered vehicles" 
@@ -56,7 +60,7 @@ export default function VehiclesPage() {
 
       <div className="max-w-5xl">
         {isLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {[1, 2, 3].map(i => <SkeletonCard key={i} />)}
           </div>
         ) : !vehicles.length ? (
@@ -68,7 +72,7 @@ export default function VehiclesPage() {
             onAction={() => setShowAddCar(true)}
           />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {vehicles.map((v: any, idx: number) => (
               <div
                 key={v.id}
@@ -86,14 +90,12 @@ export default function VehiclesPage() {
                   </div>
                 ) : null}
                 
-                <div className="w-14 h-14 bg-gradient-to-br from-gray-100 to-gray-50 text-gray-500 rounded-2xl flex items-center justify-center mb-4 group-hover:from-[#2563EB] group-hover:to-[#1D4ED8] group-hover:text-white group-hover:shadow-blue-glow transition-all duration-300">
-                  <Car size={26} />
-                </div>
+                <img src={carImage(v)} alt="" className="w-full h-32 object-contain mb-3 group-hover:scale-[1.03] transition-transform duration-300" loading="lazy" />
                 <h3 className="text-xl font-black text-[#0F172A] mb-1 tracking-tight">
                   {v.brand} {v.model} {v.car_year ? `(${v.car_year})` : ''}
                 </h3>
                 {v.registration_no && (
-                  <p className="text-[#5f5e5e] font-medium text-sm">{v.registration_no}</p>
+                  <p className="text-[#64748B] font-medium text-sm">{v.registration_no}</p>
                 )}
                 
                 <div className="pt-4 mt-4 border-t border-gray-100 flex items-center justify-between">

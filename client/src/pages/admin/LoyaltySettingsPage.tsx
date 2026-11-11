@@ -30,7 +30,7 @@ export default function LoyaltySettingsPage() {
             className={`px-4 py-2.5 text-sm font-medium flex items-center gap-2 border-b-2 transition-all -mb-px ${
               activeTab === tab.key
                 ? 'text-[#0F172A] border-[#2563EB]'
-                : 'text-[#5f5e5e] border-transparent hover:text-[#0F172A]'
+                : 'text-[#64748B] border-transparent hover:text-[#0F172A]'
             }`}
           >
             <tab.icon size={16} />
@@ -117,18 +117,18 @@ function CustomerLoyaltyLookup() {
               }`}
             >
               <p className="text-[#0F172A] font-bold text-sm">{c.name}</p>
-              <p className="text-xs text-[#5f5e5e] mt-0.5">{c.mobile}</p>
+              <p className="text-xs text-[#64748B] mt-0.5">{c.mobile}</p>
               <div className="flex gap-4 mt-3">
                 <div>
-                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#5f5e5e]">Points</p>
+                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#64748B]">Points</p>
                   <p className="text-lg font-extrabold text-amber-600">{c.points || 0}</p>
                 </div>
                 <div>
-                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#5f5e5e]">Credits</p>
+                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#64748B]">Credits</p>
                   <p className="text-lg font-extrabold text-emerald-600">₹{c.credits || 0}</p>
                 </div>
                 <div>
-                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#5f5e5e]">Free Washes</p>
+                  <p className="text-[8px] font-bold uppercase tracking-widest text-[#64748B]">Free Washes</p>
                   <p className="text-lg font-extrabold text-blue-600">{c.free_washes || 0}</p>
                 </div>
               </div>
@@ -183,7 +183,7 @@ function CustomerLoyaltyLookup() {
               Recent Transactions
             </h3>
             {transactions.length === 0 ? (
-              <p className="text-[#5f5e5e] text-sm text-center py-6">No transactions yet</p>
+              <p className="text-[#64748B] text-sm text-center py-6">No transactions yet</p>
             ) : (
               <div className="space-y-1 max-h-60 overflow-y-auto">
                 {transactions.slice(0, 20).map((tx) => (
@@ -198,7 +198,7 @@ function CustomerLoyaltyLookup() {
                       </div>
                       <div>
                         <p className="text-sm font-medium text-[#0F172A]">{tx.description || tx.type}</p>
-                        <p className="text-[10px] text-[#5f5e5e]">
+                        <p className="text-[10px] text-[#64748B]">
                           {new Date(tx.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
                         </p>
                       </div>
@@ -207,7 +207,7 @@ function CustomerLoyaltyLookup() {
                       <p className={`text-sm font-extrabold tabular-nums ${tx.points >= 0 ? 'text-emerald-600' : 'text-blue-500'}`}>
                         {tx.points >= 0 ? '+' : ''}{tx.points}
                       </p>
-                      <p className="text-[10px] text-[#5f5e5e] tabular-nums">Bal: {tx.balance_after}</p>
+                      <p className="text-[10px] text-[#64748B] tabular-nums">Bal: {tx.balance_after}</p>
                     </div>
                   </div>
                 ))}
@@ -268,29 +268,29 @@ function LoyaltySettingsTab() {
         </h3>
 
         <div>
-          <label className="block text-xs text-[#5f5e5e] mb-1.5 font-bold uppercase tracking-widest">Points Ratio (₹ per 1 point)</label>
+          <label className="block text-xs text-[#64748B] mb-1.5 font-bold uppercase tracking-widest">Points Ratio (₹ per 1 point)</label>
           <input
             type="number"
             value={form.points_ratio || ''}
             onChange={(e) => setForm((f) => ({ ...f, points_ratio: parseFloat(e.target.value) }))}
             className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-[#0F172A] outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30"
           />
-          <p className="text-[11px] text-[#5f5e5e] mt-1">Customer earns 1 point for every ₹{form.points_ratio || 100} spent</p>
+          <p className="text-[11px] text-[#64748B] mt-1">Customer earns 1 point for every ₹{form.points_ratio || 100} spent</p>
         </div>
 
         <div>
-          <label className="block text-xs text-[#5f5e5e] mb-1.5 font-bold uppercase tracking-widest">Point Value (₹ per point)</label>
+          <label className="block text-xs text-[#64748B] mb-1.5 font-bold uppercase tracking-widest">Point Value (₹ per point)</label>
           <input
             type="number"
             value={form.point_value || ''}
             onChange={(e) => setForm((f) => ({ ...f, point_value: parseFloat(e.target.value) }))}
             className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-[#0F172A] outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30"
           />
-          <p className="text-[11px] text-[#5f5e5e] mt-1">1 point = ₹{form.point_value || 1} when redeemed</p>
+          <p className="text-[11px] text-[#64748B] mt-1">1 point = ₹{form.point_value || 1} when redeemed</p>
         </div>
 
         <div>
-          <label className="block text-xs text-[#5f5e5e] mb-1.5 font-bold uppercase tracking-widest">Minimum Redeem Points</label>
+          <label className="block text-xs text-[#64748B] mb-1.5 font-bold uppercase tracking-widest">Minimum Redeem Points</label>
           <input
             type="number"
             value={form.min_redeem || ''}
@@ -299,10 +299,23 @@ function LoyaltySettingsTab() {
           />
         </div>
 
+        <div>
+          <label className="block text-xs text-[#64748B] mb-1.5 font-bold uppercase tracking-widest">Points for 1 Free Wash</label>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={form.free_wash_points || ''}
+            onChange={(e) => setForm((f) => ({ ...f, free_wash_points: parseInt(e.target.value, 10) }))}
+            className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-[#0F172A] outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30"
+          />
+          <p className="text-[11px] text-[#64748B] mt-1">Customers see this on their Loyalty page</p>
+        </div>
+
         <div className="flex items-center justify-between py-3 border-t border-gray-100">
           <div>
-            <p className="text-sm text-[#0F172A] font-bold">Enable Loyalty System</p>
-            <p className="text-xs text-[#5f5e5e]">Points will be awarded on invoices</p>
+            <p className="text-sm text-[#0F172A] font-bold">Loyalty program on / off</p>
+            <p className="text-xs text-[#64748B]">When off, no points are given on any bill. Turn on again anytime.</p>
           </div>
           <button
             onClick={() => setForm((f) => ({ ...f, enabled: !f.enabled }))}

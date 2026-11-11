@@ -4,7 +4,10 @@ import api from '../../api/axiosInstance';
 import { Search, Users, ChevronRight, UserCircle, Trash2, Car } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ConfirmModal from '../../components/ui/ConfirmModal';
+import AdminHero from '../../components/admin/AdminHero';
+import { carImage } from '../../utils/carImage';
 import VehicleMasterModal from '../../components/admin/VehicleMasterModal';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 interface Customer {
   id: number;
@@ -44,6 +47,7 @@ export default function CustomersListPage() {
     }
   };
 
+  useLiveReload(() => { fetchCustomers(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchCustomers();
   }, [page]);
@@ -75,13 +79,11 @@ export default function CustomersListPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
+      <AdminHero title={'Customers CRM'} subtitle={'Manage customers, view their vehicles, and maintain a chronological history of notes.'} />
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#0F172A] flex items-center gap-2">
-            <Users className="text-[#2563EB] w-7 h-7" />
-            Customers CRM
-          </h1>
-          <p className="text-sm text-[#5f5e5e] mt-1">Manage customers, view their vehicles, and maintain a chronological history of notes.</p>
+          
+          
         </div>
         <button
           onClick={() => setVmModalOpen(true)}
@@ -139,7 +141,9 @@ export default function CustomersListPage() {
                   <tr key={cust.id} className="hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => navigate(`/admin/customers/${cust.id}`)}>
                     <td className="p-4">
                       <div className="flex items-center gap-3">
-                        <UserCircle className="w-8 h-8 text-gray-400" />
+                        {cust.vehicles?.[0]
+                          ? <img src={carImage(cust.vehicles[0])} alt="" className="w-14 h-10 object-contain shrink-0" loading="lazy" />
+                          : <span className={`w-10 h-10 rounded-xl flex items-center justify-center text-white font-black text-sm shrink-0 ${['bg-[#2563EB]','bg-emerald-600','bg-violet-600','bg-amber-500','bg-rose-500'][cust.id % 5]}`}>{(cust.name || '?').charAt(0).toUpperCase()}</span>}
                         <div>
                           <div className="font-bold text-gray-900">{cust.name}</div>
                           <div className="text-xs text-gray-500">ID: CUST-{cust.id}</div>
@@ -151,7 +155,7 @@ export default function CustomersListPage() {
                         <div className="flex flex-wrap gap-1.5 max-w-xs">
                           {cust.vehicles.map(v => (
                             <span key={v.id} className="inline-flex items-center gap-1 text-[11px] font-bold bg-gray-100 text-gray-800 px-2 py-0.5 rounded border border-gray-200">
-                              🚗 {v.registration_no || `${v.brand} ${v.model}`}
+                              {v.registration_no || `${v.brand} ${v.model}`}
                             </span>
                           ))}
                         </div>

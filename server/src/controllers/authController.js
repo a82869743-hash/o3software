@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const { guessCarCategory } = require('../utils/carCategory');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { awardWelcomeRewardInternal } = require('./customerRewardsController');
@@ -17,7 +18,8 @@ const generateToken = (user) => {
       token_version: user.token_version || 1
     },
     process.env.JWT_SECRET,
-    { expiresIn: '8h' }
+    // customers stay signed in like any app; studio logins renew while in use and end after inactivity
+    { expiresIn: user.role === 'customer' ? '30d' : '12h' }
   );
 };
 
@@ -28,16 +30,40 @@ const generateToken = (user) => {
 exports.register = async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    console.log("REGISTER BODY:", req.body);
-    const { name, mobile, password, car_brand, car_model, car_reg_no, referral_code } = req.body;
+    const { name, mobile, password, car_brand, car_model, car_reg_no, referral_code, whatsapp_number } = req.body;
 
-    // Validate required fields
+    // Validate required fields (the first car is required too — prices and bookings depend on it)
     if (!name || !mobile || !password) {
       return res.status(400).json({ success: false, error: 'Name, mobile, and password are required' });
     }
+    if (!car_brand || !String(car_brand).trim() || !car_model || !String(car_model).trim() || !car_reg_no || !String(car_reg_no).trim()) {
+      return res.status(400).json({ success: false, error: 'Car brand, model and registration number are required', field: 'car' });
+    }
+    const waClean = whatsapp_number ? String(whatsapp_number).replace(/\D/g, '').slice(-10) : '';
+    if (whatsapp_number && !/^[6-9]\d{9}$/.test(waClean)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid 10-digit WhatsApp number', field: 'whatsapp_number' });
+    }
 
+    const { isValidMobile } = require('../utils/validators');
+    if (!isValidMobile(mobile)) return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' });
+    if (String(password).length < 8 || !/\d/.test(password) || !/[a-zA-Z]/.test(password)) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters with letters and numbers' });
+    }
     // Clean and normalize mobile number (strip non-digits and take last 10 digits)
     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
+
+    // Mobile must be verified with an OTP (stops sign-ups / account take-overs with someone else's number)
+    const otpError = await require('./forgotPasswordController').checkOtp(cleanMobile, 'register', req.body.otp);
+    if (otpError) return res.status(400).json({ success: false, error: otpError, field: 'otp' });
+
+    {
+      const { validateRegNo } = require('../utils/validators');
+      const rc = validateRegNo(car_reg_no);
+      if (!rc.valid) return res.status(400).json({ success: false, error: rc.error, field: 'car_reg_no' });
+      const [[taken]] = await conn.query(
+        "SELECT v.id FROM vehicles v JOIN users u ON u.id = v.customer_id WHERE v.registration_no = ? AND u.mobile <> ?", [rc.value, cleanMobile]);
+      if (taken) return res.status(409).json({ success: false, error: `${rc.value} is already registered to another customer. Please contact the studio.`, field: 'car_reg_no' });
+    }
 
     // Check if mobile already exists
     const [existing] = await conn.query('SELECT id, password_hash FROM users WHERE mobile = ?', [cleanMobile]);
@@ -65,7 +91,7 @@ exports.register = async (req, res) => {
     if (referral_code) {
       const [codes] = await conn.query(
         'SELECT * FROM referral_codes WHERE code = ? AND is_active = 1',
-        [referral_code.trim().toUpperCase()]
+        [(referral_code ? referral_code.trim().toUpperCase() : inviteCode)]
       );
 
       if (!codes.length) {
@@ -92,14 +118,32 @@ exports.register = async (req, res) => {
       referrerRewardPoints = refCodeRecord.reward_points;
     }
 
+    let inviteCode = null;
+    // No code typed, but a customer referred this number with "Refer a friend" → they are the referrer
+    if (!referrerId) {
+      const [[inv]] = await conn.query(
+        `SELECT ri.referrer_user_id, u.referral_code FROM referral_invites ri JOIN users u ON u.id = ri.referrer_user_id
+         WHERE ri.friend_mobile = ? AND ri.referrer_type = 'customer' ORDER BY ri.id DESC LIMIT 1`, [cleanMobile]
+      ).catch(() => [[null]]);
+      if (inv) { referrerId = inv.referrer_user_id; inviteCode = inv.referral_code || 'INVITE'; }
+    }
+
     // Hash password
     const password_hash = await bcrypt.hash(password, 10);
     
     // Default role
     const role = 'customer';
 
+    // The studio the customer chose (must be an active one); defaults to the main studio
+    let franchiseId = 1;
+    if (req.body.franchise_id) {
+      const [[fr]] = await conn.query('SELECT id FROM franchises WHERE id = ? AND is_active = 1 AND (is_deleted = 0 OR is_deleted IS NULL)', [req.body.franchise_id]);
+      if (!fr) { await conn.rollback(); return res.status(400).json({ success: false, error: 'Choose a studio from the list', field: 'franchise_id' }); }
+      franchiseId = fr.id;
+    }
+
     // Generate unique referral code for new customer
-    const userCode = 'GK' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    const userCode = 'O3' + Math.random().toString(36).substring(2, 8).toUpperCase();
 
     let userId;
     if (isManualActivation) {
@@ -113,12 +157,14 @@ exports.register = async (req, res) => {
     } else {
       // Insert new user
       const [result] = await conn.query(
-        'INSERT INTO users (name, mobile, password_hash, role, referral_code, referred_by) VALUES (?, ?, ?, ?, ?, ?)',
-        [name.trim(), cleanMobile, password_hash, role, userCode, referrerId]
+        'INSERT INTO users (name, mobile, password_hash, role, referral_code, referred_by, franchise_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [name.trim(), cleanMobile, password_hash, role, userCode, referrerId, franchiseId]
       );
       userId = result.insertId;
       console.log(`[AUTH] Created new customer ${userId}`);
     }
+    // separate WhatsApp number (empty = same as mobile)
+    await conn.query('UPDATE users SET whatsapp_number = ? WHERE id = ?', [waClean && waClean !== cleanMobile ? waClean : null, userId]);
 
     // Create unique referral code entry in referral_codes table (only if not exists)
     let referralPointsSetting = 100;
@@ -141,21 +187,23 @@ exports.register = async (req, res) => {
       await conn.query(
         `INSERT INTO v2_referrals (referrer_id, referred_id, referral_code, status, reward_given) 
          VALUES (?, ?, ?, 'pending', 0)`,
-        [referrerId, userId, referral_code.trim().toUpperCase()]
+        [referrerId, userId, (referral_code ? referral_code.trim().toUpperCase() : inviteCode)]
       );
 
       // 2. Insert into referral_rewards (legacy schema)
       await conn.query(
         `INSERT INTO referral_rewards (referrer_id, referred_id, referral_code, reward_type, reward_value, status) 
          VALUES (?, ?, ?, 'points', ?, 'pending')`,
-        [referrerId, userId, referral_code.trim().toUpperCase(), referrerRewardPoints]
+        [referrerId, userId, (referral_code ? referral_code.trim().toUpperCase() : inviteCode), referrerRewardPoints]
       );
 
-      // 3. Update uses count on referrer's code
-      await conn.query(
-        'UPDATE referral_codes SET current_uses = current_uses + 1 WHERE id = ?',
-        [refCodeRecord.id]
-      );
+      // 3. Update uses count on referrer's code (not for "Refer a friend" sign-ups, which used no code)
+      if (refCodeRecord) {
+        await conn.query(
+          'UPDATE referral_codes SET current_uses = current_uses + 1 WHERE id = ?',
+          [refCodeRecord.id]
+        );
+      }
     }
 
     // ─── Save car during registration (if provided and they don't already have one) ─────────
@@ -163,9 +211,9 @@ exports.register = async (req, res) => {
       const [existingVehicles] = await conn.query('SELECT id FROM vehicles WHERE customer_id = ?', [userId]);
       if (existingVehicles.length === 0) {
         await conn.query(
-          `INSERT INTO vehicles (customer_id, brand, model, registration_no, is_primary)
-           VALUES (?, ?, ?, ?, 1)`,
-          [userId, car_brand.trim(), car_model.trim(), car_reg_no?.toUpperCase().trim() || null]
+          `INSERT INTO vehicles (customer_id, brand, model, registration_no, is_primary, category)
+           VALUES (?, ?, ?, ?, 1, ?)`,
+          [userId, car_brand.trim(), car_model.trim(), car_reg_no?.toUpperCase().trim() || null, guessCarCategory(car_brand, car_model) || 'sedan']
         );
         console.log(`Car saved for user ${userId}: ${car_brand} ${car_model}`);
       }
@@ -226,6 +274,12 @@ exports.login = async (req, res) => {
     if (u.is_active === 0) {
       return res.status(403).json({ success: false, error: 'Account has been disabled. Please contact your studio administrator.' });
     }
+    if (!['super_admin', 'customer'].includes(u.role)) {
+      const [[st]] = await pool.query('SELECT is_active, is_deleted FROM franchises WHERE id = ?', [u.franchise_id || 1]);
+      if (!st || st.is_deleted === 1 || st.is_active === 0) {
+        return res.status(403).json({ success: false, error: 'This studio is closed. Please contact the main office.' });
+      }
+    }
 
     // Check account lockout
     if (u.locked_until && new Date(u.locked_until) > new Date()) {
@@ -236,8 +290,8 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Strict bcrypt password verification
-    const isMatch = await bcrypt.compare(password, u.password_hash);
+    // Strict bcrypt password verification ('manual' = admin-created account not yet activated)
+    const isMatch = u.password_hash && u.password_hash !== 'manual' && (await bcrypt.compare(password, u.password_hash));
     if (!isMatch) {
       const failed = (u.failed_login_attempts || 0) + 1;
       if (failed >= 5) {
@@ -269,6 +323,10 @@ exports.login = async (req, res) => {
     };
 
     const token = generateToken(userObj);
+    try {
+      const { getEffectivePermissions } = require('../middleware/accessControl');
+      userObj.permissions = await getEffectivePermissions({ ...userObj, custom_role_id: u.custom_role_id });
+    } catch { userObj.permissions = []; }
 
     // Audit log
     try {
@@ -296,55 +354,40 @@ exports.login = async (req, res) => {
  */
 exports.getMe = async (req, res) => {
   try {
-    let user = null;
+    const [users] = await pool.query(
+      `SELECT u.id, u.name, u.mobile, u.email, u.role, u.franchise_id, u.is_active, u.created_at, u.opt_out_promotional, u.address, u.whatsapp_number,
+              u.custom_role_id, u.profile_picture, u.must_change_password, u.referral_code,
+              f.name AS franchise_name, r.role_name AS custom_role_name
+       FROM users u
+       LEFT JOIN franchises f ON f.id = u.franchise_id
+       LEFT JOIN v2_roles r ON r.id = u.custom_role_id
+       WHERE u.id = ? AND u.is_deleted = 0`,
+      [req.user.id]
+    );
+    if (!users.length) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    const user = users[0];
+    if (req.isImpersonating) {
+      user.role = req.user.role;
+      user.franchise_id = req.user.franchise_id;
+    }
+
     let loyalty = null;
-    let permissions = [];
-
-    try {
-      const [users] = await pool.query(
-        'SELECT id, name, mobile, email, role, is_active, created_at, opt_out_promotional, custom_role_id, base_salary, profile_picture FROM users WHERE id = ?',
-        [req.user.id]
+    if (user.role === 'customer') {
+      const [loyaltyRows] = await pool.query(
+        'SELECT credits, free_washes, wax_count, updated_at FROM loyalty WHERE customer_id = ?',
+        [user.id]
       );
-
-      if (users.length) {
-        user = users[0];
-        if (user.role === 'customer') {
-          const [loyaltyRows] = await pool.query(
-            'SELECT credits, free_washes, wax_count, updated_at FROM loyalty WHERE customer_id = ?',
-            [user.id]
-          );
-          if (loyaltyRows.length) loyalty = loyaltyRows[0];
-        }
-
-        if (user.role === 'admin' || user.role === 'super_admin') {
-          try {
-            const [allPerms] = await pool.query('SELECT permission_key FROM v2_permissions');
-            permissions = allPerms.map(p => p.permission_key);
-          } catch { permissions = ['all']; }
-        }
-      }
-    } catch (dbErr) {
-      console.warn('[AUTH DEV FALLBACK] Database query failed for getMe, returning token payload:', dbErr.message);
+      if (loyaltyRows.length) loyalty = loyaltyRows[0];
     }
 
-    // Dev fallback for getMe
-    if (!user) {
-      user = {
-        id: req.user.id || 1,
-        name: req.user.name || 'Sharanpalsingh Sodhi',
-        mobile: req.user.mobile || '7225030303',
-        role: req.user.role || 'admin',
-        is_active: 1,
-        created_at: new Date().toISOString(),
-      };
-      if (user.role === 'admin' || user.role === 'super_admin') {
-        permissions = ['all'];
-      }
-    }
+    const { getEffectivePermissions } = require('../middleware/accessControl');
+    const permissions = await getEffectivePermissions({ ...req.user, ...user });
 
     res.json({
       success: true,
-      data: { ...user, loyalty, permissions },
+      data: { ...user, must_change_password: user.must_change_password === 1, loyalty, permissions },
     });
   } catch (err) {
     console.error('GetMe error:', err);
@@ -359,20 +402,26 @@ exports.getMe = async (req, res) => {
  */
 exports.updateProfile = async (req, res) => {
   try {
-    const { name, email, address, opt_out_promotional } = req.body;
+    const { name, email, address, opt_out_promotional, whatsapp_number } = req.body;
     const userId = req.user.id;
 
     if (!name) {
       return res.status(400).json({ success: false, error: 'Name is required' });
     }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).trim())) {
+      return res.status(400).json({ success: false, error: 'Enter a valid email address' });
+    }
+    if (whatsapp_number !== undefined) {
+      const wa = String(whatsapp_number || '').replace(/\D/g, '').slice(-10);
+      if (wa && !/^[6-9]\d{9}$/.test(wa)) return res.status(400).json({ success: false, error: 'Enter a valid 10-digit WhatsApp number' });
+      const [[me]] = await pool.query('SELECT mobile FROM users WHERE id = ?', [userId]);
+      await pool.query('UPDATE users SET whatsapp_number = ? WHERE id = ?', [wa && wa !== me?.mobile ? wa : null, userId]);
+    }
 
-    // Since address is not a standard column in the DB, it may fail if we try to save it. 
-    // We should ensure the query only updates existing columns, or we can omit address if it's missing from DB.
-    // However, since we haven't altered the DB for address, we'll only update name, email and opt_out_promotional.
-    
+    // address is printed on invoices (users.address — added by the startup schema)
     await pool.query(
-      'UPDATE users SET name = ?, email = ?, opt_out_promotional = ? WHERE id = ?',
-      [name, email || null, opt_out_promotional ? 1 : 0, userId]
+      'UPDATE users SET name = ?, email = ?, opt_out_promotional = ?, address = COALESCE(?, address) WHERE id = ?',
+      [name, email ? String(email).trim() : null, opt_out_promotional ? 1 : 0, address !== undefined ? String(address || '').trim().slice(0, 300) || null : null, userId]
     );
 
     res.json({ success: true, message: 'Profile updated successfully' });
@@ -422,11 +471,14 @@ exports.uploadProfilePicture = async (req, res) => {
  */
 exports.changePassword = async (req, res) => {
   try {
+    if (req.user.role !== 'customer' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ success: false, error: 'Your password is set by your admin. Ask them if you need a new one.', code: 'TEAM_PASSWORD' });
+    }
     const oldPass = req.body.old_password || req.body.current_password;
     const newPass = req.body.new_password;
 
-    if (!oldPass || !newPass) {
-      return res.status(400).json({ success: false, error: 'Current password and new password are required' });
+    if (!newPass) {
+      return res.status(400).json({ success: false, error: 'New password is required' });
     }
 
     // Password policy: at least 8 characters, letters and numbers
@@ -443,7 +495,7 @@ exports.changePassword = async (req, res) => {
     }
     const u = users[0];
 
-    const valid = await bcrypt.compare(oldPass, u.password_hash);
+    const valid = u.password_hash === 'manual' || (!!oldPass && await bcrypt.compare(oldPass, u.password_hash));
     if (!valid) {
       return res.status(401).json({ success: false, error: 'Current password is incorrect' });
     }
@@ -514,12 +566,12 @@ exports.adminCreateCustomer = async (req, res) => {
     }
 
     // Generate default password if not provided
-    const defaultPassword = password || mobile.slice(-4) + 'GKA';
+    const defaultPassword = password || mobile.slice(-4) + 'O3CS';
     const password_hash = await bcrypt.hash(defaultPassword, 10);
 
     const [result] = await pool.query(
-      'INSERT INTO users (name, mobile, email, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), mobile, email || null, password_hash, 'customer']
+      'INSERT INTO users (name, mobile, email, password_hash, role, franchise_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [name.trim(), mobile, email || null, password_hash, 'customer', (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
 
     const userId = result.insertId;
@@ -560,7 +612,7 @@ exports.refreshToken = async (req, res) => {
   try {
     // req.user is set by auth middleware (token must still be valid)
     const [users] = await pool.query(
-      'SELECT id, name, mobile, role FROM users WHERE id = ? AND is_active = 1',
+      'SELECT id, name, mobile, role, franchise_id, token_version FROM users WHERE id = ? AND is_active = 1 AND is_deleted = 0',
       [req.user.id]
     );
 
@@ -580,3 +632,5 @@ exports.refreshToken = async (req, res) => {
     res.status(500).json({ success: false, error: 'Token refresh failed' });
   }
 };
+
+exports.generateToken = generateToken;

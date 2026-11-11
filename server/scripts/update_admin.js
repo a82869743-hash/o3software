@@ -16,7 +16,7 @@ async function updateAdminCredentials() {
     const conn = await mysql.createConnection({ host, port, user, password, database });
     const adminHash = await bcrypt.hash('12345', 10);
 
-    // Update existing admin or insert O3 Car Spa solo admin
+    // Update existing admin or insert O3 Car Spaa solo admin
     const [result] = await conn.query(`
       INSERT INTO users (name, mobile, email, password_hash, role, is_active)
       VALUES ('Sharanpalsingh Sodhi', '7225030303', 'o3carspavvn@gmail.com', ?, 'admin', 1)
@@ -31,7 +31,7 @@ async function updateAdminCredentials() {
     // Ensure all admin records match the solo admin
     await conn.query(`UPDATE users SET name = 'Sharanpalsingh Sodhi', mobile = '7225030303', email = 'o3carspavvn@gmail.com', password_hash = ? WHERE role = 'admin'`, [adminHash]);
 
-    console.log('\n SUCCESS: O3 Car Spa Admin Credentials Updated!');
+    console.log('\n SUCCESS: O3 Car Spaa Admin Credentials Updated!');
     console.log(' - Name:     Sharanpalsingh Sodhi');
     console.log(' - Mobile:   7225030303');
     console.log(' - Email:    o3carspavvn@gmail.com');

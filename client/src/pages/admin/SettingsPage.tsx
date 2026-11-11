@@ -8,7 +8,11 @@ import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { useUIStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
 import api from '../../api/axiosInstance';
+import { fileUrl } from '../../utils/endpoints';
+import IntegrationsPanel from '../../components/admin/IntegrationsPanel';
+import Dropdown from '../../components/ui/Dropdown';
 
+import { askForm } from '../../utils/ask';
 export default function SettingsPage() {
   const toast = useUIStore((s) => s.toast);
   const { token, user, updateUser } = useAuthStore();
@@ -17,13 +21,61 @@ export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [picPreview, setPicPreview] = useState<string | null>(
-    user?.profile_picture ? `http://localhost:5000${user.profile_picture}` : null
+    user?.profile_picture ? fileUrl(user.profile_picture) : null
   );
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingQr, setUploadingQr] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [bannerUploading, setBannerUploading] = useState(false);
+  const [heroUploading, setHeroUploading] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+
+  const uploadHero = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast('error', 'Picture must be under 5 MB'); return; }
+    setHeroUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api.post('/settings/banner-upload?key=invoice_hero_url', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      handleChange('invoice_hero_url', r.data.data.invoice_hero_url);
+      toast('success', 'Invoice picture uploaded');
+    } catch (err: any) {
+      toast('error', err.message || 'Upload failed');
+    } finally { setHeroUploading(false); }
+  };
+
+  const previewInvoice = async () => {
+    setPreviewing(true);
+    try {
+      const r = await api.get('/settings/invoice-preview', { responseType: 'blob' });
+      window.open(URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' })), '_blank');
+    } catch (err: any) {
+      toast('error', err.message || 'Could not open the preview');
+    } finally { setPreviewing(false); }
+  };
+
+
+  const uploadBanner = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast('error', 'Picture must be under 5 MB'); return; }
+    setBannerUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api.post('/settings/banner-upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      handleChange('app_banner_url', r.data.data.app_banner_url);
+      toast('success', 'Banner uploaded');
+    } catch (err: any) {
+      toast('error', err.message || 'Upload failed');
+    } finally { setBannerUploading(false); }
+  };
 
   useEffect(() => {
     if (data?.data) {
@@ -121,6 +173,8 @@ export default function SettingsPage() {
       <AdminTopBar title="System Settings" subtitle="Configure O3 Car Spaa details, UPI QR Code, and operational defaults" />
 
       <div className="max-w-4xl">
+        {user?.role === 'super_admin' && <IntegrationsPanel />}
+
         {/* Admin Profile Picture Section */}
         <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm mb-6">
           <div className="flex items-center gap-2 mb-4 border-b border-gray-100 pb-2">
@@ -176,12 +230,15 @@ export default function SettingsPage() {
               <button
                 type="button"
                 onClick={async () => {
-                  const title = window.prompt('QR Title (e.g. O3 Primary PhonePe QR):');
-                  if (!title) return;
-                  const upi_id = window.prompt('UPI VPA / ID (e.g. 7225030303@ybl):', '7225030303@paytm');
-                  if (!upi_id) return;
-                  const upi_name = window.prompt('Payee Account Name:', form.upi_name || 'O3 Car Spaa');
-                  const upi_number = window.prompt('UPI Mobile Number:', form.upi_number || '7225030303');
+                  const f = await askForm('Add payment QR', [
+                    { name: 'title', label: 'QR name', placeholder: 'e.g. O3 PhonePe QR', required: true },
+                    { name: 'upi_id', label: 'UPI ID', placeholder: 'e.g. 9876543210@ybl', required: true },
+                    { name: 'upi_name', label: 'Account holder name', value: form.upi_name || 'O3 Car Spaa' },
+                    { name: 'upi_number', label: 'UPI mobile number', type: 'tel', value: form.upi_number || '' },
+                  ], { okLabel: 'Add QR' });
+                  if (!f) return;
+                  const title = f.title.trim(), upi_id = f.upi_id.trim(), upi_name = f.upi_name.trim(), upi_number = f.upi_number.trim();
+                  if (!/^[\w.\-]{2,}@[a-zA-Z][\w.\-]{1,}$/.test(upi_id)) { toast('error', 'UPI ID looks wrong. Example: 9876543210@ybl'); return; }
                   try {
                     await api.post('/settings/payment-qrs', { title, upi_id, upi_name, upi_number, is_active: 0 });
                     toast('success', 'New Payment QR Code added successfully!');
@@ -204,16 +261,16 @@ export default function SettingsPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-black text-slate-900 uppercase tracking-wide">
-                    Active Customer-Facing Payment QR Code
+                    Main payment QR
                   </label>
                   <p className="text-xs text-slate-600">
-                    The selected QR will be automatically rendered on customer checkout, package modal & invoices.
+                    Used everywhere, unless you pick a different QR below for invoices, job cards or the payment page.
                   </p>
                 </div>
               </div>
 
               <div className="min-w-[240px]">
-                <select
+                <Dropdown
                   value={data?.data?.active_qr?.id || ''}
                   onChange={async (e) => {
                     const selectedId = e.target.value;
@@ -228,15 +285,36 @@ export default function SettingsPage() {
                   }}
                   className="w-full px-3.5 py-2.5 bg-white border border-blue-300 rounded-xl text-xs font-extrabold text-slate-900 shadow-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                 >
-                  <option value="" disabled>Select Active Customer QR...</option>
+                  <option value="" disabled>Choose the main QR…</option>
                   {(data?.data?.all_qrs || []).map((q: any) => (
                     <option key={q.id} value={q.id}>
-                      {q.is_active ? '⭐ [ACTIVE] ' : ''}{q.title} ({q.upi_id})
+                      {q.is_active ? '⭐ ' : ''}{q.title} ({q.upi_id})
                     </option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
             </div>
+
+            {/* Which QR to show where */}
+            {(data?.data?.all_qrs || []).length > 1 && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {[
+                  { key: 'qr_for_invoice', label: 'QR on invoices' },
+                  { key: 'qr_for_jobcard', label: 'QR on job cards' },
+                  { key: 'qr_for_payment', label: 'QR on payment page' },
+                ].map(f => (
+                  <div key={f.key}>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">{f.label}</label>
+                    <Dropdown value={form[f.key] || ''} onChange={e => handleChange(f.key, e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-gray-300 rounded-lg text-sm">
+                      <option value="">Main QR</option>
+                      {(data?.data?.all_qrs || []).map((q: any) => <option key={q.id} value={String(q.id)}>{q.title} ({q.upi_id})</option>)}
+                    </Dropdown>
+                  </div>
+                ))}
+                <p className="sm:col-span-3 text-xs text-gray-500">Press “Save All Settings” at the bottom after choosing.</p>
+              </div>
+            )}
 
             {/* Uploaded QRs Grid / List */}
             <div className="space-y-3">
@@ -255,7 +333,7 @@ export default function SettingsPage() {
                     <div className="flex items-start gap-3">
                       <div className="w-20 h-20 bg-slate-100 rounded-xl border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
                         {q.qr_image_url ? (
-                          <img src={q.qr_image_url} alt={q.title} className="w-full h-full object-contain" />
+                          <img src={fileUrl(q.qr_image_url)} alt={q.title} className="w-full h-full object-contain" />
                         ) : (
                           <QrCode size={32} className="text-slate-400" />
                         )}
@@ -366,6 +444,61 @@ export default function SettingsPage() {
               <div className="col-span-full">
                 <Input label="Studio Address" value={form.studio_address || ''} onChange={e => handleChange('studio_address', e.target.value)} />
               </div>
+              <Input label="Tagline (shown under the name)" value={form.tagline || ''} onChange={e => handleChange('tagline', e.target.value)} placeholder="e.g. Premium Car Detailing Studio" />
+              <Input label="Studio timings" value={form.support_hours || ''} onChange={e => handleChange('support_hours', e.target.value)} placeholder="Tue–Sun, 9:30 AM – 8:30 PM" />
+              <Input label="Customer support WhatsApp" value={form.support_whatsapp || ''} onChange={e => handleChange('support_whatsapp', e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile" />
+              <Input label="Google review link" value={form.google_review_url || ''} onChange={e => handleChange('google_review_url', e.target.value)} placeholder="https://g.page/r/…/review" />
+              <div className="col-span-full">
+                <Input label="Note printed at the bottom of invoices (terms, thank-you)" value={form.invoice_footer || ''} onChange={e => handleChange('invoice_footer', e.target.value)} placeholder="e.g. Thank you for choosing O3 Car Spaa!" />
+              </div>
+            </div>
+          </section>
+
+          {/* Invoice design */}
+          <section className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div className="flex items-center justify-between gap-2 mb-4 border-b border-gray-100 pb-2 flex-wrap">
+              <div className="flex items-center gap-2 text-[#0284C7]">
+                <Settings size={20} />
+                <h2 className="font-bold text-lg text-gray-900">Invoice</h2>
+              </div>
+              <button type="button" onClick={previewInvoice} disabled={previewing}
+                className="text-sm font-bold text-[#2563EB] border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-50 disabled:opacity-60">
+                {previewing ? 'Opening…' : 'Preview invoice'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">Name, address, phone, GST and email come from “Studio Information” above. Save first, then press Preview.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input label="Slogan (top right)" value={form.invoice_slogan || ''} onChange={e => handleChange('invoice_slogan', e.target.value)} placeholder="Breathe the Luxury" />
+              <Input label="PAN number (optional)" value={form.studio_pan || ''} onChange={e => handleChange('studio_pan', e.target.value.toUpperCase().slice(0, 10))} placeholder="ABCDE1234F" />
+              <Input label="Instagram" value={form.studio_instagram || ''} onChange={e => handleChange('studio_instagram', e.target.value.replace(/\s/g, ''))} placeholder="@o3carspa" />
+              <Input label="Website" value={form.studio_website || ''} onChange={e => handleChange('studio_website', e.target.value.trim())} placeholder="www.o3carspa.in" />
+              <Input label="Payment due after (days)" type="number" value={form.invoice_due_days || ''} onChange={e => handleChange('invoice_due_days', e.target.value)} placeholder="0 = same day" />
+              <Input label="Bottom words" value={form.invoice_footer_words || ''} onChange={e => handleChange('invoice_footer_words', e.target.value)} placeholder="Clean | Protect | Enhance | Maintain" />
+              <div className="col-span-full">
+                <Input label="Services shown in the header (comma separated)" value={form.invoice_services_strip || ''} onChange={e => handleChange('invoice_services_strip', e.target.value)} placeholder="Washing, Ceramic Coating, Graphene Coating, PPF, Denting & Painting, Detailing, Accessories" />
+              </div>
+              <div className="col-span-full">
+                <Input label="Highlights strip (comma separated, up to 5)" value={form.invoice_highlights || ''} onChange={e => handleChange('invoice_highlights', e.target.value)} placeholder="Premium Products, Expert Technicians, Advanced Technology, Long Lasting Protection, Enhanced Appearance" />
+              </div>
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Terms &amp; Conditions (one per line)</label>
+                <textarea rows={5} value={form.invoice_terms || ''} onChange={e => handleChange('invoice_terms', e.target.value)}
+                  placeholder={'Thank you for choosing O3 Car Spaa.\nAll services are non-refundable.\nPlease check your vehicle and belongings before leaving.'}
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0284C7]/20" />
+              </div>
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Header picture (optional — e.g. your best car photo)</label>
+                <div className="flex items-center gap-3 flex-wrap">
+                  {form.invoice_hero_url
+                    ? <img src={fileUrl(form.invoice_hero_url)} alt="Invoice header" className="h-20 w-36 object-cover rounded-lg border border-gray-200" />
+                    : <div className="h-20 w-36 rounded-lg bg-gradient-to-br from-[#0B1220] to-[#1E3A8A] flex items-center justify-center text-[10px] text-white/70">Default dark design</div>}
+                  <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                    <Upload size={15} /> {heroUploading ? 'Uploading…' : 'Upload picture'}
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={uploadHero} disabled={heroUploading} />
+                  </label>
+                  {form.invoice_hero_url && <button type="button" onClick={() => handleChange('invoice_hero_url', '')} className="text-xs font-semibold text-red-600">Remove</button>}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -382,6 +515,57 @@ export default function SettingsPage() {
               <Input label="Advance Booking Days Allowed" type="number" value={form.booking_advance_days || ''} onChange={e => handleChange('booking_advance_days', e.target.value)} />
               <Input label="Low Stock Threshold (Units)" type="number" value={form.low_stock_threshold || ''} onChange={e => handleChange('low_stock_threshold', e.target.value)} />
               <Input label="Admin WhatsApp (for system alerts)" value={form.admin_whatsapp || ''} onChange={e => handleChange('admin_whatsapp', e.target.value)} placeholder="Include country code, e.g. 917225030303" />
+            </div>
+          </section>
+
+          {/* Customer App Section */}
+          <section className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <div className="flex items-center gap-2 mb-4 text-[#0284C7] border-b border-gray-100 pb-2">
+              <Settings size={20} />
+              <h2 className="font-bold text-lg text-gray-900">Customer App — Offers on Home Screen</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input label="Offer title" value={form.app_offer_title || ''} onChange={e => handleChange('app_offer_title', e.target.value)} placeholder="e.g. Diwali Special — 30% OFF Ceramic" />
+              <Input label="Offer details" value={form.app_offer_subtitle || ''} onChange={e => handleChange('app_offer_subtitle', e.target.value)} placeholder="e.g. Valid till 15 Nov on all SUVs" />
+              <Input label="Coupon code" value={form.app_offer_code || ''} onChange={e => handleChange('app_offer_code', e.target.value.toUpperCase())} placeholder="e.g. DIWALI30" />
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Discount on claiming</label>
+                <div className="flex gap-2">
+                  <Dropdown value={form.app_offer_type || 'percent'} onChange={e => handleChange('app_offer_type', e.target.value)} className="w-24 shrink-0 px-2 py-2 rounded-lg border border-gray-300 text-sm bg-white">
+                    <option value="percent">% off</option>
+                    <option value="flat">₹ off</option>
+                  </Dropdown>
+                  <input type="number" min={0} value={form.app_offer_value || ''} onChange={e => handleChange('app_offer_value', e.target.value)} placeholder={form.app_offer_type === 'flat' ? 'e.g. 500' : 'e.g. 20'}
+                    className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-gray-300 text-sm" />
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">Applied automatically when the customer books with this code (on services, not pickup charges).</p>
+              </div>
+              <Input label="Valid till" type="date" value={form.app_offer_valid_till || ''} onChange={e => handleChange('app_offer_valid_till', e.target.value)} />
+              <Input label="Minimum booking (₹)" type="number" value={form.app_offer_min_amount || ''} onChange={e => handleChange('app_offer_min_amount', e.target.value)} placeholder="0 = any amount" />
+              <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 self-end pb-2">
+                <input type="checkbox" checked={String(form.app_offer_once ?? '1') !== '0'} onChange={e => handleChange('app_offer_once', e.target.checked ? '1' : '0')} className="w-4 h-4" />
+                Once per customer
+              </label>
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Banner picture (home screen & popup)</label>
+                <div className="flex items-center gap-3 flex-wrap">
+                  {form.app_banner_url
+                    ? <img src={fileUrl(form.app_banner_url)} alt="Banner" className="h-20 w-36 object-cover rounded-lg border border-gray-200" />
+                    : <div className="h-20 w-36 rounded-lg border border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-400">No picture</div>}
+                  <label className="cursor-pointer inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                    <Upload size={15} /> {bannerUploading ? 'Uploading…' : 'Upload picture'}
+                    <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={uploadBanner} disabled={bannerUploading} />
+                  </label>
+                  {form.app_banner_url && (
+                    <button type="button" onClick={() => handleChange('app_banner_url', '')} className="text-xs font-semibold text-red-600">Remove</button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Best size: 1200 × 600 px (JPG/PNG, under 5 MB).</p>
+              </div>
+              <label className="flex items-center gap-3 mt-6 text-sm font-semibold text-gray-700">
+                <input type="checkbox" checked={form.app_offer_popup === '1'} onChange={e => handleChange('app_offer_popup', e.target.checked ? '1' : '0')} className="w-4 h-4" />
+                Show the offer as a popup when customers open the app (once a day)
+              </label>
             </div>
           </section>
 
@@ -421,7 +605,7 @@ export default function SettingsPage() {
           <section className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
             <div className="flex items-center gap-2 mb-4 text-[#0284C7] border-b border-gray-100 pb-2">
               <Settings size={20} />
-              <h2 className="font-bold text-lg text-gray-900">Booking & Advance Payment Settings</h2>
+              <h2 className="font-bold text-lg text-gray-900">Bookings</h2>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -439,28 +623,6 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">Advance Payment Type</label>
-                <select 
-                  value={form.advance_type || 'none'} 
-                  onChange={e => handleChange('advance_type', e.target.value)}
-                  className="w-full px-3.5 py-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0284C7]/20 focus:border-[#0284C7]/30 bg-white font-medium"
-                >
-                  <option value="none">None (Disabled)</option>
-                  <option value="fixed">Fixed Amount (₹)</option>
-                  <option value="percentage">Percentage (%)</option>
-                </select>
-              </div>
-
-              {form.advance_type && form.advance_type !== 'none' && (
-                <Input 
-                  label={form.advance_type === 'fixed' ? 'Advance Amount (₹)' : 'Advance Percentage (%)'} 
-                  type="number" 
-                  value={form.advance_value || ''} 
-                  onChange={e => handleChange('advance_value', e.target.value)} 
-                  placeholder={form.advance_type === 'fixed' ? 'e.g. 500' : 'e.g. 10'} 
-                />
-              )}
             </div>
           </section>
 

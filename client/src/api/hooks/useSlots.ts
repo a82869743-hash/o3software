@@ -11,17 +11,6 @@ export const useSlots = (params: { date?: string; from_date?: string; to_date?: 
     enabled: !!(params.date || (params.from_date && params.to_date)),
   });
 
-export const useCreateSlot = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: { slot_date: string; start_time: string; end_time: string; max_capacity: number }) => {
-      const res = await api.post('/slots', payload);
-      return res.data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['slots'] }),
-  });
-};
-
 export const useBulkCreateSlots = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -75,18 +64,6 @@ export const useSlotClosures = () =>
     queryKey: ['slot-closures'],
     queryFn: async () => {
       const res = await api.get('/slots/closures');
-      return res.data;
-    },
-  });
-
-export const useCheckClosureConflicts = () =>
-  useMutation({
-    mutationFn: async (payload: {
-      start_date: string;
-      end_date?: string;
-      slot_time?: string;
-    }) => {
-      const res = await api.post('/slots/closures/check', payload);
       return res.data;
     },
   });

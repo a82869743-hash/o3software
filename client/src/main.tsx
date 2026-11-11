@@ -1,21 +1,18 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from './api/queryClient';
 import { Toaster } from 'react-hot-toast';
 import ErrorBoundary from './components/shared/ErrorBoundary';
 import App from './App';
 import './index.css';
+import { installStrictFields } from './utils/strictFields';
+import { startLiveUpdates } from './utils/liveUpdates';
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
-      staleTime: 30_000,
-    },
-  },
-});
+installStrictFields();
+startLiveUpdates();
+
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -32,7 +29,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
               background: '#212121',
               color: '#fff',
               fontSize: '14px',
-              fontFamily: 'Inter, system-ui, sans-serif',
+              fontFamily: 'Manrope, system-ui, sans-serif',
             },
             success: {
               iconTheme: { primary: '#4CAF50', secondary: '#fff' },

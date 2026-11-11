@@ -60,9 +60,20 @@ exports.list = async (req, res) => {
 
     if (entity_type) { where += ' AND sf.entity_type = ?'; params.push(entity_type); }
     if (entity_id) { where += ' AND sf.entity_id = ?'; params.push(entity_id); }
-    if (customer_id) { 
-      where += ' AND sf.shared_with_customer = 1 AND jc.customer_id = ?'; 
-      params.push(customer_id); 
+    const role = req.user?.role;
+    if (role === 'customer') {
+      // customers only ever see files explicitly shared on their own job cards
+      where += ' AND sf.shared_with_customer = 1 AND jv.customer_id = ?';
+      params.push(req.user.id);
+    } else {
+      if (customer_id) {
+        where += ' AND sf.shared_with_customer = 1 AND jv.customer_id = ?';
+        params.push(customer_id);
+      }
+      if (role !== 'super_admin') {
+        where += ' AND (jc.franchise_id = ? OR (jc.id IS NULL AND u.franchise_id = ?))';
+        params.push(req.user.franchise_id, req.user.franchise_id);
+      }
     }
 
     const query = `
@@ -70,6 +81,7 @@ exports.list = async (req, res) => {
       FROM shared_files sf
       LEFT JOIN users u ON u.id = sf.uploaded_by
       LEFT JOIN job_carts jc ON jc.id = sf.entity_id AND sf.entity_type = 'job_cart'
+      LEFT JOIN vehicles jv ON jv.id = jc.vehicle_id
       WHERE ${where}
       ORDER BY sf.created_at DESC
     `;
@@ -109,8 +121,19 @@ exports.delete = async (req, res) => {
     const [existing] = await pool.query('SELECT * FROM shared_files WHERE id = ?', [req.params.id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'File not found' });
 
+    // Franchise check: non-super users may only touch files of their own franchise
+    if (req.user.role !== 'super_admin') {
+      const [[own]] = await pool.query(
+        `SELECT COALESCE(jc.franchise_id, u.franchise_id) AS fid FROM shared_files sf
+         LEFT JOIN job_carts jc ON jc.id = sf.entity_id AND sf.entity_type = 'job_cart'
+         LEFT JOIN users u ON u.id = sf.uploaded_by WHERE sf.id = ?`, [req.params.id]);
+      if (!own || Number(own.fid) !== Number(req.user.franchise_id)) {
+        return res.status(404).json({ success: false, error: 'File not found' });
+      }
+    }
+
     // Ownership check: Only uploader or admin can delete file
-    if (req.user.role !== 'admin' && existing[0].uploaded_by !== req.user.id) {
+    if (!['admin', 'super_admin'].includes(req.user.role) && existing[0].uploaded_by !== req.user.id) {
       return res.status(403).json({ success: false, error: 'Access denied — Cannot delete a file uploaded by another user' });
     }
 
@@ -249,7 +272,7 @@ exports.getSharedFile = async (req, res) => {
               flex-direction: column;
               align-items: center;
               justify-content: center;
-              font-family: system-ui, -apple-system, sans-serif;
+              font-family: 'Manrope', Arial, sans-serif;
               color: white;
             }
             .preview-container {

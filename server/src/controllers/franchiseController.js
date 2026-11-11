@@ -13,9 +13,9 @@ exports.list = async (req, res) => {
     const isSuper = isUserSuperAdmin(req);
     const sql = isSuper
       ? 'SELECT * FROM franchises ORDER BY id ASC'
-      : 'SELECT id, name, code, address, phone, email, city, state, opening_time, closing_time, is_active FROM franchises WHERE is_active = 1 ORDER BY id ASC';
+      : 'SELECT id, name, code, address, phone, email, city, state, opening_time, closing_time, is_active FROM franchises WHERE id = ?';
 
-    const [rows] = await pool.query(sql);
+    const [rows] = await pool.query(sql, isSuper ? [] : [req.user.franchise_id || 1]);
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('List franchises error:', err.message);
@@ -53,7 +53,7 @@ exports.getOne = async (req, res) => {
 
     // Get live branch stats
     const [[jcStats]] = await pool.query(
-      'SELECT COUNT(*) as total_job_cards, SUM(status = "completed") as completed_job_cards FROM job_carts WHERE franchise_id = ?',
+      'SELECT COUNT(*) as total_job_cards, SUM(status = "complete") as completed_job_cards FROM job_carts WHERE franchise_id = ?',
       [id]
     );
     const [[bkStats]] = await pool.query(
@@ -106,8 +106,8 @@ exports.create = async (req, res) => {
 
     const [result] = await pool.query(
       `INSERT INTO franchises 
-       (name, code, address, phone, email, gstin, city, state, upi_id, upi_name, qr_image_url, logo_url, slot_duration_minutes, opening_time, closing_time, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       (name, code, address, phone, email, gstin, city, state, upi_id, upi_name, qr_image_url, logo_url, slot_duration_minutes, opening_time, closing_time, is_active, plan_tier)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
       [
         name.trim(),
         cleanCode,
@@ -123,7 +123,9 @@ exports.create = async (req, res) => {
         logo_url || null,
         parseInt(slot_duration_minutes, 10) || 60,
         opening_time || '09:00:00',
-        closing_time || '20:00:00'
+        closing_time || '20:00:00',
+        // starting plan decides which modules the studio gets; Super Admin can fine-tune them later
+        ['basic', 'pro', 'enterprise'].includes(String(req.body.plan_tier || '').toLowerCase()) ? String(req.body.plan_tier).toLowerCase() : 'enterprise'
       ]
     );
 
@@ -145,6 +147,9 @@ exports.create = async (req, res) => {
     }
 
     const [created] = await pool.query('SELECT * FROM franchises WHERE id = ?', [newId]);
+
+    // New franchise gets its module access (Super Admin can change it under Franchises → Module access)
+    try { await require('../config/featureCatalog').syncFeatureCatalogToDb(pool); } catch (e) { console.warn('entitlement seed:', e.message); }
 
     res.status(201).json({
       success: true,
@@ -306,9 +311,9 @@ exports.consolidatedOverview = async (req, res) => {
       // Job card counts
       const [[jcCounts]] = await pool.query(
         `SELECT COUNT(*) as total,
-                SUM(status = 'completed') as completed,
-                SUM(status IN ('in_progress', 'service_in_progress', 'qa_inspection', 'washing', 'detailing')) as in_progress,
-                SUM(status IN ('pending', 'draft')) as pending
+                SUM(status = 'complete') as completed,
+                SUM(status = 'open') as in_progress,
+                SUM(status = 'draft') as pending
          FROM job_carts WHERE franchise_id = ?`,
         [fid]
       );
@@ -444,6 +449,8 @@ exports.updateSettings = async (req, res) => {
     if (isNaN(id)) {
       return res.status(400).json({ success: false, error: 'Invalid franchise ID' });
     }
+    const [[exists]] = await pool.query('SELECT id FROM franchises WHERE id = ?', [id]);
+    if (!exists) return res.status(404).json({ success: false, error: 'Franchise not found' });
 
     const { franchise, settings } = req.body;
 
@@ -668,6 +675,14 @@ exports.createOwnerAccount = async (req, res) => {
     if (!name || !mobile || !password) {
       return res.status(400).json({ success: false, error: 'Name, mobile, and initial password are required' });
     }
+    const { isValidMobile, isValidEmail } = require('../utils/validators');
+    if (!isValidMobile(mobile)) return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' });
+    if (email && !isValidEmail(email)) return res.status(400).json({ success: false, error: 'Email is invalid' });
+    if (String(password).length < 8 || !/\d/.test(password) || !/[a-zA-Z]/.test(password)) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters with letters and numbers' });
+    }
+    const [[fr]] = await pool.query('SELECT id FROM franchises WHERE id = ? AND is_deleted = 0', [id]);
+    if (!fr) return res.status(404).json({ success: false, error: 'Franchise not found' });
 
     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
 
@@ -682,7 +697,7 @@ exports.createOwnerAccount = async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO users 
        (name, mobile, email, password_hash, role, franchise_id, is_active, must_change_password, token_version)
-       VALUES (?, ?, ?, ?, 'admin', ?, 1, 1, 1)`,
+       VALUES (?, ?, ?, ?, 'admin', ?, 1, 0, 1)`,
       [name.trim(), cleanMobile, email ? email.trim() : null, password_hash, id]
     );
 
@@ -694,9 +709,9 @@ exports.createOwnerAccount = async (req, res) => {
         mobile: cleanMobile,
         role: 'admin',
         franchise_id: id,
-        must_change_password: 1
+        must_change_password: 0
       },
-      message: `Franchise Owner account created for ${name}. Password change forced on first login.`
+      message: `Studio admin account created for ${name}. Share the password with them safely.`
     });
   } catch (err) {
     console.error('Create owner account error:', err);
@@ -715,11 +730,14 @@ exports.impersonate = async (req, res) => {
 
     // Find franchise admin or create temporary impersonation context
     const [owners] = await pool.query(
-      'SELECT id, name, mobile, role FROM users WHERE franchise_id = ? AND role = "admin" AND is_active = 1 LIMIT 1',
+      'SELECT id, name, mobile, role, token_version FROM users WHERE franchise_id = ? AND role = "admin" AND is_active = 1 AND is_deleted = 0 LIMIT 1',
       [id]
     );
 
-    const owner = owners.length ? owners[0] : { id: 0, name: `Admin (${fRows[0].code})`, mobile: '0000000000', role: 'admin' };
+    if (!owners.length) {
+      return res.status(400).json({ success: false, error: 'This studio has no active admin yet. Add the studio admin first, then open it.' });
+    }
+    const owner = owners[0];
 
     const jwt = require('jsonwebtoken');
     const impersonationToken = jwt.sign(
@@ -729,6 +747,7 @@ exports.impersonate = async (req, res) => {
         name: owner.name,
         mobile: owner.mobile,
         franchise_id: id,
+        token_version: owner.token_version || 1,
         is_impersonating: true,
         impersonator_id: req.user.id,
         impersonator_name: req.user.name,
@@ -764,9 +783,8 @@ exports.forceLogoutUser = async (req, res) => {
   try {
     const userId = parseInt(req.params.userId, 10);
     if (isNaN(userId)) return res.status(400).json({ success: false, error: 'Invalid user ID' });
-
-    // Increment token_version -> any existing JWT is instantly rejected by auth middleware
-    await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [userId]);
+    const [fl] = await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ? AND is_deleted = 0', [userId]);
+    if (!fl.affectedRows) return res.status(404).json({ success: false, error: 'User not found' });
 
     res.json({ success: true, message: 'User forced to logout. All active sessions terminated immediately.' });
   } catch (err) {
@@ -780,21 +798,20 @@ exports.resetUserPassword = async (req, res) => {
   try {
     const userId = parseInt(req.params.userId, 10);
     const { new_password } = req.body;
-    if (!new_password || new_password.length < 6) {
-      return res.status(400).json({ success: false, error: 'New password must be at least 6 characters' });
+    if (!new_password || new_password.length < 8 || !/\d/.test(new_password) || !/[a-zA-Z]/.test(new_password)) {
+      return res.status(400).json({ success: false, error: 'New password must be at least 8 characters with letters and numbers' });
     }
 
     const bcrypt = require('bcryptjs');
     const hash = await bcrypt.hash(new_password, 10);
-
-    await pool.query(
-      'UPDATE users SET password_hash = ?, must_change_password = 1, token_version = token_version + 1, failed_login_attempts = 0, locked_until = NULL WHERE id = ?',
+    const [rp] = await pool.query(
+      'UPDATE users SET password_hash = ?, must_change_password = 0, token_version = token_version + 1, failed_login_attempts = 0, locked_until = NULL WHERE id = ? AND is_deleted = 0',
       [hash, userId]
     );
-
+    if (!rp.affectedRows) return res.status(404).json({ success: false, error: 'User not found' });
     res.json({
       success: true,
-      message: 'Password reset successfully. User will be required to choose a new password on their next login.'
+      message: 'Password reset. The user is signed out everywhere and can sign in with the new password.'
     });
   } catch (err) {
     console.error('Reset user password error:', err);
@@ -806,10 +823,16 @@ exports.resetUserPassword = async (req, res) => {
 exports.toggleUserStatus = async (req, res) => {
   try {
     const userId = parseInt(req.params.userId, 10);
-    const [rows] = await pool.query('SELECT is_active, name FROM users WHERE id = ?', [userId]);
+    const [rows] = await pool.query('SELECT is_active, name, role FROM users WHERE id = ? AND is_deleted = 0', [userId]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'User not found' });
-
     const newStatus = rows[0].is_active === 1 ? 0 : 1;
+    if (newStatus === 0 && userId === Number(req.user.id)) {
+      return res.status(400).json({ success: false, error: 'You cannot switch off your own account' });
+    }
+    if (newStatus === 0 && rows[0].role === 'super_admin') {
+      const [[sa]] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE role = 'super_admin' AND is_active = 1 AND is_deleted = 0 AND id <> ?", [userId]);
+      if (!Number(sa.n)) return res.status(400).json({ success: false, error: 'This is the last Super Admin. Add another Super Admin first.' });
+    }
     await pool.query(
       'UPDATE users SET is_active = ?, token_version = token_version + 1 WHERE id = ?',
       [newStatus, userId]
@@ -827,3 +850,37 @@ exports.toggleUserStatus = async (req, res) => {
 };
 
 
+
+// ─── USERS OF A FRANCHISE (Super Admin) ─────────
+exports.listUsers = async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(404).json({ success: false, error: 'Studio not found' });
+    const [rows] = await pool.query(
+      `SELECT u.id, u.name, u.mobile, u.email, u.role, u.is_active, u.must_change_password, u.created_at, u.locked_until,
+              r.role_name AS custom_role_name,
+              (SELECT MAX(created_at) FROM audit_logs a WHERE a.changed_by = u.id AND a.action LIKE 'LOGIN%') AS last_login
+       FROM users u LEFT JOIN v2_roles r ON r.id = u.custom_role_id
+       WHERE u.franchise_id = ? AND u.role IN ('admin','manager','staff') AND u.is_deleted = 0
+       ORDER BY FIELD(u.role,'admin','manager','staff'), u.name`,
+      [id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('List franchise users error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+/** Active studios for the sign-up screen: only what a customer needs to choose one. */
+exports.publicList = async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, name, city, address, latitude, longitude FROM franchises
+       WHERE is_active = 1 AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY id`);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('franchise publicList error:', err);
+    res.status(500).json({ success: false, error: 'Could not load studios' });
+  }
+};

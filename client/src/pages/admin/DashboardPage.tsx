@@ -17,9 +17,14 @@ import api from '../../api/axiosInstance';
 import { formatTime, formatINR, timeAgo } from '../../utils/formatters';
 import io from 'socket.io-client';
 import { useAuthStore } from '../../store/authStore';
+import { carImage } from '../../utils/carImage';
+import { socketUrl } from '../../utils/endpoints';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
+import { can, canAny } from '../../utils/access';
 
 export default function DashboardPage() {
-  const { token } = useAuthStore();
+  const { token, user } = useAuthStore();
   const [period, setPeriod] = useState<'today' | 'weekly' | 'monthly' | 'yearly' | 'all_time'>('today');
   const [franchiseFilter, setFranchiseFilter] = useState<string>('all');
   const { data: stats, isLoading: statsLoading } = useDashboardStats({ timeframe: period, franchise_id: franchiseFilter });
@@ -33,6 +38,8 @@ export default function DashboardPage() {
   const [showExpiryModal, setShowExpiryModal] = useState(false);
   const [sendingPkgId, setSendingPkgId] = useState<number | string | null>(null);
   const sendWhatsApp = useSendWhatsApp();
+  const canPkgs = canAny(user, 'packages');
+  const canBookings = can(user, 'bookings');
 
   const handleSendExpiryWhatsApp = (item: any, msg: string) => {
     if (!item.customer_mobile) return;
@@ -44,6 +51,8 @@ export default function DashboardPage() {
         customer_id: item.customer_id
       },
       {
+        // remember the reminder so "Reminded once / twice …" stays correct everywhere
+        onSuccess: () => { api.post(`/user-packages/${item.user_package_id}/reminder-sent`).catch(() => {}); },
         onSettled: () => setSendingPkgId(null)
       }
     );
@@ -55,6 +64,7 @@ export default function DashboardPage() {
   }, []);
 
   const fetchBookings = async () => {
+    if (!canBookings) { setBookingsLoading(false); return; }
     try {
       const res = await api.get('/bookings/pending', { params: { limit: 10 } });
       setTodayBookings(res.data.data || []);
@@ -65,14 +75,21 @@ export default function DashboardPage() {
     }
   };
 
+  useLiveReload(() => {
+    fetchBookings();
+    if (!canPkgs) return;
+    api.get('/packages/requests').then(res => setPendingPkgCount((res.data.data || []).filter((r: any) => r.status === 'pending').length)).catch(() => {});
+    api.get('/user-packages/expiry-alerts').then(res => setExpiryAlerts(res.data?.data || [])).catch(() => {});
+  });
+
   useEffect(() => {
     fetchBookings();
-    api.get('/packages/requests').then(res => {
+    if (canPkgs) api.get('/packages/requests').then(res => {
       const pending = (res.data.data || []).filter((r: any) => r.status === 'pending');
       setPendingPkgCount(pending.length);
     }).catch(() => {});
 
-    api.get('/user-packages/expiry-alerts').then(res => {
+    if (canPkgs) api.get('/user-packages/expiry-alerts').then(res => {
       const data = res.data?.data || [];
       setExpiryAlerts(data);
       const isDismissed = sessionStorage.getItem('pkg_expiry_popup_dismissed') === 'true';
@@ -82,7 +99,7 @@ export default function DashboardPage() {
     }).catch(() => {});
     
     if (!token) return;
-    const socket = io(import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000', {
+    const socket = io(socketUrl(), {
       auth: { token }
     });
     socket.on('new_booking', () => fetchBookings());
@@ -95,51 +112,58 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* ── Welcome Header ──────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <p className="text-sm text-slate-500 font-medium">Welcome back,</p>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">O3 Studio</h1>
+          <p className="text-[13px] text-slate-500 font-semibold">
+            {new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening'} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}
+          </p>
+          <h1 className="text-[26px] sm:text-[30px] font-black text-slate-900 tracking-tight leading-tight">
+            {(user?.name || 'O3 Studio').split(' ')[0]} 👋
+          </h1>
         </div>
-        <div className="flex items-center gap-3">
-          <Link 
-            to="/admin/job-carts/new"
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold rounded-xl shadow-sm hover:shadow-md transition-all text-sm"
-          >
+        <div className="flex items-center gap-2">
+          {can(user, 'quick_wash') && <Link to="/admin/quick-wash"
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-bold rounded-xl shadow-sm transition-all text-sm">
+            <img src="/illustrations/tab-services.webp" alt="" className="w-5 h-5 object-contain mix-blend-multiply" /> Quick Wash
+          </Link>}
+          {can(user, 'job_cards', 'create') && <Link to="/admin/job-carts/new"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-[#2563EB] to-[#1D4ED8] text-white font-bold rounded-xl shadow-md shadow-blue-600/25 hover:shadow-lg hover:-translate-y-0.5 transition-all text-sm">
             <Plus size={16} /> New Job Card
-          </Link>
+          </Link>}
         </div>
       </div>
 
-      {/* ── Today's Overview Sky Gradient Banner ──────────────── */}
-      <div className="relative overflow-hidden bg-gradient-to-r from-sky-400 via-blue-500 to-indigo-600 rounded-3xl p-6 shadow-md border border-sky-300/30">
-        {/* Glowing background highlights */}
-        <div className="absolute -right-10 -top-10 w-48 h-48 bg-white/15 rounded-full blur-2xl pointer-events-none" />
-        <div className="absolute left-1/3 -bottom-10 w-40 h-40 bg-sky-200/20 rounded-full blur-xl pointer-events-none" />
+      {/* ── Studio overview ──────────────── */}
+      <div className="relative overflow-hidden rounded-3xl p-5 sm:p-6 bg-gradient-to-br from-[#0B1F4D] via-[#14327A] to-[#2563EB] shadow-xl shadow-blue-900/15">
+        <div className="absolute -right-16 -top-20 w-72 h-72 rounded-full bg-white/[0.06] pointer-events-none" />
+        <div className="absolute right-24 -bottom-24 w-56 h-56 rounded-full bg-sky-300/10 pointer-events-none" />
+        {/* Studio photo fading into the blue panel */}
+        <img src="/photos/studio-hero.webp" alt="" className="absolute inset-0 w-full h-full object-cover opacity-40 pointer-events-none" />
 
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 mb-5">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <h2 className="text-white font-extrabold text-base tracking-wide uppercase">Studio Performance Overview</h2>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <h2 className="text-white font-extrabold text-[15px]">Studio overview</h2>
+            </div>
+            <p className="text-blue-100/70 text-xs mt-0.5">Tap a number to open the details</p>
           </div>
-            
-          {/* Period Filter Tabs & Super Admin Franchise Selector via ONE clean bar */}
+
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center bg-white/10 backdrop-blur-md p-1 rounded-xl border border-white/20">
+            <div className="flex items-center bg-white/10 backdrop-blur-md p-1 rounded-xl border border-white/15 overflow-x-auto no-scrollbar">
               {[
                 { key: 'today', label: 'Today' },
-                { key: 'weekly', label: 'Weekly' },
-                { key: 'monthly', label: 'Monthly' },
-                { key: 'yearly', label: 'Yearly' },
-                { key: 'all_time', label: 'All-Time' },
+                { key: 'weekly', label: 'Week' },
+                { key: 'monthly', label: 'Month' },
+                { key: 'yearly', label: 'Year' },
+                { key: 'all_time', label: 'All time' },
               ].map((tab) => (
                 <button
                   key={tab.key}
                   type="button"
                   onClick={() => setPeriod(tab.key as any)}
-                  className={`px-3 py-1 text-xs font-black rounded-lg transition-all ${
-                    period === tab.key
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-sky-100 hover:text-white hover:bg-white/10'
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap ${
+                    period === tab.key ? 'bg-white text-[#0B1F4D] shadow-sm' : 'text-blue-100 hover:text-white hover:bg-white/10'
                   }`}
                 >
                   {tab.label}
@@ -147,294 +171,107 @@ export default function DashboardPage() {
               ))}
             </div>
 
-            {/* Consolidated Super Admin Franchise Toggle */}
-            <div className="flex items-center bg-white/15 backdrop-blur-md px-2.5 py-1 rounded-xl border border-white/20 text-xs font-bold text-white shadow-2xs">
-              <Building2 size={13} className="mr-1.5 text-sky-200" />
-              <select
+            {/* Consolidated Super Admin Franchise Toggle (super admin only — others always see their own studio) */}
+            {user?.role === 'super_admin' && <div className="flex items-center bg-white/10 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-white/15 text-xs font-bold text-white">
+              <Building2 size={13} className="mr-1.5 text-blue-200" />
+              <Dropdown
                 value={franchiseFilter}
                 onChange={(e) => setFranchiseFilter(e.target.value)}
-                className="bg-transparent text-white font-black text-xs focus:outline-none cursor-pointer pr-1 [&>option]:text-slate-900"
+                className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer pr-1 [&>option]:text-slate-900"
               >
-                <option value="all">🏢 All Franchises (Consolidated)</option>
+                <option value="all">All studios</option>
                 {(stats?.franchise_breakdown || []).map((f: any) => (
                   <option key={f.id} value={String(f.id)}>
-                    📍 {f.name} ({f.code})
+                    {f.name} ({f.code})
                   </option>
                 ))}
-              </select>
-            </div>
+              </Dropdown>
+            </div>}
           </div>
         </div>
 
         {statsLoading ? (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {[1,2,3,4].map(i => <div key={i} className="h-24 bg-white/15 rounded-2xl animate-pulse" />)}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 relative z-10">
+            {[1, 2, 3, 4].map(i => <div key={i} className="h-[104px] bg-white/10 rounded-2xl animate-pulse" />)}
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
-            {/* 1. Revenue */}
-            <Link to="/admin/accounts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto mb-2 text-emerald-600 shadow-xs group-hover:scale-110 transition-transform">
-                <IndianRupee size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-                {formatINR(stats?.revenue ?? stats?.today_revenue ?? 0)}
-              </p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
-                {stats?.timeframe_label || 'Today'} Revenue
-              </p>
-            </Link>
-
-            {/* 2. Cars Serviced */}
-            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-2 text-[#2563EB] shadow-xs group-hover:scale-110 transition-transform">
-                <Car size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-                {stats?.cars_serviced ?? 0}
-              </p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
-                Cars Serviced ({stats?.timeframe_label || 'Today'})
-              </p>
-            </Link>
-
-            {/* 3. Pending Payments */}
-            <Link to="/admin/pending-payments" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center mx-auto mb-2 text-red-600 shadow-xs group-hover:scale-110 transition-transform">
-                <CreditCard size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-                {formatINR(stats?.pending_payments || 0)}
-              </p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
-                Pending Receivables
-              </p>
-            </Link>
-
-            {/* 4. Active Jobs */}
-            <Link to="/admin/job-carts" className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all duration-300 rounded-2xl p-4 text-center group hover:-translate-y-1 hover:shadow-xl">
-              <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center mx-auto mb-2 text-sky-600 shadow-xs group-hover:scale-110 transition-transform">
-                <Briefcase size={20} />
-              </div>
-              <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-                {stats?.open_job_carts || 0}
-              </p>
-              <p className="text-[11px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">
-                Active Jobs
-              </p>
-            </Link>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 relative z-10">
+            {[
+              { to: '/admin/accounts', m: 'accounts', icon: IndianRupee, img: '/illustrations/ic-wallet.webp', tint: 'bg-emerald-50 text-emerald-600', value: formatINR(stats?.revenue ?? stats?.today_revenue ?? 0), label: `${stats?.timeframe_label || 'Today'} revenue` },
+              { to: '/admin/job-carts', m: 'job_cards', icon: Car, img: '/cars/suv.webp', tint: 'bg-blue-50 text-[#2563EB]', value: String(stats?.cars_serviced ?? 0), label: `Cars serviced (${stats?.timeframe_label || 'Today'})` },
+              { to: '/admin/pending-payments', m: 'payments', icon: CreditCard, img: '/illustrations/adm-invoice.webp', tint: 'bg-rose-50 text-rose-600', value: formatINR(stats?.pending_payments || 0), label: 'Payments to collect' },
+              { to: '/admin/job-carts', m: 'job_cards', icon: Briefcase, img: '/illustrations/wash.webp', tint: 'bg-amber-50 text-amber-600', value: String(stats?.open_job_carts || 0), label: 'Cars in the studio now' },
+            ].map(t => (
+              <Link key={t.label} to={can(user, t.m) ? t.to : '#'} onClick={e => { if (!can(user, t.m)) e.preventDefault(); }} className="group bg-white rounded-2xl p-4 shadow-lg shadow-blue-950/10 hover:-translate-y-0.5 hover:shadow-xl transition-all">
+                <div className="flex items-center justify-between">
+                  <span className={`w-11 h-11 rounded-xl flex items-center justify-center overflow-hidden ${t.tint}`}><img src={t.img} alt="" className="w-10 h-10 object-contain mix-blend-multiply" /></span>
+                  <span className="text-slate-300 group-hover:text-[#2563EB] transition-colors text-lg leading-none">›</span>
+                </div>
+                <p className="mt-3 text-[22px] sm:text-[26px] font-black text-slate-900 tracking-tight leading-none">{t.value}</p>
+                <p className="text-[11.5px] text-slate-500 font-semibold mt-1.5 leading-tight">{t.label}</p>
+              </Link>
+            ))}
           </div>
         )}
       </div>
 
-      {/* ── Quick Actions Grid ──────────────── */}
+      {/* ── Quick actions (3D pictures, same family as the customer app) ──────────────── */}
       <div>
-        <h2 className="text-base font-bold text-slate-900 mb-3">Quick Actions</h2>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+        <h2 className="text-[15px] font-extrabold text-slate-900 mb-3">Quick actions</h2>
+        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2.5">
           {[
-            { to: '/admin/job-carts/new', icon: ClipboardList, label: 'New Job Card' },
-            { to: '/admin/customer-bookings', icon: CalendarCheck, label: 'New Booking' },
-            { to: '/admin/customers', icon: Users, label: 'Customers' },
-            { to: '/admin/invoices', icon: FileText, label: 'Invoices' },
-            { to: '/admin/services', icon: Wrench, label: 'Services' },
-            { to: '/admin/accounts', icon: BarChart3, label: 'Reports' },
-          ].map(({ to, icon: Icon, label }) => (
-            <Link
-              key={to}
-              to={to}
-              className="bg-white border border-slate-200 rounded-2xl p-4 text-center hover:border-blue-300 hover:shadow-md transition-all group"
-            >
-              <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center mx-auto mb-2 group-hover:bg-blue-100 transition-colors">
-                <Icon size={20} className="text-[#2563EB]" />
-              </div>
-              <p className="text-[11px] font-bold text-slate-700 leading-tight">{label}</p>
+            { to: '/admin/job-carts/new', img: '/illustrations/history.webp', label: 'New job card', m: 'job_cards', a: 'create' },
+            { to: '/admin/quick-wash', img: '/illustrations/tab-services.webp', label: 'Quick wash', m: 'quick_wash' },
+            { to: '/admin/customer-bookings', img: '/illustrations/tab-bookings.webp', label: 'Bookings', m: 'bookings' },
+            { to: '/admin/customers', img: '/illustrations/tab-profile.webp', label: 'Customers', m: 'customers' },
+            { to: '/admin/leads', img: '/illustrations/adm-whatsapp.webp', label: 'Leads & chats', m: 'leads' },
+            { to: '/admin/services', img: '/illustrations/ceramic.webp', label: 'Services', m: 'services' },
+            { to: '/admin/referrals', img: '/illustrations/tab-refer.webp', label: 'Referrals', m: 'referrals' },
+            { to: '/admin/invoices', img: '/illustrations/adm-invoice.webp', label: 'Invoices', m: 'invoices' },
+          ].filter(q => can(user, q.m, (q as any).a || 'view')).map(({ to, img, label }, i) => (
+            <Link key={to} to={to} style={{ animationDelay: `${i * 35}ms` }}
+              className="rise group bg-white border border-slate-200/80 rounded-2xl px-1.5 pt-2.5 pb-2 text-center hover:border-blue-200 hover:shadow-md hover:-translate-y-0.5 transition-all">
+              <img src={img} alt="" className="w-11 h-11 sm:w-12 sm:h-12 mx-auto object-contain mix-blend-multiply group-hover:scale-110 transition-transform" />
+              <p className="text-[11px] font-bold text-slate-700 leading-tight mt-1.5">{label}</p>
             </Link>
           ))}
         </div>
       </div>
 
-      {/* ── Pending Approvals Alert ──────────────── */}
-      {stats && ((stats.total_pending_approvals || 0) > 0 || pendingPkgCount > 0) && (
-        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2563EB] flex items-center justify-center">
-              <Bell size={18} className="text-white" />
+      {/* ── Needs attention: one compact list instead of separate alert boxes ──────────────── */}
+      {stats && (() => {
+        const hq = parseInt(localStorage.getItem('active_franchise_id') || '1', 10) === 1;
+        const rows = [
+          { n: Number(stats.pending_service_bookings || 0), label: 'Bookings waiting for approval', to: '/admin/customer-bookings', m: 'bookings', icon: Calendar, tint: 'bg-blue-50 text-[#2563EB]' },
+          { n: Number(stats.pending_package_requests || pendingPkgCount || 0), label: 'Package requests to approve', to: '/admin/package-approvals', m: 'packages', icon: Bell, tint: 'bg-violet-50 text-violet-600' },
+          { n: Number(stats.pending_product_orders || 0), label: 'Product orders to confirm', to: '/admin/product-orders', m: 'inventory', icon: ShoppingCart, tint: 'bg-orange-50 text-orange-600' },
+          { n: Number(stats.low_stock_items || 0), label: 'Products running low', to: hq ? '/admin/inventory' : '/admin/franchise-orders', m: hq ? 'inventory' : 'franchise_stock', icon: AlertTriangle, tint: 'bg-amber-50 text-amber-600' },
+          { n: expiryAlerts.length, label: 'Packages expiring in 30 days', to: '/admin/package-alerts', m: 'packages', icon: MessageCircle, tint: 'bg-emerald-50 text-emerald-600' },
+          { n: Number(stats.newLeads || 0), label: 'New leads to follow up', to: '/admin/leads', m: 'leads', icon: Users, tint: 'bg-sky-50 text-sky-600' },
+        ].filter(r => r.n > 0 && can(user, r.m));
+        return (
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm">
+            <div className="flex items-center justify-between px-4 sm:px-5 pt-4 pb-2">
+              <h2 className="text-[15px] font-extrabold text-slate-900">Needs attention</h2>
+              {rows.length > 0 && <span className="text-[11px] font-bold text-slate-500">{rows.reduce((a, r) => a + r.n, 0)} items</span>}
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Pending Approvals</h3>
-              <p className="text-xs text-slate-500">Review and approve customer requests</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Link to="/admin/customer-bookings" className="bg-white rounded-xl p-3 border border-slate-200 hover:border-blue-300 transition-colors flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium text-slate-500">Service Bookings</p>
-                <p className="text-lg font-extrabold text-slate-900">{stats?.pending_service_bookings || 0}</p>
-              </div>
-              <ChevronRight size={16} className="text-slate-300" />
-            </Link>
-            <Link to="/admin/package-approvals" className="bg-white rounded-xl p-3 border border-slate-200 hover:border-blue-300 transition-colors flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium text-slate-500">Package Requests</p>
-                <p className="text-lg font-extrabold text-slate-900">{stats?.pending_package_requests || pendingPkgCount || 0}</p>
-              </div>
-              <ChevronRight size={16} className="text-slate-300" />
-            </Link>
-            <Link to="/admin/product-orders" className="bg-white rounded-xl p-3 border border-slate-200 hover:border-blue-300 transition-colors flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium text-slate-500">Product Orders</p>
-                <p className="text-lg font-extrabold text-slate-900">{stats?.pending_product_orders || 0}</p>
-              </div>
-              <ChevronRight size={16} className="text-slate-300" />
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {/* ── Franchise Low Stock Inventory Reminder Widget ──────────────── */}
-      {stats && (stats.low_stock_items || 0) > 0 && (
-        <div className="bg-gradient-to-r from-amber-50/90 via-orange-50/50 to-amber-50/90 border border-amber-200/90 rounded-3xl p-5 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center shadow-xs shrink-0">
-                <AlertTriangle size={20} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-extrabold text-slate-900 tracking-tight">Franchise Low Stock Alert</h3>
-                  <span className="px-2.5 py-0.5 bg-amber-200/80 text-amber-900 font-extrabold text-[10px] rounded-full uppercase tracking-wider">
-                    {stats.low_stock_items} Items Low
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 font-medium">
-                  Products running low in active outlet inventory. Replenish stock to avoid service delays.
-                </p>
-              </div>
-            </div>
-
-            {parseInt(localStorage.getItem('active_franchise_id') || '1', 10) === 1 ? (
-              <Link
-                to="/admin/stock-approvals"
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-xs shrink-0"
-              >
-                <ShoppingCart size={15} />
-                <span>Review Transfer Approvals</span>
-              </Link>
+            {rows.length === 0 ? (
+              <p className="px-4 sm:px-5 pb-4 text-sm text-slate-500 flex items-center gap-2"><CheckCircle2 size={16} className="text-emerald-500" /> All caught up — nothing waiting for you.</p>
             ) : (
-              <Link
-                to="/admin/franchise-orders"
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-xs shrink-0"
-              >
-                <ShoppingCart size={15} />
-                <span>⚡ Replenish Stock Now</span>
-              </Link>
+              <div className="divide-y divide-slate-100 pb-1">
+                {rows.map(r => (
+                  <Link key={r.label} to={r.to} className="flex items-center gap-3 px-4 sm:px-5 py-3 hover:bg-slate-50 transition-colors">
+                    <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${r.tint}`}><r.icon size={17} /></span>
+                    <span className="flex-1 min-w-0 text-sm font-semibold text-slate-700 truncate">{r.label}</span>
+                    <span className="text-sm font-black text-slate-900">{r.n}</span>
+                    <ChevronRight size={16} className="text-slate-300" />
+                  </Link>
+                ))}
+              </div>
             )}
           </div>
-
-          {/* Low Stock Item Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {(stats.low_stock_details || []).slice(0, 6).map((item: any) => (
-              <div
-                key={item.id}
-                className="bg-white rounded-2xl p-3.5 border border-amber-100/90 shadow-2xs flex items-center justify-between gap-3 group hover:border-amber-300 transition-all"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
-                      {item.franchise_name || 'Studio'}
-                    </span>
-                    <span className="text-[9px] font-extrabold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded">
-                      Low Stock
-                    </span>
-                  </div>
-                  <p className="text-xs font-extrabold text-slate-900 truncate group-hover:text-[#2563EB] transition-colors">
-                    {item.product_name}
-                  </p>
-                  <p className="text-[11px] font-extrabold text-red-600 mt-0.5">
-                    Stock: {item.quantity} / {item.low_stock_threshold || 5} {item.unit || 'pcs'}
-                  </p>
-                </div>
-
-                {parseInt(localStorage.getItem('active_franchise_id') || '1', 10) === 1 ? (
-                  <Link
-                    to="/admin/stock-approvals"
-                    className="p-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl transition-colors shrink-0 text-xs font-bold flex items-center gap-1"
-                    title="Review Transfer Approvals"
-                  >
-                    Approvals
-                  </Link>
-                ) : (
-                  <Link
-                    to="/admin/franchise-orders"
-                    className="p-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl transition-colors shrink-0 text-xs font-bold flex items-center gap-1"
-                    title="Order Replenishment"
-                  >
-                    <Plus size={14} /> Order
-                  </Link>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Permanent Package Expiry Alerts Widget ──────────────── */}
-      {expiryAlerts.length > 0 && (
-        <div className="bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border border-amber-200 rounded-3xl p-5 shadow-sm space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center font-bold shadow-xs">
-                <Bell size={20} />
-              </div>
-              <div>
-                <h3 className="text-sm font-extrabold text-slate-900 tracking-tight">Active Package Expiry Reminders</h3>
-                <p className="text-xs text-slate-600 font-medium">
-                  {expiryAlerts.length} customer package(s) expiring within 30 days. Send WhatsApp reminders directly.
-                </p>
-              </div>
-            </div>
-            <Link
-              to="/admin/package-alerts"
-              className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs rounded-xl transition-all shadow-xs"
-            >
-              View All Alerts ({expiryAlerts.length})
-            </Link>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-            {expiryAlerts.slice(0, 3).map((item: any) => {
-              const vehicleInfo = item.registration_no 
-                ? `${item.registration_no} (${item.brand || ''} ${item.model || ''})`
-                : item.brand ? `${item.brand} ${item.model || ''}` : 'N/A';
-              const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nKindly visit O3 Car Spaa to redeem your remaining services!`;
-
-              return (
-                <div key={item.user_package_id} className="bg-white rounded-2xl p-3.5 border border-amber-200/80 shadow-2xs flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-black text-slate-900 truncate">{item.customer_name}</p>
-                    <p className="text-[11px] text-slate-500 font-medium truncate">{item.package_name} • {vehicleInfo}</p>
-                    <p className="text-[10px] font-extrabold text-amber-700 mt-0.5">Expires in {item.days_remaining} day(s)</p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={sendingPkgId === item.user_package_id}
-                    onClick={() => handleSendExpiryWhatsApp(item, defaultMsg)}
-                    className="p-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0 text-xs font-bold flex items-center gap-1 cursor-pointer"
-                    title="Send WhatsApp Reminder"
-                  >
-                    {sendingPkgId === item.user_package_id ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <MessageCircle size={14} />
-                    )}
-                    <span>{sendingPkgId === item.user_package_id ? 'Sending...' : 'Remind'}</span>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── Studio Analytics & Performance Graphs ──────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -550,147 +387,57 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ── Super Admin Consolidated Multi-Franchise Breakdown Table ── */}
-      {(stats?.is_consolidated || franchiseFilter === 'all') && (
-        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
-            <div className="flex items-center gap-2">
-              <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
-                <Building2 size={18} />
-              </span>
-              <div>
-                <h3 className="font-extrabold text-slate-900 text-base">Consolidated Multi-Franchise Studio Performance</h3>
-                <p className="text-xs text-slate-500">Cross-studio comparison for {stats?.timeframe_label || 'selected period'}</p>
-              </div>
-            </div>
-            <span className="px-3 py-1 bg-indigo-100 text-indigo-900 font-extrabold text-xs rounded-full uppercase tracking-wider">
-              {stats?.franchise_breakdown?.length || 0} Outlets Active
-            </span>
+      {/* ── Studios at a glance (super admin, only when there is more than one studio) ── */}
+      {(stats?.is_consolidated || franchiseFilter === 'all') && (stats?.franchise_breakdown?.length || 0) > 1 && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm">
+          <div className="flex items-center justify-between px-4 sm:px-5 pt-4 pb-2">
+            <h2 className="text-[15px] font-extrabold text-slate-900">Studios · {stats?.timeframe_label || 'Today'}</h2>
+            <span className="text-[11px] font-bold text-slate-500">{stats.franchise_breakdown.length} studios</span>
           </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-extrabold border-b border-slate-200">
-                  <th className="py-3 px-4 rounded-l-xl">Studio / Franchise</th>
-                  <th className="py-3 px-4">Code</th>
-                  <th className="py-3 px-4">City</th>
-                  <th className="py-3 px-4 text-right">Revenue ({stats?.timeframe_label})</th>
-                  <th className="py-3 px-4 text-right">Cars Serviced</th>
-                  <th className="py-3 px-4 text-right">Pending Dues</th>
-                  <th className="py-3 px-4 text-right rounded-r-xl">Active Jobs</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
-                {(stats?.franchise_breakdown || []).map((f: any) => (
-                  <tr key={f.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3.5 px-4 font-black text-slate-900 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <span>{f.name}</span>
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <span className="px-2 py-0.5 bg-slate-100 rounded text-slate-600 font-bold">{f.code}</span>
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-500">{f.city || 'Indore'}</td>
-                    <td className="py-3.5 px-4 text-right font-black text-emerald-700">{formatINR(f.revenue || 0)}</td>
-                    <td className="py-3.5 px-4 text-right font-black text-slate-900">{f.cars_serviced || 0}</td>
-                    <td className="py-3.5 px-4 text-right font-black text-red-600">{formatINR(f.pending_payments || 0)}</td>
-                    <td className="py-3.5 px-4 text-right">
-                      <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-[#2563EB] font-bold">
-                        {f.active_jobs || 0}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="bg-slate-50/80 font-black text-slate-900 border-t-2 border-slate-200">
-                  <td className="py-3 px-4" colSpan={3}>Consolidated Total Across All Outlets</td>
-                  <td className="py-3 px-4 text-right text-emerald-700">
-                    {formatINR((stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.revenue || 0), 0))}
-                  </td>
-                  <td className="py-3 px-4 text-right">
-                    {(stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.cars_serviced || 0), 0)}
-                  </td>
-                  <td className="py-3 px-4 text-right text-red-600">
-                    {formatINR((stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.pending_payments || 0), 0))}
-                  </td>
-                  <td className="py-3 px-4 text-right text-[#2563EB]">
-                    {(stats?.franchise_breakdown || []).reduce((acc: number, cur: any) => acc + (cur.active_jobs || 0), 0)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+          <div className="divide-y divide-slate-100 pb-1">
+            {stats.franchise_breakdown.map((f: any) => (
+              <button key={f.id} type="button" onClick={() => setFranchiseFilter(String(f.id))}
+                className="w-full text-left flex flex-wrap items-center gap-x-4 gap-y-1 px-4 sm:px-5 py-3 hover:bg-slate-50 transition-colors">
+                <span className="flex-1 min-w-[140px]">
+                  <span className="block text-sm font-extrabold text-slate-900">{f.name}</span>
+                  <span className="block text-[11px] text-slate-500">{[f.code, f.city].filter(Boolean).join(' · ')}</span>
+                </span>
+                <span className="text-right"><span className="block text-sm font-black text-emerald-700">{formatINR(f.revenue || 0)}</span><span className="block text-[10px] text-slate-400 font-semibold">revenue</span></span>
+                <span className="text-right"><span className="block text-sm font-black text-slate-900">{f.cars_serviced || 0}</span><span className="block text-[10px] text-slate-400 font-semibold">cars</span></span>
+                <span className="text-right"><span className="block text-sm font-black text-rose-600">{formatINR(f.pending_payments || 0)}</span><span className="block text-[10px] text-slate-400 font-semibold">to collect</span></span>
+                <ChevronRight size={16} className="text-slate-300" />
+              </button>
+            ))}
           </div>
         </div>
       )}
 
-      {/* ── Staff & Technician Performance Leaderboard ──────────── */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
-          <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
-              <Award size={18} />
-            </span>
-            <div>
-              <h3 className="font-extrabold text-slate-900 text-base">Staff & Technician Performance Leaderboard</h3>
-              <p className="text-xs text-slate-500">Completed jobs, revenue generated, and incentives earned ({stats?.timeframe_label})</p>
-            </div>
-          </div>
-          <Link
-            to="/admin/staff"
-            className="text-xs font-bold text-[#2563EB] hover:underline flex items-center gap-1 self-start sm:self-auto"
-          >
-            Manage Staff HR <ChevronRight size={13} />
-          </Link>
+      {/* ── Top staff (compact) ──────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm">
+        <div className="flex items-center justify-between px-4 sm:px-5 pt-4 pb-2">
+          <h2 className="text-[15px] font-extrabold text-slate-900">Top staff · {stats?.timeframe_label || 'Today'}</h2>
+          <Link to="/admin/staff-hr" className="text-xs font-bold text-[#2563EB] flex items-center gap-0.5">Staff & HR <ChevronRight size={13} /></Link>
         </div>
-
         {stats?.staff_performance && stats.staff_performance.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="bg-slate-50 text-slate-500 uppercase tracking-wider font-extrabold border-b border-slate-200">
-                  <th className="py-3 px-4 rounded-l-xl">Staff Member / Technician</th>
-                  <th className="py-3 px-4">Role</th>
-                  <th className="py-3 px-4 text-right">Jobs Completed</th>
-                  <th className="py-3 px-4 text-right">Revenue Generated</th>
-                  <th className="py-3 px-4 text-right rounded-r-xl">Incentives Earned</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
-                {stats.staff_performance.map((staff: any, idx: number) => (
-                  <tr key={staff.staff_id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3.5 px-4 font-black text-slate-900 flex items-center gap-2.5">
-                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black ${
-                        idx === 0 ? 'bg-amber-100 text-amber-900' : idx === 1 ? 'bg-slate-200 text-slate-800' : 'bg-slate-100 text-slate-600'
-                      }`}>
-                        #{idx + 1}
-                      </span>
-                      <div>
-                        <span>{staff.staff_name}</span>
-                        {staff.mobile && <p className="text-[10px] text-slate-400 font-medium">{staff.mobile}</p>}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 capitalize">
-                      <span className="px-2 py-0.5 bg-slate-100 rounded text-slate-700 font-bold text-[10px]">
-                        {staff.role}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-black text-slate-900">{staff.completed_jobs}</td>
-                    <td className="py-3.5 px-4 text-right font-black text-emerald-700">{formatINR(staff.total_revenue || 0)}</td>
-                    <td className="py-3.5 px-4 text-right font-black text-amber-700">{formatINR(staff.incentives_earned || 0)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="divide-y divide-slate-100 pb-1">
+            {stats.staff_performance.slice(0, 5).map((staff: any, idx: number) => (
+              <div key={staff.staff_id} className="flex items-center gap-3 px-4 sm:px-5 py-3">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${idx === 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{idx + 1}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-sm font-bold text-slate-900 truncate">{staff.staff_name}</span>
+                  <span className="block text-[11px] text-slate-500 capitalize">{staff.role} · {staff.completed_jobs} jobs</span>
+                </span>
+                <span className="text-right">
+                  <span className="block text-sm font-black text-emerald-700">{formatINR(staff.total_revenue || 0)}</span>
+                  {Number(staff.incentives_earned) > 0 && <span className="block text-[10px] font-bold text-amber-700">+{formatINR(staff.incentives_earned)} incentive</span>}
+                </span>
+              </div>
+            ))}
           </div>
         ) : (
-          <div className="py-8 text-center text-slate-400 text-xs italic">
-            No staff performance records for this period.
-          </div>
+          <p className="px-4 sm:px-5 pb-4 text-sm text-slate-500">No completed jobs in this period yet.</p>
         )}
       </div>
-
 
 
       {/* ── Main Content: Upcoming Bookings + Recent Jobs ──────────── */}
@@ -767,9 +514,7 @@ export default function DashboardPage() {
                   className="px-5 py-3.5 hover:bg-slate-50 flex items-center justify-between transition-colors block"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-[#2563EB]">
-                      <Car size={18} />
-                    </div>
+                    <img src={carImage({ brand: job.brand, model: job.model, category: job.car_category || job.vehicle_category })} alt="" className="w-14 h-10 object-contain shrink-0" loading="lazy" />
                     <div>
                       <h4 className="text-sm font-bold text-slate-900">{job.registration_no}</h4>
                       <p className="text-xs text-slate-500 mt-0.5">
@@ -796,153 +541,58 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ── Bottom Row: Stats Cards + Alerts ──────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <Link to="/admin/package-alerts" className="bg-white border border-slate-200 rounded-2xl p-4 hover:border-amber-300 hover:shadow-sm transition-all">
-          <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mb-3">
-            <Bell size={18} className="text-amber-600" />
-          </div>
-          <p className="text-xs font-medium text-slate-500">Package Expiry</p>
-          <p className="text-xl font-extrabold text-amber-600">{stats?.expiring_packages || 0}</p>
-          <p className="text-[10px] text-slate-400 mt-1">Expiring within 30 days</p>
-        </Link>
-        <Link to="/admin/pending-payments" className="bg-white border border-slate-200 rounded-2xl p-4 hover:border-red-300 hover:shadow-sm transition-all">
-          <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center mb-3">
-            <CreditCard size={18} className="text-red-600" />
-          </div>
-          <p className="text-xs font-medium text-slate-500">Collect Payments</p>
-          <p className="text-xl font-extrabold text-red-600">Reminders</p>
-          <p className="text-[10px] text-slate-400 mt-1">Pending customer dues</p>
-        </Link>
-        <Link to="/admin/leads" className="bg-white border border-slate-200 rounded-2xl p-4 hover:border-blue-300 hover:shadow-sm transition-all">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center mb-3">
-            <Users size={18} className="text-[#2563EB]" />
-          </div>
-          <p className="text-xs font-medium text-slate-500">Lead Management</p>
-          <p className="text-xl font-extrabold text-slate-900">{stats?.newLeads || 0}</p>
-          <p className="text-[10px] text-slate-400 mt-1">Meta Ads & Walk-ins</p>
-        </Link>
-        <Link to="/admin/accounts" className="bg-white border border-slate-200 rounded-2xl p-4 hover:border-blue-300 hover:shadow-sm transition-all">
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center mb-3">
-            <IndianRupee size={18} className="text-emerald-600" />
-          </div>
-          <p className="text-xs font-medium text-slate-500">This Month</p>
-          <p className="text-xl font-extrabold text-slate-900">{formatINR(stats?.month_revenue || 0)}</p>
-          <p className="text-[10px] text-slate-400 mt-1">Total revenue</p>
-        </Link>
-      </div>
-
-      {/* ── Package Maintenance Expiry Pop-Up Modal (Admin) ──────────── */}
+      {/* ── Package expiry reminders pop-up ── */}
       {showExpiryModal && expiryAlerts.length > 0 && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl border border-amber-100 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center font-bold shadow-xs">
-                  <Bell size={22} />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black text-slate-900">Package Maintenance Expiry Reminders</h3>
-                  <p className="text-xs text-slate-500 font-medium">{expiryAlerts.length} customer package(s) close to expiry (11 months mark / 30-day window)</p>
-                </div>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-white w-full sm:max-w-xl rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-200">
+            <div className="relative h-28 shrink-0">
+              <img src="/photos/packages.webp" alt="" className="absolute inset-0 w-full h-full object-cover" />
+              <div className="absolute inset-0 bg-gradient-to-r from-[#0B1F4D]/95 via-[#0B1F4D]/75 to-transparent" />
+              <div className="relative h-full flex flex-col justify-center px-5 text-white">
+                <span className="inline-flex w-fit items-center gap-1 text-[10px] font-black uppercase tracking-wider bg-amber-400 text-slate-900 px-2 py-0.5 rounded"><Bell size={11} /> {expiryAlerts.length} expiring soon</span>
+                <h3 className="text-lg font-black mt-1.5 leading-tight">Packages about to expire</h3>
+                <p className="text-[11.5px] text-white/75">Remind them to use their remaining services</p>
               </div>
-              <button
-                onClick={() => {
-                  setShowExpiryModal(false);
-                  sessionStorage.setItem('pkg_expiry_popup_dismissed', 'true');
-                }}
-                className="text-gray-400 hover:text-gray-600 text-xl font-bold px-2 py-1 rounded-lg"
-              >
-                ✕
-              </button>
+              <button onClick={() => { setShowExpiryModal(false); sessionStorage.setItem('pkg_expiry_popup_dismissed', 'true'); }}
+                className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 text-slate-700 flex items-center justify-center font-bold">✕</button>
             </div>
 
-            <div className="max-h-96 overflow-y-auto divide-y divide-gray-100 text-xs">
+            <div className="overflow-y-auto p-3 space-y-2.5">
               {expiryAlerts.map((item: any) => {
-                const stageColor = item.reminder_stage === '1_day' 
-                  ? 'bg-red-500 text-white' 
-                  : item.reminder_stage === '1_week' 
-                  ? 'bg-orange-500 text-white' 
-                  : 'bg-amber-500 text-white';
-                
-                const stageText = item.reminder_stage === '1_day'
-                  ? '1 DAY REMINDER'
-                  : item.reminder_stage === '1_week'
-                  ? '1 WEEK REMINDER'
-                  : '1 MONTH REMINDER (11 MONTHS MARK)';
-
-                const vehicleInfo = item.registration_no 
-                  ? `${item.registration_no} (${item.brand || ''} ${item.model || ''})`
-                  : item.brand ? `${item.brand} ${item.model || ''}` : 'N/A';
-
-                const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* is about to expire next month (*${new Date(item.end_date).toLocaleDateString('en-IN')}*).\n\nDays Remaining: ${item.days_remaining} day(s)\n\nKindly visit O3 Car Spaa to redeem your remaining service sessions!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
-
+                const vehicleInfo = item.registration_no ? `${item.registration_no} (${item.brand || ''} ${item.model || ''})` : `${item.brand || ''} ${item.model || ''}`.trim() || 'their car';
+                const defaultMsg = `Hi ${item.customer_name},\n\nYour *${item.package_name}* package for *${vehicleInfo}* expires on *${new Date(item.end_date).toLocaleDateString('en-IN')}* (${item.days_remaining} day(s) left).\n\nPlease visit O3 Car Spaa to use your remaining services!\n📍 O3 Car Spaa, GIDC, Anand\n📞 7225030303`;
+                const urgent = Number(item.days_remaining) <= 7;
+                const times = Number(item.reminder_count) || (item.last_reminder_at ? 1 : 0);
                 return (
-                  <div key={item.user_package_id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 p-3 rounded-2xl transition-colors">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-black text-slate-900 text-sm">{item.customer_name}</span>
-                        <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                          📞 {item.customer_mobile}
-                        </span>
-                        <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${stageColor}`}>
-                          {stageText}
-                        </span>
-                      </div>
-
-                      <div className="text-slate-600 text-xs flex items-center gap-2 flex-wrap">
-                        <span>Package: <strong className="text-slate-900">{item.package_name}</strong></span>
-                        <span>•</span>
-                        <span>Vehicle: <strong className="text-slate-900">{vehicleInfo}</strong></span>
-                        {item.price_paid && (
-                          <>
-                            <span>•</span>
-                            <span className="text-emerald-700 font-bold">₹{parseFloat(item.price_paid).toLocaleString('en-IN')}</span>
-                          </>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-3 text-[10px] text-slate-500 font-medium pt-0.5">
-                        <span className="text-amber-700 font-bold">
-                          Expires: {new Date(item.end_date).toLocaleDateString('en-IN')} ({item.days_remaining}d left)
-                        </span>
-                        {item.autodate_1month && (
-                          <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">
-                            Autodates: 1M ({item.autodate_1month}) • 1W ({item.autodate_1week}) • 1D ({item.autodate_1day})
-                          </span>
-                        )}
+                  <div key={item.user_package_id} className="rounded-2xl border border-slate-100 bg-white shadow-sm p-3">
+                    <div className="flex gap-3">
+                      <img src={carImage({ brand: item.brand, model: item.model, category: item.vehicle_category || item.category })} alt="" className="w-20 h-14 object-contain shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-extrabold text-[14px] text-slate-900 truncate">{item.customer_name}</p>
+                          <span className={`shrink-0 text-[10.5px] font-black px-2 py-0.5 rounded-full ${urgent ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-700'}`}>{item.days_remaining}d left</span>
+                        </div>
+                        <p className="text-[12px] text-slate-600 truncate">{item.package_name}</p>
+                        <p className="text-[11px] text-slate-400 truncate">{item.registration_no || ''} · expires {new Date(item.end_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</p>
                       </div>
                     </div>
-
-                    <button
-                      type="button"
-                      disabled={sendingPkgId === item.user_package_id}
-                      onClick={() => handleSendExpiryWhatsApp(item, defaultMsg)}
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold rounded-xl flex items-center justify-center gap-1.5 shrink-0 shadow-sm text-xs transition-colors cursor-pointer"
-                    >
-                      {sendingPkgId === item.user_package_id ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        <MessageCircle size={14} />
-                      )}
-                      <span>{sendingPkgId === item.user_package_id ? 'Sending...' : 'WhatsApp Remind'}</span>
-                    </button>
+                    <div className="flex items-center justify-between gap-2 mt-2.5">
+                      <span className={`text-[11px] font-semibold ${times ? 'text-emerald-700' : 'text-slate-400'}`}>{times ? `Reminded ${times === 1 ? 'once' : times === 2 ? 'twice' : `${times} times`}` : 'Not reminded yet'}</span>
+                      <button type="button" disabled={sendingPkgId === item.user_package_id} onClick={() => handleSendExpiryWhatsApp(item, defaultMsg)}
+                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-1.5 text-xs">
+                        {sendingPkgId === item.user_package_id ? <Loader2 size={14} className="animate-spin" /> : <MessageCircle size={14} />}
+                        {sendingPkgId === item.user_package_id ? 'Sending…' : times ? 'Remind again' : 'WhatsApp remind'}
+                      </button>
+                    </div>
                   </div>
                 );
               })}
             </div>
 
-            <div className="mt-5 pt-3 border-t border-gray-100 flex justify-between items-center">
-              <span className="text-[11px] text-slate-400 font-medium">3-Tier Reminder Rule Active: 1 Month Before, 1 Week Before, 1 Day Before</span>
-              <button
-                onClick={() => {
-                  setShowExpiryModal(false);
-                  sessionStorage.setItem('pkg_expiry_popup_dismissed', 'true');
-                }}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-slate-700 font-bold rounded-xl text-xs"
-              >
-                Dismiss Pop-Up
-              </button>
+            <div className="shrink-0 px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-2">
+              <Link to="/admin/package-alerts" onClick={() => setShowExpiryModal(false)} className="text-xs font-bold text-[#2563EB]">Open all reminders →</Link>
+              <button onClick={() => { setShowExpiryModal(false); sessionStorage.setItem('pkg_expiry_popup_dismissed', 'true'); }}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs">Later</button>
             </div>
           </div>
         </div>

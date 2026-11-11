@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import api from '../../api/axiosInstance';
 import { formatDate, formatTime } from '../../utils/formatters';
+import { socketUrl } from '../../utils/endpoints';
 
 // Default stage descriptions for standard 7-stage detailing pipeline
 const DEFAULT_STAGE_DESCRIPTIONS: Record<string, string> = {
@@ -122,7 +123,7 @@ export default function JobTrackingPage() {
     if (id) {
       fetchTracking();
       // Fetch photos if any
-      api.get(`/job-carts/${id}/photos`).then(res => {
+      if (/^\d+$/.test(id)) api.get(`/job-carts/${id}/photos`).then(res => {
         if (res.data?.success) setJobPhotos(res.data.data || []);
       }).catch(() => {});
     }
@@ -132,12 +133,14 @@ export default function JobTrackingPage() {
   useEffect(() => {
     if (!id) return;
 
-    const socketUrl = import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000';
-    const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+    const wsUrl = socketUrl();
+    let authToken: string | undefined;
+    try { authToken = JSON.parse(localStorage.getItem('o3-auth-v1') || sessionStorage.getItem('o3-auth-v1') || '{}')?.state?.token; } catch { /* guest */ }
+    const socket = io(wsUrl, { auth: { token: authToken }, transports: ['websocket', 'polling'] });
 
     socket.on('connect', () => {
       // join room if available
-      socket.emit('join_job', { jobId: id });
+      socket.emit('join_job', { jobId: /^\d+$/.test(id) ? id : undefined, token: /^\d+$/.test(id) ? undefined : id });
     });
 
     // Real-time stage update event
@@ -409,7 +412,7 @@ export default function JobTrackingPage() {
                   <div className="grid grid-cols-2 gap-2">
                     {jobPhotos.filter(p => p.type === 'before').map(p => (
                       <a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-slate-200 hover:opacity-90 transition shadow-2xs">
-                        <img src={p.url} alt="Before Service" className="w-full h-28 object-cover" />
+                        <img src={p.url} alt="Before Service" className="w-full h-28 object-contain bg-slate-100" />
                       </a>
                     ))}
                     {jobPhotos.filter(p => p.type === 'before').length === 0 && (
@@ -423,7 +426,7 @@ export default function JobTrackingPage() {
                   <div className="grid grid-cols-2 gap-2">
                     {jobPhotos.filter(p => p.type === 'after').map(p => (
                       <a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-slate-200 hover:opacity-90 transition shadow-2xs">
-                        <img src={p.url} alt="After Service" className="w-full h-28 object-cover" />
+                        <img src={p.url} alt="After Service" className="w-full h-28 object-contain bg-slate-100" />
                       </a>
                     ))}
                     {jobPhotos.filter(p => p.type === 'after').length === 0 && (

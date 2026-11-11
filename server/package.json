@@ -1,5 +1,5 @@
 {
-  "name": "gk-autoherb-server",
+  "name": "o3-car-spaa-server",
   "version": "1.0.0",
   "description": "O3 Car Spa Backend API",
   "main": "src/app.js",
@@ -12,6 +12,7 @@
     "db:seed": "node scripts/seed.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "axios": "^1.7.3",
@@ -34,7 +35,6 @@
     "pino": "^10.4.0",
     "puppeteer": "^22.14.0",
     "qrcode": "^1.5.4",
-    "razorpay": "^2.9.4",
     "socket.io": "^4.7.5",
     "uuid": "^10.0.0",
     "xlsx": "^0.18.5"

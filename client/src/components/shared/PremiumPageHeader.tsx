@@ -1,5 +1,7 @@
 import { motion } from 'framer-motion';
 import { type LucideIcon } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import AdminHero from '../admin/AdminHero';
 
 interface PremiumPageHeaderProps {
   title: string;
@@ -20,6 +22,8 @@ export default function PremiumPageHeader({
   actions,
   badge,
 }: PremiumPageHeaderProps) {
+  const { pathname } = useLocation();
+  if (pathname.startsWith('/admin')) return <AdminHero title={title} subtitle={subtitle} actions={actions} badge={badge} />;
   return (
     <motion.div
       initial={{ opacity: 0, y: -12 }}
@@ -66,7 +70,7 @@ export default function PremiumPageHeader({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.2 }}
-                className="text-sm text-[#5f5e5e] mt-0.5"
+                className="text-sm text-[#64748B] mt-0.5"
               >
                 {subtitle}
               </motion.p>

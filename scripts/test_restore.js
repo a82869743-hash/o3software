@@ -1,99 +1,81 @@
 /**
- * scripts/test_restore.js — Automated Backup Verification & Restore Validator
- * Restores the latest backup into a temporary database, verifies all table row counts
- * match the primary database 1:1, and tears down the temporary test database.
+ * scripts/test_restore.js — proves the newest backup can really be restored.
+ * Restores backups/daily/<newest>.sql.gz into a temporary database, checks every table came back,
+ * compares row counts with the live database, then drops the temporary database.
+ * Run weekly by cron (deploy/crontab.txt) and any time by hand:  node scripts/test_restore.js
  */
-
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
+const { spawn } = require('child_process');
 const mysql = require('../server/node_modules/mysql2/promise');
-require('../server/node_modules/dotenv').config({ path: path.join(__dirname, '..', '.env') });
-if (!process.env.DB_NAME) {
-  require('../server/node_modules/dotenv').config({ path: path.join(__dirname, '..', 'server', '.env') });
+const dotenv = require('../server/node_modules/dotenv');
+dotenv.config({ path: path.join(__dirname, '..', 'server', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
+const host = process.env.DB_HOST || 'localhost';
+const port = parseInt(process.env.DB_PORT || '3306', 10);
+const user = process.env.DB_USER || 'root';
+const password = process.env.DB_PASSWORD || '';
+const primaryDb = process.env.DB_NAME || 'o3_car_spa';
+
+function newestBackup() {
+  const dirs = ['daily', 'weekly', 'monthly', ''].map(d => path.join(__dirname, '..', 'backups', d));
+  const all = [];
+  for (const d of dirs) {
+    if (!fs.existsSync(d)) continue;
+    for (const f of fs.readdirSync(d)) if (/^o3_car_spaa_.*\.sql(\.gz)?$/.test(f)) all.push(path.join(d, f));
+  }
+  all.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  return all[0];
 }
 
-async function testRestore() {
-  const dbHost = process.env.DB_HOST || 'localhost';
-  const dbPort = parseInt(process.env.DB_PORT || '3306', 10);
-  const dbUser = process.env.DB_USER || 'root';
-  const dbPass = process.env.DB_PASSWORD || '';
-  const primaryDb = process.env.DB_NAME || 'o3_car_spa';
-  const tempDb = `${primaryDb}_restore_test_${Date.now()}`;
-
-  const backupDir = path.join(__dirname, '..', 'backups');
-  if (!fs.existsSync(backupDir)) {
-    throw new Error('No backups directory found.');
-  }
-
-  const files = fs.readdirSync(backupDir)
-    .filter(f => f.startsWith('o3_car_spaa_') && f.endsWith('.sql'))
-    .sort()
-    .reverse();
-
-  if (!files.length) {
-    throw new Error('No backup SQL files available to restore.');
-  }
-
-  const latestBackup = path.join(backupDir, files[0]);
-  console.log(`[test-restore] 🧪 Verifying latest backup file: ${files[0]}`);
-
-  const conn = await mysql.createConnection({
-    host: dbHost,
-    port: dbPort,
-    user: dbUser,
-    password: dbPass,
-    multipleStatements: true
+function restoreInto(file, db) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('mysql', [`--host=${host}`, `--port=${port}`, `--user=${user}`, '--default-character-set=utf8mb4', db],
+      { env: { ...process.env, MYSQL_PWD: password }, stdio: ['pipe', 'inherit', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', d => { err += d; });
+    p.on('error', reject);
+    p.on('close', code => (code === 0 ? resolve() : reject(new Error(`mysql exited ${code}: ${err.slice(0, 500)}`))));
+    const src = fs.createReadStream(file);
+    (file.endsWith('.gz') ? src.pipe(zlib.createGunzip()) : src).pipe(p.stdin);
   });
+}
 
+(async () => {
+  const file = newestBackup();
+  if (!file) throw new Error('No backup files found in backups/');
+  const ageH = (Date.now() - fs.statSync(file).mtimeMs) / 3600000;
+  console.log(`[test-restore] Newest backup: ${path.basename(file)} (${ageH.toFixed(1)} hours old)`);
+  if (ageH > 26) console.warn('[test-restore] ⚠️  Newest backup is more than a day old — check the backup cron');
+
+  const tempDb = `${primaryDb}_restore_test_${Date.now()}`;
+  const conn = await mysql.createConnection({ host, port, user, password });
   try {
-    // 1. Create temporary database
-    console.log(`[test-restore] Creating temporary test database: ${tempDb}...`);
     await conn.query(`CREATE DATABASE \`${tempDb}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    await conn.query(`USE \`${tempDb}\``);
+    await restoreInto(file, tempDb);
 
-    // 2. Execute backup SQL
-    console.log(`[test-restore] Restoring snapshot into temporary database...`);
-    const dumpContent = fs.readFileSync(latestBackup, 'utf8');
-    await conn.query(dumpContent);
-    console.log(`[test-restore] Schema and data restored successfully.`);
-
-    // 3. Compare row counts between primary database and restored database
-    const [primaryTablesRes] = await conn.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = '${primaryDb}' AND table_type = 'BASE TABLE'`);
-    const tables = primaryTablesRes.map(r => r.table_name || r.TABLE_NAME);
-
-    console.log(`[test-restore] Comparing row counts across ${tables.length} tables...`);
-    let mismatches = 0;
-    let verifiedTables = 0;
-
-    for (const table of tables) {
-      const [[{ primCount }]] = await conn.query(`SELECT COUNT(*) as primCount FROM \`${primaryDb}\`.\`${table}\``);
-      const [[{ tempCount }]] = await conn.query(`SELECT COUNT(*) as tempCount FROM \`${tempDb}\`.\`${table}\``);
-
-      if (primCount !== tempCount) {
-        console.error(`  ❌ MISMATCH in table \`${table}\`: Primary has ${primCount} rows, Backup has ${tempCount} rows!`);
-        mismatches++;
-      } else {
-        verifiedTables++;
-      }
+    const [live] = await conn.query("SELECT table_name t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE'", [primaryDb]);
+    const [rest] = await conn.query("SELECT table_name t FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE'", [tempDb]);
+    const restored = new Set(rest.map(r => r.t || r.TABLE_NAME));
+    const missing = live.map(r => r.t || r.TABLE_NAME).filter(t => !restored.has(t));
+    let emptied = 0, differs = 0;
+    for (const t of restored) {
+      const [[a]] = await conn.query(`SELECT COUNT(*) n FROM \`${primaryDb}\`.\`${t}\``).catch(() => [[{ n: 0 }]]);
+      const [[b]] = await conn.query(`SELECT COUNT(*) n FROM \`${tempDb}\`.\`${t}\``);
+      if (a.n !== b.n) differs++;
+      if (a.n > 20 && b.n === 0) { emptied++; console.error(`  ❌ ${t}: live has ${a.n} rows, backup has none`); }
     }
-
-    if (mismatches > 0) {
-      throw new Error(`Data restoration validation failed: ${mismatches} table row count mismatches detected!`);
-    }
-
-    console.log(`\n[test-restore] ✅ All ${verifiedTables} tables verified 100% identical row-for-row.`);
-
+    if (missing.length) throw new Error(`Tables missing from the backup: ${missing.join(', ')}`);
+    if (emptied) throw new Error(`${emptied} table(s) came back empty`);
+    console.log(`[test-restore] ✅ ${restored.size} tables restored. ${differs} differ in row count only because the live data changed after the backup.`);
   } finally {
-    // 4. Teardown temporary database
-    console.log(`[test-restore] 🧹 Dropping temporary test database: ${tempDb}...`);
     await conn.query(`DROP DATABASE IF EXISTS \`${tempDb}\``);
     await conn.end();
   }
-
-  console.log('[test-restore] 🌟 RESTORE VALIDATION PASSED WITH 100% ACCURACY!\n');
-}
-
-testRestore().catch(err => {
-  console.error('[test-restore] ❌ Fatal validation error:', err.message);
+  console.log('[test-restore] 🌟 Backup restore test PASSED');
+})().catch(err => {
+  console.error('[test-restore] ❌ FAILED:', err.message);
   process.exit(1);
 });

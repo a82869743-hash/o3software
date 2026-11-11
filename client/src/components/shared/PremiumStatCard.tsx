@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import CountUp from 'react-countup';
 import { type LucideIcon } from 'lucide-react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { pageArt } from '../../utils/pageArt';
 
 interface PremiumStatCardProps {
   title: string;
@@ -39,8 +40,11 @@ export default function PremiumStatCard({
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
       whileHover={{ y: -4, boxShadow: `0 12px 32px ${color}15, 0 4px 12px rgba(0,0,0,0.06)` }}
-      className="relative bg-white rounded-2xl border border-gray-100 p-5 overflow-hidden group cursor-default"
+      className="relative bg-white rounded-2xl border border-slate-100 shadow-[0_4px_18px_rgba(15,23,42,0.05)] p-4 sm:p-5 overflow-hidden group cursor-default min-h-[118px]"
     >
+      {/* Colour accent + module picture */}
+      <div className="absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, ${color}, ${color}55)` }} />
+      {pageArt(title) && trend === undefined && <img src={pageArt(title)!} alt="" className="absolute right-3 top-3 w-11 h-11 object-contain mix-blend-multiply pointer-events-none" />}
       {/* Background gradient accent */}
       <div className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
 
@@ -50,10 +54,10 @@ export default function PremiumStatCard({
           <motion.div
             whileHover={{ rotate: 10, scale: 1.1 }}
             transition={{ type: 'spring', stiffness: 300 }}
-            className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ backgroundColor: `${color}12` }}
+            className="w-10 h-10 rounded-xl flex items-center justify-center shadow-sm"
+            style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)` }}
           >
-            <Icon size={20} style={{ color }} />
+            <Icon size={19} className="text-white" />
           </motion.div>
 
           {trend !== undefined && (
@@ -68,10 +72,10 @@ export default function PremiumStatCard({
           )}
         </div>
 
-        <p className="text-xs font-medium text-[#5f5e5e] uppercase tracking-wider mb-1">{title}</p>
+        <p className="text-xs font-medium text-[#64748B] uppercase tracking-wider mb-1">{title}</p>
 
         <div className="flex items-baseline gap-1">
-          <span className="text-2xl font-bold text-[#0F172A]">
+          <span className="text-[22px] sm:text-2xl font-black text-[#0F172A] leading-tight break-words">
             {prefix}
             <CountUp end={value} duration={1.5} delay={delay} separator="," decimals={decimals} />
             {suffix}
@@ -79,7 +83,7 @@ export default function PremiumStatCard({
         </div>
 
         {trendLabel && (
-          <p className="text-[11px] text-[#8f6f6c] mt-1">{trendLabel}</p>
+          <p className="text-[11px] text-[#94A3B8] mt-1">{trendLabel}</p>
         )}
       </div>
 

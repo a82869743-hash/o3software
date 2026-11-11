@@ -12,7 +12,8 @@ import Button from '../../components/ui/Button';
 import Modal from '../../components/ui/Modal';
 import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
-import { formatINR } from '../../utils/formatters';
+import { formatINR, ymd } from '../../utils/formatters';
+import Dropdown from '../../components/ui/Dropdown';
 
 export default function BuySellPage() {
   const toast = useUIStore(s => s.toast);
@@ -31,7 +32,7 @@ export default function BuySellPage() {
   const [showBsModal, setShowBsModal] = useState(false);
   const [bsForm, setBsForm] = useState({
     type: 'buy', vendor_id: '', party_name: '', party_mobile: '', product_id: '', product_name: '',
-    quantity: '', unit_price: '', transaction_date: new Date().toISOString().slice(0,10)
+    quantity: '', unit_price: '', transaction_date: ymd()
   });
 
   const handleCreateBs = async () => {
@@ -54,7 +55,7 @@ export default function BuySellPage() {
       // Reset form
       setBsForm({
         type: 'buy', vendor_id: '', party_name: '', party_mobile: '', product_id: '', product_name: '',
-        quantity: '', unit_price: '', transaction_date: new Date().toISOString().slice(0,10)
+        quantity: '', unit_price: '', transaction_date: ymd()
       });
       refetch();
     } catch (err: any) {
@@ -179,7 +180,7 @@ export default function BuySellPage() {
           />
         </div>
         <div className="w-full md:w-48">
-          <select
+          <Dropdown
             className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
@@ -188,7 +189,7 @@ export default function BuySellPage() {
             <option value="buy">Buy (Procurement)</option>
             <option value="sell_b2b">Sell (B2B Bulk)</option>
             <option value="sell_b2c">Sell (B2C Direct)</option>
-          </select>
+          </Dropdown>
         </div>
       </div>
 
@@ -335,7 +336,11 @@ export default function BuySellPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Select 
               label="Inventory Link (Optional)" 
-              options={[{ value: '', label: 'Custom Item (Not in Inventory)' }, ...((inventory?.data || []).map(i => ({ value: i.id.toString(), label: i.product_name })))]}
+              options={[{ value: '', label: 'Custom Item (Not in Inventory)' }, ...((inventory?.data || []).map((i: any) => {
+                // selling needs stock; buying can restock anything
+                const out = bsForm.type !== 'buy' && Number(i.quantity) <= 0;
+                return { value: i.id.toString(), label: `${i.product_name} ${out ? '— 0 stock left, kindly reorder from main admin' : `(${Number(i.quantity)} in stock)`}`, disabled: out };
+              }))]}
               value={bsForm.product_id}
               onChange={e => {
                 const p = inventory?.data.find(x => x.id.toString() === e.target.value);

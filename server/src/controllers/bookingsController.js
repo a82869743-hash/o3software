@@ -1,8 +1,10 @@
+const { normalizeCarType } = require('../utils/carCategory');
 const pool = require('../config/db');
 const { cancelReservation } = require('./userPackagesController');
+const { isSlotPast, matchClosure, loadClosures } = require('../utils/slotRules');
 
 // ─── HELPER: Validate and Lock Consecutive Slots for Multi-hour Services ───
-async function validateAndLockConsecutiveSlots(conn, startSlotId, totalDurationMinutes, franchiseId) {
+async function validateAndLockConsecutiveSlots(conn, startSlotId, totalDurationMinutes, franchiseId, opts = {}) {
   // 1. Fetch and lock start slot
   const [startSlots] = await conn.query(
     `SELECT id, franchise_id, DATE_FORMAT(slot_date, '%Y-%m-%d') as slot_date, 
@@ -21,15 +23,23 @@ async function validateAndLockConsecutiveSlots(conn, startSlotId, totalDurationM
   if (startSlot.booked_count >= startSlot.max_capacity) {
     return { ok: false, status: 409, error: 'Slot is fully booked' };
   }
-
-  const duration = parseInt(totalDurationMinutes, 10) || 60;
-  // If service duration is <= 60 minutes, exactly 1 slot is needed
-  // This guarantees that 1-hour services never book or touch adjacent slots!
-  const slotsNeeded = Math.max(1, Math.ceil(duration / 60));
-
-  if (slotsNeeded === 1) {
-    return { ok: true, slots: [startSlot], slotIds: [startSlot.id], startSlot };
+  // No booking in a slot that is over (customers: once it has started; studio: once it has ended)
+  if (isSlotPast(startSlot.slot_date, opts.isCustomer ? startSlot.start_time : startSlot.end_time)) {
+    return { ok: false, status: 422, error: 'This slot time has already passed — pick a later slot' };
   }
+  // No booking on a holiday / studio closure, or a slot blocked for walk-ins
+  const closure = matchClosure(await loadClosures(conn, franchiseId || startSlot.franchise_id || 1), startSlot.slot_date, startSlot.start_time);
+  if (closure) {
+    return { ok: false, status: 409, error: `Studio is closed then${closure.title ? ` (${closure.title})` : ''} — pick another slot` };
+  }
+  const [[v2Block]] = await conn.query('SELECT id FROM v2_blocked_slots WHERE blocked_date = ? AND slot_time = ? LIMIT 1', [startSlot.slot_date, startSlot.start_time]);
+  if (v2Block) {
+    return { ok: false, status: 409, error: 'Slot is blocked' };
+  }
+
+  // Standard single slot booking: only book the specific slot chosen by customer/admin.
+  // Eliminates adjacent slot glitch where 2 slots were booked.
+  return { ok: true, slots: [startSlot], slotIds: [startSlot.id], startSlot };
 
   // Multi-hour service: query consecutive slots on the same date for the franchise
   const fId = franchiseId || startSlot.franchise_id || 1;
@@ -104,14 +114,38 @@ async function restoreBookingSlots(conn, bookingId, fallbackSlotId) {
   }
 }
 
+// Add loyalty points (the one points balance customers and admin see). Nothing when Loyalty → Settings is off.
+async function addLoyaltyPoints(conn, customerId, points) {
+  const pts = Math.round(Number(points) || 0);
+  if (!customerId || pts <= 0) return 0;
+  const [[on]] = await conn.query("SELECT value FROM settings WHERE key_name = 'loyalty_enabled' LIMIT 1");
+  if (on && on.value === '0') return 0;
+  await conn.query('INSERT INTO loyalty (customer_id, points) VALUES (?, ?) ON DUPLICATE KEY UPDATE points = points + VALUES(points)', [customerId, pts]);
+  return pts;
+}
+
+// Booking cancelled / rejected: stop its pickup request and owe back any advance already paid
+async function closeBookingExtras(conn, booking) {
+  await conn.query("UPDATE v2_pickup_requests SET status = 'cancelled' WHERE booking_id = ? AND status IN ('pending','assigned')", [booking.id]);
+  if (booking.advance_payment_id && Number(booking.advance_amount) > 0) {
+    await conn.query('UPDATE bookings SET refund_due = ? WHERE id = ? AND refunded_at IS NULL', [booking.advance_amount, booking.id]);
+    await conn.query("UPDATE advance_payments SET status = 'cancelled' WHERE booking_id = ? AND status = 'advance_paid'", [booking.id]);
+    return Number(booking.advance_amount);
+  }
+  return 0;
+}
+
 exports.validateAndLockConsecutiveSlots = validateAndLockConsecutiveSlots;
 exports.restoreBookingSlots = restoreBookingSlots;
+exports.closeBookingExtras = closeBookingExtras;
 
 // ─── LIST BOOKINGS ──────────────────────────
 exports.list = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, search } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { status, search } = req.query;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
     let where = '1=1';
     const params = [];
 
@@ -131,10 +165,18 @@ exports.list = async (req, res) => {
       where += ' AND b.slot_id = ?';
       params.push(req.query.slot_id);
     }
+    // several slots in one call (Slots page week view)
+    if (req.query.slot_ids) {
+      const ids = String(req.query.slot_ids).split(',').map(n => parseInt(n, 10)).filter(n => n > 0).slice(0, 500);
+      if (ids.length) { where += ` AND b.slot_id IN (${ids.map(() => '?').join(',')})`; params.push(...ids); }
+      else where += ' AND 1=0';
+    }
 
     if (status && status !== 'all') {
-      where += ' AND b.status = ?';
-      params.push(status);
+      // a tab can cover several statuses, e.g. "confirmed,in_progress"
+      const list = String(status).split(',').map(s => s.trim()).filter(Boolean);
+      where += ` AND b.status IN (${list.map(() => '?').join(',')})`;
+      params.push(...list);
     }
 
     if (search) {
@@ -152,9 +194,13 @@ exports.list = async (req, res) => {
         s.slot_date, s.start_time, s.end_time,
         u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email,
         svc.name AS service_name,
+        (SELECT GROUP_CONCAT(bs.service_id) FROM booking_services bs WHERE bs.booking_id = b.id) AS service_ids_csv,
+        (SELECT GROUP_CONCAT(s2.name SEPARATOR ', ') FROM booking_services bs JOIN services s2 ON s2.id = bs.service_id WHERE bs.booking_id = b.id) AS service_names,
         pkg.name AS package_name,
         jc.id AS job_cart_id,
-        jc.status AS job_cart_status,
+        jc.status AS job_cart_status, jc.public_token AS job_public_token, jc.current_stage AS job_stage,
+        jc.balance_due AS job_balance_due, jc.payment_status AS job_payment_status, jc.total_amount AS job_total,
+        dl.status AS delivery_status, dl.id AS delivery_id,
         v.brand AS linked_vehicle_brand, v.model AS linked_vehicle_model,
         v.registration_no AS linked_vehicle_reg_no,
         approver.name AS approved_by_name,
@@ -164,14 +210,16 @@ exports.list = async (req, res) => {
       JOIN users u ON b.customer_id = u.id
       LEFT JOIN services svc ON b.service_id = svc.id
       LEFT JOIN packages pkg ON b.package_id = pkg.id
-      LEFT JOIN job_carts jc ON jc.booking_id = b.id
+      -- latest job card / pickup only, so a booking never shows twice
+      LEFT JOIN job_carts jc ON jc.id = (SELECT MAX(j2.id) FROM job_carts j2 WHERE j2.booking_id = b.id AND j2.status <> 'cancelled')
+      LEFT JOIN deliveries dl ON dl.job_cart_id = jc.id
       LEFT JOIN vehicles v ON b.vehicle_id = v.id
       LEFT JOIN users approver ON b.approved_by = approver.id
-      LEFT JOIN v2_pickup_requests pr ON pr.booking_id = b.id
+      LEFT JOIN v2_pickup_requests pr ON pr.id = (SELECT MAX(p2.id) FROM v2_pickup_requests p2 WHERE p2.booking_id = b.id)
       WHERE ${where}
       ORDER BY b.created_at DESC
       LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
+    `, [...params, limit, offset]);
 
     // Enrich with vehicle data — prefer linked vehicle, fall back to text fields
     const enriched = rows.map(r => ({
@@ -184,7 +232,7 @@ exports.list = async (req, res) => {
     res.json({
       success: true,
       data: enriched,
-      pagination: { page: parseInt(page), limit: parseInt(limit), total: countRows[0].total },
+      pagination: { page, limit, total: countRows[0].total },
     });
   } catch (err) {
     console.error('Bookings list error:', err.message);
@@ -222,10 +270,10 @@ exports.getOne = async (req, res) => {
       JOIN users u ON b.customer_id = u.id
       LEFT JOIN services svc ON b.service_id = svc.id
       LEFT JOIN packages pkg ON b.package_id = pkg.id
-      LEFT JOIN job_carts jc ON jc.booking_id = b.id
+      LEFT JOIN job_carts jc ON jc.id = (SELECT MAX(j2.id) FROM job_carts j2 WHERE j2.booking_id = b.id AND j2.status <> 'cancelled')
       LEFT JOIN vehicles v ON b.vehicle_id = v.id
       LEFT JOIN users approver ON b.approved_by = approver.id
-      LEFT JOIN v2_pickup_requests pr ON pr.booking_id = b.id
+      LEFT JOIN v2_pickup_requests pr ON pr.id = (SELECT MAX(p2.id) FROM v2_pickup_requests p2 WHERE p2.booking_id = b.id)
       WHERE b.id = ?
     `, [req.params.id]);
 
@@ -286,9 +334,7 @@ exports.vehicleHistory = async (req, res) => {
              jc.created_at, jc.completed_at,
              (SELECT GROUP_CONCAT(js.service_name SEPARATOR ', ')
               FROM job_services js WHERE js.job_cart_id = jc.id) AS services_done,
-             (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0)
-              + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)
-              FROM job_services js WHERE js.job_cart_id = jc.id) AS total_amount
+             COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0))) AS total_amount
       FROM job_carts jc
       WHERE jc.vehicle_id = ?
       ORDER BY jc.visit_date DESC
@@ -318,7 +364,7 @@ exports.vehicleHistory = async (req, res) => {
 };
 
 // ─── CREATE BOOKING (ATOMIC — with approval workflow) ────
-// UPDATED: status = pending_approval, expires in 5 min, vehicle linking, multi-service
+// UPDATED: status = pending_approval, never expires on its own, vehicle linking, multi-service
 exports.create = async (req, res) => {
   const conn = await pool.getConnection();
   try {
@@ -364,8 +410,13 @@ exports.create = async (req, res) => {
 
     if (vehicle_id) {
       const [vRows] = await conn.query(
-        'SELECT id, brand, model, registration_no FROM vehicles WHERE id = ?', [vehicle_id]
+        'SELECT id, brand, model, registration_no, customer_id FROM vehicles WHERE id = ?', [vehicle_id]
       );
+      // A customer can only book with a car on their own account
+      if (req.user.role === 'customer' && (!vRows.length || Number(vRows[0].customer_id) !== Number(req.user.id))) {
+        await conn.rollback();
+        return res.status(403).json({ success: false, error: 'This car is not on your account' });
+      }
       if (vRows.length) {
         resolvedBrand = vRows[0].brand;
         resolvedModel = vRows[0].model;
@@ -388,7 +439,7 @@ exports.create = async (req, res) => {
 
     // 3. Atomically validate & lock consecutive slots (Fixes adjacent slot bug & race conditions)
     const bookingFranchiseId = req.franchiseId || req.user?.franchise_id || 1;
-    const slotLock = await validateAndLockConsecutiveSlots(conn, slot_id, totalDuration, bookingFranchiseId);
+    const slotLock = await validateAndLockConsecutiveSlots(conn, slot_id, totalDuration, bookingFranchiseId, { isCustomer: req.user.role === 'customer' });
     if (!slotLock.ok) {
       await conn.rollback();
       return res.status(slotLock.status).json({ success: false, error: slotLock.error });
@@ -407,15 +458,13 @@ exports.create = async (req, res) => {
          )
          AND s.slot_date = ?
          AND b.status IN ('pending_approval', 'confirmed', 'pending_payment', 'in_progress')
-         AND (
-           b.slot_id IN (?)
-           OR EXISTS (SELECT 1 FROM booking_slots bs WHERE bs.booking_id = b.id AND bs.slot_id IN (?))
-         )`,
-      [customerId, resolvedVehicleId || 0, resolvedRegNo || '', slot.slot_date, requiredSlotIds, requiredSlotIds]
+         AND COALESCE(b.job_type, 'standard') <> 'quick_wash'`,
+      [customerId, resolvedVehicleId || 0, resolvedRegNo || '', slot.slot_date]
     );
+    // one active booking per car per day — stops double taps and repeat bookings showing twice
     if (overlapCheck.length > 0) {
       await conn.rollback();
-      return res.status(409).json({ success: false, error: 'You already have an active booking for this vehicle at an overlapping time on this date.' });
+      return res.status(409).json({ success: false, error: `This car already has a booking on this date (Booking #${overlapCheck[0].id}). Open My bookings to change or cancel it.` });
     }
 
     // Determine package free pickup eligibility
@@ -447,11 +496,11 @@ exports.create = async (req, res) => {
       }, {});
       
       if (pickup_type === 'pickup') {
-        calculatedPickupCharge = parseFloat(cSettings.pickup_charge || '150');
+        calculatedPickupCharge = parseFloat(cSettings.pickup_charge || '0');
       } else if (pickup_type === 'drop') {
-        calculatedPickupCharge = parseFloat(cSettings.drop_charge || '150');
+        calculatedPickupCharge = parseFloat(cSettings.drop_charge || '0');
       } else if (pickup_type === 'both') {
-        calculatedPickupCharge = parseFloat(cSettings.pickup_drop_charge || '250');
+        calculatedPickupCharge = parseFloat(cSettings.pickup_drop_charge || '0');
       }
     }
 
@@ -459,12 +508,12 @@ exports.create = async (req, res) => {
     let advanceAmount = 0;
     const isAdvanceEligible = !is_free_wash && !use_package;
     let fetchedServicesList = [];
-    const cat = vehicle_category || 'sedan';
+    const cat = normalizeCarType(vehicle_category) || 'sedan';
     const priceKey = `price_${cat}`;
 
     if (allServiceIds.length > 0) {
       const [sRows] = await conn.query(
-        `SELECT id, name, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv FROM services WHERE id IN (?)`,
+        `SELECT id, name, price_hatchback, price_semi_sedan, price_sedan, price_premium_sedan, price_suv, price_premium_suv FROM services WHERE id IN (?)`,
         [allServiceIds]
       );
       fetchedServicesList = sRows;
@@ -537,7 +586,7 @@ exports.create = async (req, res) => {
 
         for (const sName of serviceNames) {
           // Only CHECK availability — do NOT deduct. Deduction happens on admin approval.
-          const result = await userPkgCtrl.checkServiceAvailability(conn, customerId, sName, resolvedVehicleId);
+          const result = await userPkgCtrl.checkServiceAvailability(conn, customerId, sName, resolvedVehicleId, req.body.user_package_id);
           console.log(`[BOOKING] Package availability result for ${sName}:`, JSON.stringify(result));
 
           if (result.can_use) {
@@ -580,12 +629,31 @@ exports.create = async (req, res) => {
       const fwCheck = await checkFirstWashEligibility(conn, customerId);
       if (fwCheck.isEligible && washServicesTotal > 0) {
         discountPercent = 50.00;
-        discountAmount = Math.round(washServicesTotal * 0.50 * 100) / 100;
+        discountAmount = Math.round(washServicesTotal * 0.50); // whole rupees
         calculatedTotal = Math.max(0, calculatedTotal - discountAmount);
         if (advanceAmount > calculatedTotal) {
           advanceAmount = calculatedTotal;
         }
         console.log(`[FIRST_WASH] Customer #${customerId} eligible for 50% wash discount — Wash total: ₹${washServicesTotal}, Discount: ₹${discountAmount}, Final total: ₹${calculatedTotal}`);
+      }
+    }
+
+    // Offer code from the home-screen offer → real discount on the services (the better of offer / first-wash)
+    let appliedOfferCode = null;
+    if (req.body.offer_code && !use_package && !is_free_wash) {
+      const grossServices = washServicesTotal + nonWashServicesTotal;
+      const offer = await require('../utils/offer').evaluateOffer(conn, {
+        franchiseId: req.franchiseId || req.user.franchise_id || 1, customerId, code: req.body.offer_code, amount: grossServices });
+      if (!offer.ok) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, error: offer.error, field: 'offer_code' });
+      }
+      if (offer.discount > discountAmount) {
+        calculatedTotal = Math.max(0, calculatedTotal + discountAmount - offer.discount);
+        discountAmount = offer.discount;
+        discountPercent = offer.percent;
+        appliedOfferCode = offer.code;
+        if (advanceAmount > calculatedTotal) advanceAmount = calculatedTotal;
       }
     }
 
@@ -600,7 +668,8 @@ exports.create = async (req, res) => {
       targetStatus = 'pending_payment';
       expiresAt = conn.raw ? conn.raw('DATE_ADD(NOW(), INTERVAL 10 MINUTE)') : new Date(Date.now() + 10 * 60 * 1000);
     } else {
-      expiresAt = req.user.role === 'admin' ? null : new Date(Date.now() + 5 * 60 * 1000);
+      // waiting for the studio to approve — never expires on its own
+      expiresAt = null;
     }
 
     // ─── Save Address Details dynamically if provided ───
@@ -629,8 +698,14 @@ exports.create = async (req, res) => {
               [customerId, address, landmark || null, city, state, pincode, latitude || null, longitude || null]
             );
             console.log('[BOOKING] Saved new customer address under profile:', address);
+          } else if (latitude && longitude) {
+            // same address, newer pin from the map: keep the latest exact pin
+            await conn.query('UPDATE v2_customer_addresses SET latitude = ?, longitude = ? WHERE id = ?', [latitude, longitude, dupe[0].id]);
           }
         }
+        // Profile address (shown in Profile and printed on invoices) is filled from the first address the customer gives
+        const fullAddr = [address, landmark ? `Landmark: ${landmark}` : '', city, `${state} - ${pincode}`].filter(Boolean).join(', ').slice(0, 300);
+        await conn.query("UPDATE users SET address = ? WHERE id = ? AND (address IS NULL OR address = '')", [fullAddr, customerId]);
       }
     }
 
@@ -665,9 +740,37 @@ exports.create = async (req, res) => {
         bookingFranchiseId
       ]
     );
+    if (appliedOfferCode) await conn.query('UPDATE bookings SET offer_code = ? WHERE id = ?', [appliedOfferCode, result.insertId]);
 
     const bookingId = result.insertId;
+
+    // pickup request is made with the booking itself (not left to a second call from the phone)
+    if (['pickup', 'both'].includes(pickup_type) && pickup_address_details && pickup_address_details.address) {
+      const a = pickup_address_details;
+      const lat = parseFloat(a.latitude), lng = parseFloat(a.longitude);
+      await conn.query(
+        `INSERT INTO v2_pickup_requests (booking_id, customer_id, address, scheduled_time, pickup_charges, status, request_type, latitude, longitude)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        [bookingId, customerId,
+         [a.address, a.landmark ? `Landmark: ${a.landmark}` : '', a.city, [a.state, a.pincode].filter(Boolean).join(' - ')].filter(Boolean).join(', '),
+         req.body.pickup_time || null, calculatedPickupCharge || 0, pickup_type,
+         Math.abs(lat) <= 90 ? lat : null, Math.abs(lng) <= 180 ? lng : null]);
+    }
     console.log('[BOOKING] Booking created:', bookingId);
+
+    // Package booking: take the credit now, so both the customer and the admin see the balance drop at once.
+    // Reject / cancel gives it back.
+    if (packageUsed) {
+      const userPkgCtrl = require('./userPackagesController');
+      for (const sName of String(package_service_name).split(',').map(s => s.trim()).filter(Boolean)) {
+        const used = await userPkgCtrl.checkAndUseService(conn, customerId, sName, resolvedVehicleId, resolvedUserPackageId);
+        if (!used.can_use) {
+          await conn.rollback();
+          return res.status(422).json({ success: false, error: `No package credits left for ${sName}` });
+        }
+      }
+      await conn.query('UPDATE bookings SET package_credit_taken = 1 WHERE id = ?', [bookingId]);
+    }
 
     // 8. Insert booking_services for multi-service
     if (allServiceIds.length > 0) {
@@ -705,7 +808,7 @@ exports.create = async (req, res) => {
 
       const io = req.app.get('io');
       if (io) {
-        io.emit('new_booking', { bookingId, status: targetStatus });
+        io.to('internal').emit('new_booking', { bookingId, status: targetStatus });
       }
     }
 
@@ -748,7 +851,7 @@ exports.approve = async (req, res) => {
     const { id } = req.params;
     const { booking_notes } = req.body;
 
-    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ?', [id]);
+    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [id]);
     if (!bookings.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Booking not found' }); }
 
     const booking = bookings[0];
@@ -763,7 +866,7 @@ exports.approve = async (req, res) => {
     }
 
     // ─── DEFERRED DEDUCTION: Deduct package credit NOW (on approval) ───
-    if (booking.booking_type === 'package' && booking.user_package_id) {
+    if (booking.booking_type === 'package' && booking.user_package_id && !booking.package_credit_taken) {
       let serviceNames = [];
       if (booking.package_service_name) {
         serviceNames = booking.package_service_name.split(',').map(s => s.trim()).filter(s => s);
@@ -778,7 +881,7 @@ exports.approve = async (req, res) => {
       if (serviceNames.length > 0) {
         const userPkgCtrl = require('./userPackagesController');
         for (const sName of serviceNames) {
-          const result = await userPkgCtrl.checkAndUseService(conn, booking.customer_id, sName, booking.vehicle_id);
+          const result = await userPkgCtrl.checkAndUseService(conn, booking.customer_id, sName, booking.vehicle_id, booking.user_package_id);
           if (!result.can_use) {
             await conn.rollback();
             return res.status(422).json({
@@ -789,6 +892,7 @@ exports.approve = async (req, res) => {
           console.log(`[BOOKING] Package credit deducted for booking #${id} — service: ${sName}, remaining: ${result.remaining}`);
         }
       }
+      await conn.query('UPDATE bookings SET package_credit_taken = 1 WHERE id = ?', [id]);
     }
 
     await conn.query(
@@ -800,7 +904,8 @@ exports.approve = async (req, res) => {
     try {
       // 1. Check if this is the customer's first confirmed booking ever (excluding this one)
       const [prevBookings] = await conn.query(
-        'SELECT id FROM bookings WHERE customer_id = ? AND status = "confirmed" AND id != ?',
+        // any earlier booking that was approved (it may be in progress or completed by now)
+        "SELECT id FROM bookings WHERE customer_id = ? AND id != ? AND status NOT IN ('pending_approval','pending_payment','rejected','cancelled') LIMIT 1",
         [booking.customer_id, id]
       );
 
@@ -829,39 +934,16 @@ exports.approve = async (req, res) => {
             referrerPoints = parseInt(settingRow[0].value) || 100;
           }
 
-          // Check/Create referrer's wallet in v2_wallets
-          const [referrerWallets] = await conn.query('SELECT id FROM v2_wallets WHERE customer_id = ?', [ref.referrer_id]);
-          let referrerWalletId;
-          if (!referrerWallets.length) {
-            const [insWallet] = await conn.query(
-              'INSERT INTO v2_wallets (customer_id, balance, reward_points, total_earned, total_spent) VALUES (?, 0, 0, 0, 0)',
-              [ref.referrer_id]
+          // Referral bonus = loyalty points only (one place; nothing when Loyalty is switched off)
+          const [[loyOn]] = await conn.query("SELECT value FROM settings WHERE key_name = 'loyalty_enabled' LIMIT 1");
+          const giveReferralPoints = !loyOn || loyOn.value !== '0';
+          if (giveReferralPoints) {
+            await conn.query(
+              `INSERT INTO v2_reward_logs (customer_id, points, action, description, reference_type, reference_id)
+               VALUES (?, ?, 'referral', ?, 'referral', ?)`,
+              [ref.referrer_id, referrerPoints, `Referral bonus for customer ID ${booking.customer_id}`, ref.id]
             );
-            referrerWalletId = insWallet.insertId;
-          } else {
-            referrerWalletId = referrerWallets[0].id;
           }
-
-          // Credit referrer's wallet
-          await conn.query(
-            'UPDATE v2_wallets SET reward_points = reward_points + ?, total_earned = total_earned + ? WHERE id = ?',
-            [referrerPoints, referrerPoints, referrerWalletId]
-          );
-
-          // Log in v2_wallet_transactions
-          await conn.query(
-            `INSERT INTO v2_wallet_transactions 
-             (wallet_id, customer_id, transaction_type, amount, points, description, reference_type, reference_id, balance_after)
-             VALUES (?, ?, 'referral_bonus', 0, ?, ?, 'referral', ?, 0)`,
-            [referrerWalletId, ref.referrer_id, referrerPoints, `Referral reward points for referring customer ID ${booking.customer_id}`, ref.id]
-          );
-
-          // Log in v2_reward_logs
-          await conn.query(
-            `INSERT INTO v2_reward_logs (customer_id, points, action, description, reference_type, reference_id)
-             VALUES (?, ?, 'referral', ?, 'referral', ?)`,
-            [ref.referrer_id, referrerPoints, `Referral bonus for customer ID ${booking.customer_id}`, ref.id]
-          );
 
           // Transition referral to rewarded
           await conn.query(
@@ -875,18 +957,14 @@ exports.approve = async (req, res) => {
             [ref.referrer_id, booking.customer_id]
           );
 
-          // Also update legacy loyalty table
-          const [existingLoyalty] = await conn.query('SELECT id FROM loyalty WHERE customer_id = ?', [ref.referrer_id]);
-          if (existingLoyalty.length > 0) {
-            await conn.query('UPDATE loyalty SET credits = credits + ? WHERE customer_id = ?', [referrerPoints, ref.referrer_id]);
-          } else {
-            await conn.query('INSERT INTO loyalty (customer_id, credits) VALUES (?, ?)', [ref.referrer_id, referrerPoints]);
+          if (giveReferralPoints) {
+            await conn.query('INSERT INTO loyalty (customer_id, points) VALUES (?, ?) ON DUPLICATE KEY UPDATE points = points + VALUES(points)', [ref.referrer_id, referrerPoints]);
+            const [[bal]] = await conn.query('SELECT points FROM loyalty WHERE customer_id = ?', [ref.referrer_id]);
+            await conn.query(
+              `INSERT INTO loyalty_transactions (customer_id, type, points, balance_after, description) VALUES (?, 'earn', ?, ?, 'Referral reward points awarded.')`,
+              [ref.referrer_id, referrerPoints, bal?.points || referrerPoints]
+            );
           }
-
-          await conn.query(
-            `INSERT INTO loyalty_transactions (customer_id, type, points, description) VALUES (?, 'earn', ?, 'Referral reward points awarded.')`,
-            [ref.referrer_id, referrerPoints]
-          );
         }
 
         // ─── Trigger New Customer Welcome Reward (Update 24) ───
@@ -899,7 +977,11 @@ exports.approve = async (req, res) => {
         const [valRow] = await conn.query('SELECT value FROM settings WHERE key_name = "welcome_reward_value"');
         if (valRow.length) welcomeValue = parseFloat(valRow[0].value) || 0;
 
-        if (welcomeType === 'points') {
+        // give the welcome reward only once, and only when a value is set
+        const [[hadWelcome]] = await conn.query("SELECT COUNT(*) AS c FROM customer_rewards WHERE customer_id = ? AND reward_type = 'welcome'", [booking.customer_id]);
+        if (welcomeValue <= 0 || hadWelcome.c > 0) {
+          /* nothing to give */
+        } else if (welcomeType === 'points') {
           // Credit points to v2_wallets
           const [customerWallets] = await conn.query('SELECT id FROM v2_wallets WHERE customer_id = ?', [booking.customer_id]);
           let customerWalletId;
@@ -913,10 +995,7 @@ exports.approve = async (req, res) => {
             customerWalletId = customerWallets[0].id;
           }
 
-          await conn.query(
-            'UPDATE v2_wallets SET reward_points = reward_points + ?, total_earned = total_earned + ? WHERE id = ?',
-            [welcomeValue, welcomeValue, customerWalletId]
-          );
+          await addLoyaltyPoints(conn, booking.customer_id, welcomeValue); // one points store (Loyalty); skipped when Loyalty is off
 
           // Log in v2_wallet_transactions
           await conn.query(
@@ -945,9 +1024,9 @@ exports.approve = async (req, res) => {
 
           const [existingLoyalty] = await conn.query('SELECT id FROM loyalty WHERE customer_id = ?', [booking.customer_id]);
           if (existingLoyalty.length > 0) {
-            await conn.query('UPDATE loyalty SET credits = credits + ? WHERE customer_id = ?', [welcomeValue, booking.customer_id]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           } else {
-            await conn.query('INSERT INTO loyalty (customer_id, credits) VALUES (?, ?)', [booking.customer_id, welcomeValue]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           }
 
           await conn.query(
@@ -983,6 +1062,9 @@ exports.approve = async (req, res) => {
 
     await conn.commit();
 
+    // Confirmed → a draft job card is ready for when the car arrives
+    const autoJobCardId = await require('./jobCartController').draftFromBooking(Number(id), req.user);
+
     // Fire-and-forget confirmation SMS & WhatsApp
     try {
       const messagingService = require('../services/messagingService');
@@ -1009,7 +1091,7 @@ exports.approve = async (req, res) => {
     }
 
     console.log(`[BOOKING] #${id} approved by admin ${req.user.id}`);
-    res.json({ success: true, message: 'Booking approved' });
+    res.json({ success: true, message: autoJobCardId ? `Booking approved — job card #${autoJobCardId} is ready` : 'Booking approved', job_card_id: autoJobCardId });
   } catch (err) {
     await conn.rollback();
     console.error('Booking approve error:', err);
@@ -1027,7 +1109,7 @@ exports.reject = async (req, res) => {
     const { id } = req.params;
     const { booking_notes } = req.body;
 
-    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ?', [id]);
+    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [id]);
     if (!bookings.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Booking not found' }); }
 
     const booking = bookings[0];
@@ -1046,6 +1128,7 @@ exports.reject = async (req, res) => {
       `UPDATE bookings SET status = 'rejected', booking_notes = ?, approved_by = ?, approved_at = NOW(), expires_at = NULL WHERE id = ?`,
       [booking_notes || 'Rejected by admin', req.user.id, id]
     );
+    await closeBookingExtras(conn, { ...booking, id: Number(id) });
 
     // Restore all booked slot(s) (including multi-hour consecutive slots)
     await restoreBookingSlots(conn, id, booking.slot_id);
@@ -1060,7 +1143,8 @@ exports.reject = async (req, res) => {
 
     // Restore package usage if booking was a confirmed package booking (credit already deducted)
     let packageRestored = false;
-    if (booking.booking_type === 'package' && booking.status === 'confirmed') {
+    if (booking.booking_type === 'package' && (booking.package_credit_taken || booking.status === 'confirmed')) {
+      await conn.query('UPDATE bookings SET package_credit_taken = 0 WHERE id = ?', [id]);
       try {
         let serviceName = booking.package_service_name;
         if (!serviceName && booking.service_id) {
@@ -1129,7 +1213,7 @@ exports.cancel = async (req, res) => {
     await conn.beginTransaction();
     const { id } = req.params;
 
-    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ?', [id]);
+    const [bookings] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [id]);
     if (!bookings.length) { await conn.rollback(); return res.status(404).json({ success: false, error: 'Booking not found' }); }
 
     const booking = bookings[0];
@@ -1146,6 +1230,9 @@ exports.cancel = async (req, res) => {
 
     // 1. Cancel booking
     await conn.query("UPDATE bookings SET status = 'cancelled', expires_at = NULL WHERE id = ?", [id]);
+    const refundOwed = await closeBookingExtras(conn, { ...booking, id: Number(id) });
+    // Its job card (made on approval) is no longer needed, unless work already finished
+    await conn.query("UPDATE job_carts SET status = 'cancelled' WHERE booking_id = ? AND status IN ('draft','open')", [id]);
 
     // 2. Restore all booked slot(s) (including multi-hour consecutive slots)
     await restoreBookingSlots(conn, id, booking.slot_id);
@@ -1159,7 +1246,8 @@ exports.cancel = async (req, res) => {
     }
 
     // 4. Restore package usage — ONLY if booking was confirmed (credit was deducted on approval)
-    if (booking.booking_type === 'package' && booking.status === 'confirmed') {
+    if (booking.booking_type === 'package' && (booking.package_credit_taken || booking.status === 'confirmed')) {
+      await conn.query('UPDATE bookings SET package_credit_taken = 0 WHERE id = ?', [id]);
       try {
         let serviceName = booking.package_service_name;
         if (!serviceName && booking.service_id) {
@@ -1194,7 +1282,7 @@ exports.cancel = async (req, res) => {
     // Note: pending_approval package bookings don't need restore since credits weren't deducted
 
     await conn.commit();
-    res.json({ success: true, message: 'Booking cancelled' });
+    res.json({ success: true, message: refundOwed ? `Booking cancelled — advance ₹${refundOwed} to be refunded (see Payments → Refunds due)` : 'Booking cancelled' });
   } catch (err) {
     await conn.rollback();
     console.error('Cancel booking error:', err);
@@ -1246,7 +1334,7 @@ exports.canChange = async (req, res) => {
     
     res.json({
       success: true,
-      canChange: req.user.role === 'admin' ? true : canChange,
+      canChange: ['admin', 'super_admin', 'manager', 'staff'].includes(req.user.role) ? true : (canChange && booking.status === 'pending_approval' && !booking.user_package_id),
       hoursRemaining
     });
   } catch (err) {
@@ -1286,6 +1374,15 @@ exports.changeServices = async (req, res) => {
       await conn.rollback();
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
+    // Customers can add/remove services only until the studio confirms; after that it is booked
+    if (req.user.role === 'customer' && booking.status !== 'pending_approval') {
+      await conn.rollback();
+      return res.status(422).json({ success: false, error: 'This booking is already confirmed — call the studio to change services' });
+    }
+    if (booking.user_package_id && req.user.role === 'customer') {
+      await conn.rollback();
+      return res.status(422).json({ success: false, error: 'Package bookings use the package service — cancel and rebook to change it' });
+    }
     
     // Check 24-hour cutoff
     const [slots] = await conn.query('SELECT slot_date, start_time FROM slots WHERE id = ?', [booking.slot_id]);
@@ -1295,7 +1392,7 @@ exports.changeServices = async (req, res) => {
     }
     
     const { canChange } = checkCanChangeBooking(booking, slots[0]);
-    if (!canChange && req.user.role !== 'admin') {
+    if (!canChange && !['admin', 'super_admin'].includes(req.user.role)) {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'Cannot modify service within 24 hours of slot start time' });
     }
@@ -1313,7 +1410,7 @@ exports.changeServices = async (req, res) => {
     }
     
     // Recalculate duration & select primary service_id (usually the first one)
-    const [services] = await conn.query('SELECT id, name, duration_minutes FROM services WHERE id IN (?)', [service_ids]);
+    const [services] = await conn.query('SELECT * FROM services WHERE id IN (?)', [service_ids]);
     if (services.length !== service_ids.length) {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'Some service IDs are invalid' });
@@ -1322,10 +1419,19 @@ exports.changeServices = async (req, res) => {
     const totalDuration = services.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
     const newPrimaryServiceId = service_ids[0];
     
+    // New price for this car type (each service is priced per car type)
+    const { normalizeCarType } = require('../utils/carCategory');
+    const carType = normalizeCarType(booking.vehicle_category) || 'sedan';
+    const gross = services.reduce((sum, s) => sum + (Number(s[`price_${carType}`]) || Number(s.price_sedan) || Number(s.price) || 0), 0);
+    const discount = booking.is_free_wash ? gross
+      : Number(booking.discount_percent) > 0 ? Math.round(gross * Number(booking.discount_percent) / 100)
+      : Math.min(Number(booking.discount_amount) || 0, gross);
+    const totalAmount = Math.max(0, gross - discount) + (Number(booking.pickup_charge) || 0);
+
     // Update booking row
     await conn.query(
-      'UPDATE bookings SET service_id = ?, total_duration = ? WHERE id = ?',
-      [newPrimaryServiceId, totalDuration, id]
+      'UPDATE bookings SET service_id = ?, total_duration = ?, total_amount = ?, discount_amount = ? WHERE id = ?',
+      [newPrimaryServiceId, totalDuration, totalAmount, discount, id]
     );
     
     // Log action in v2_audit_logs
@@ -1371,7 +1477,8 @@ exports.changeServices = async (req, res) => {
       data: {
         booking_id: parseInt(id),
         service_id: newPrimaryServiceId,
-        total_duration: totalDuration
+        total_duration: totalDuration,
+        total_amount: totalAmount
       }
     });
   } catch (err) {
@@ -1400,8 +1507,20 @@ exports.createManual = async (req, res) => {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'Customer ID and Slot ID are required' });
     }
-
-    // 1. Resolve vehicle data
+    {
+      const [[mc]] = await conn.query('SELECT role, franchise_id FROM users WHERE id = ? AND is_deleted = 0', [customer_id]);
+      if (!mc || mc.role !== 'customer' || (req.user.role !== 'super_admin' && Number(mc.franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1))) {
+        await conn.rollback();
+        return res.status(404).json({ success: false, error: 'Customer not found in this studio' });
+      }
+      if (vehicle_id) {
+        const [[mv]] = await conn.query('SELECT customer_id FROM vehicles WHERE id = ?', [vehicle_id]);
+        if (!mv || Number(mv.customer_id) !== Number(customer_id)) {
+          await conn.rollback();
+          return res.status(400).json({ success: false, error: 'This car does not belong to this customer' });
+        }
+      }
+    }
     let resolvedBrand = vehicle_brand || null;
     let resolvedModel = vehicle_model || null;
     let resolvedRegNo = vehicle_reg_no || null;
@@ -1465,10 +1584,10 @@ exports.createManual = async (req, res) => {
 
     let calculatedTotal = 0;
     if (!is_free_wash && !use_package && allServiceIds.length > 0) {
-      const cat = vehicle_category || 'sedan';
+      const cat = normalizeCarType(vehicle_category) || 'sedan';
       const priceKey = `price_${cat}`;
       const [servicesList] = await conn.query(
-        `SELECT price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv FROM services WHERE id IN (?)`,
+        `SELECT price_hatchback, price_semi_sedan, price_sedan, price_premium_sedan, price_suv, price_premium_suv FROM services WHERE id IN (?)`,
         [allServiceIds]
       );
       calculatedTotal = servicesList.reduce((sum, s) => {
@@ -1574,7 +1693,8 @@ exports.createManual = async (req, res) => {
     // ─── Referral Completion & Welcome Reward Triggers ───
     try {
       const [prevBookings] = await conn.query(
-        'SELECT id FROM bookings WHERE customer_id = ? AND status = "confirmed" AND id != ?',
+        // any earlier booking that was approved (it may be in progress or completed by now)
+        "SELECT id FROM bookings WHERE customer_id = ? AND id != ? AND status NOT IN ('pending_approval','pending_payment','rejected','cancelled') LIMIT 1",
         [customer_id, bookingId]
       );
 
@@ -1603,10 +1723,7 @@ exports.createManual = async (req, res) => {
             referrerWalletId = referrerWallets[0].id;
           }
 
-          await conn.query(
-            'UPDATE v2_wallets SET reward_points = reward_points + ?, total_earned = total_earned + ? WHERE id = ?',
-            [referrerPoints, referrerPoints, referrerWalletId]
-          );
+          await addLoyaltyPoints(conn, ref.referrer_id, referrerPoints); // one points store (Loyalty); skipped when Loyalty is off
 
           await conn.query(
             `INSERT INTO v2_wallet_transactions 
@@ -1629,9 +1746,9 @@ exports.createManual = async (req, res) => {
 
           const [existingLoyalty] = await conn.query('SELECT id FROM loyalty WHERE customer_id = ?', [ref.referrer_id]);
           if (existingLoyalty.length > 0) {
-            await conn.query('UPDATE loyalty SET credits = credits + ? WHERE customer_id = ?', [referrerPoints, ref.referrer_id]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           } else {
-            await conn.query('INSERT INTO loyalty (customer_id, credits) VALUES (?, ?)', [ref.referrer_id, referrerPoints]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           }
           await conn.query(
             `INSERT INTO loyalty_transactions (customer_id, type, points, description) VALUES (?, 'earn', ?, 'Referral reward points awarded.')`,
@@ -1649,7 +1766,11 @@ exports.createManual = async (req, res) => {
         const [valRow] = await conn.query('SELECT value FROM settings WHERE key_name = "welcome_reward_value"');
         if (valRow.length) welcomeValue = parseFloat(valRow[0].value) || 0;
 
-        if (welcomeType === 'points') {
+        // give the welcome reward only once, and only when a value is set
+        const [[hadWelcome]] = await conn.query("SELECT COUNT(*) AS c FROM customer_rewards WHERE customer_id = ? AND reward_type = 'welcome'", [customer_id]);
+        if (welcomeValue <= 0 || hadWelcome.c > 0) {
+          /* nothing to give */
+        } else if (welcomeType === 'points') {
           const [customerWallets] = await conn.query('SELECT id FROM v2_wallets WHERE customer_id = ?', [customer_id]);
           let customerWalletId;
           if (!customerWallets.length) {
@@ -1662,10 +1783,7 @@ exports.createManual = async (req, res) => {
             customerWalletId = customerWallets[0].id;
           }
 
-          await conn.query(
-            'UPDATE v2_wallets SET reward_points = reward_points + ?, total_earned = total_earned + ? WHERE id = ?',
-            [welcomeValue, welcomeValue, customerWalletId]
-          );
+          await addLoyaltyPoints(conn, customer_id, welcomeValue); // one points store (Loyalty); skipped when Loyalty is off
 
           await conn.query(
             `INSERT INTO v2_wallet_transactions 
@@ -1690,9 +1808,9 @@ exports.createManual = async (req, res) => {
 
           const [existingLoyalty] = await conn.query('SELECT id FROM loyalty WHERE customer_id = ?', [customer_id]);
           if (existingLoyalty.length > 0) {
-            await conn.query('UPDATE loyalty SET credits = credits + ? WHERE customer_id = ?', [welcomeValue, customer_id]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           } else {
-            await conn.query('INSERT INTO loyalty (customer_id, credits) VALUES (?, ?)', [customer_id, welcomeValue]);
+            /* reward already given as loyalty points above (not also as ₹ credit) */
           }
           await conn.query(
             `INSERT INTO loyalty_transactions (customer_id, type, points, description) VALUES (?, 'earn', ?, 'New customer welcome bonus points')`,
@@ -1768,6 +1886,12 @@ exports.createManual = async (req, res) => {
 exports.downloadInvoice = async (req, res) => {
   try {
     const { id } = req.params;
+    const [[bk]] = await pool.query('SELECT customer_id, status FROM bookings WHERE id = ?', [id]);
+    if (!bk) return res.status(404).json({ success: false, error: 'Booking not found' });
+    if (req.user.role === 'customer' && Number(bk.customer_id) !== Number(req.user.id)) return res.status(404).json({ success: false, error: 'Booking not found' });
+    if (!['confirmed', 'in_progress', 'completed', 'delivered'].includes(bk.status)) {
+      return res.status(400).json({ success: false, error: 'The invoice is available once the booking is approved' });
+    }
     const { generateBookingInvoicePDF } = require('../services/invoiceService');
     const { pdfBuffer, invoiceNumber } = await generateBookingInvoicePDF(id);
 
@@ -1781,6 +1905,19 @@ exports.downloadInvoice = async (req, res) => {
   } catch (err) {
     console.error('Download booking invoice error:', err.message);
     res.status(500).json({ success: false, error: 'Failed to generate invoice PDF' });
+  }
+};
+
+// GET /bookings/offer-check?code=&amount= — live preview of an offer code before booking
+exports.offerCheck = async (req, res) => {
+  try {
+    const out = await require('../utils/offer').evaluateOffer(pool, {
+      franchiseId: req.franchiseId || req.user.franchise_id || 1, customerId: req.user.role === 'customer' ? req.user.id : null,
+      code: req.query.code, amount: Number(req.query.amount) || 0 });
+    res.status(out.ok ? 200 : 400).json({ success: out.ok, ...out });
+  } catch (err) {
+    console.error('offerCheck error:', err.message);
+    res.status(500).json({ success: false, error: 'Could not check the offer' });
   }
 };
 
@@ -1826,7 +1963,8 @@ exports.reschedule = async (req, res) => {
       conn,
       slot_id,
       booking.total_duration || 60,
-      booking.franchise_id || 1
+      booking.franchise_id || 1,
+      { isCustomer: req.user.role === 'customer' }
     );
     if (!slotLock.ok) {
       await conn.rollback();
@@ -1873,7 +2011,7 @@ exports.reschedule = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('booking_rescheduled', { booking_id: booking.id, new_slot_id: slot_id });
+      io.to('internal').emit('booking_rescheduled', { booking_id: booking.id, new_slot_id: slot_id });
     }
 
     res.json({

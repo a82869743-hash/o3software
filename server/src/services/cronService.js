@@ -55,10 +55,10 @@ exports.initCronJobs = () => {
     console.log('[CRON] Running daily evening task: Marking absentees');
     try {
       await pool.query(`
-        INSERT INTO staff_attendance (staff_id, att_date, status)
-        SELECT id, CURDATE(), 'absent'
+        INSERT INTO staff_attendance (staff_id, att_date, status, franchise_id)
+        SELECT id, CURDATE(), 'absent', COALESCE(franchise_id, 1)
         FROM users
-        WHERE role = 'staff' AND is_active = 1
+        WHERE role IN ('staff', 'manager') AND is_active = 1 AND is_deleted = 0
         AND id NOT IN (
           SELECT staff_id FROM staff_attendance WHERE att_date = CURDATE()
         )
@@ -124,6 +124,11 @@ exports.initCronJobs = () => {
     }
   });
 
+  // 3b. BOOKING SLOTS — keep the next 30 days open for booking (copies each weekday's usual timings)
+  const slotTopUp = () => require('./slotTopUp').topUpSlots().catch(err => console.error('[CRON] Slot top-up failed:', err.message));
+  cron.schedule('30 0 * * *', slotTopUp);
+  setTimeout(slotTopUp, 15000); // also once shortly after the server starts
+
   // 4. PACKAGE EXPIRY — Mark expired packages daily at midnight
   cron.schedule('0 0 * * *', async () => {
     console.log('[CRON] Running package expiry check');
@@ -146,11 +151,12 @@ exports.initCronJobs = () => {
     console.log('[CRON] Running advance payment due reminders');
     try {
       const [duePayments] = await pool.query(`
-        SELECT ap.id, ap.balance_due, ap.due_date, u.name, u.mobile
+        SELECT ap.id, CASE WHEN jc.id IS NULL THEN ap.balance_due WHEN jc.status = 'cancelled' THEN 0 ELSE GREATEST(jc.balance_due, 0) END AS balance_due, ap.due_date, u.name, u.mobile
         FROM advance_payments ap
         JOIN users u ON ap.customer_id = u.id
+        LEFT JOIN job_carts jc ON jc.id = ap.job_cart_id
         WHERE ap.status = 'advance_paid'
-          AND ap.balance_due > 0
+          AND (CASE WHEN jc.id IS NULL THEN ap.balance_due WHEN jc.status = 'cancelled' THEN 0 ELSE GREATEST(jc.balance_due, 0) END) > 0
           AND DATE(ap.due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY)
           AND u.mobile IS NOT NULL
       `);
@@ -174,31 +180,11 @@ exports.initCronJobs = () => {
   
   // 6. PACKAGE RENEWAL REMINDERS — Send package renewal reminders via notify
   // Runs at 11:00 AM every day
-  cron.schedule('0 11 * * *', async () => {
+  cron.schedule('0 11,18 * * *', async () => {
     console.log('[CRON] Running package renewal & service schedule reminders');
     try {
-      // 1. Package Expiry Reminders (30 days, 7 days, 1 day prior)
-      const [expiringPackages] = await pool.query(`
-        SELECT up.id, up.user_id, up.end_date, p.name AS package_name, u.name, u.mobile, v.brand, v.model, v.registration_no,
-               DATEDIFF(up.end_date, CURDATE()) AS days_left
-        FROM user_packages up
-        JOIN packages p ON up.package_id = p.id
-        JOIN users u ON up.user_id = u.id
-        LEFT JOIN vehicles v ON up.vehicle_id = v.id
-        WHERE up.package_status = 'active'
-          AND (DATE(up.end_date) = DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-            OR DATE(up.end_date) = DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-            OR DATE(up.end_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY))
-          AND u.mobile IS NOT NULL
-      `);
-
-      for (const pkg of expiringPackages) {
-        if (pkg.mobile) {
-          const timingText = pkg.days_left === 30 ? 'in 1 month' : pkg.days_left === 7 ? 'in 1 week' : 'tomorrow';
-          const msg = `Hi ${pkg.name}, your package "${pkg.package_name}" is about to expire ${timingText} on ${new Date(pkg.end_date).toLocaleDateString('en-IN')}. Kindly visit O3 Car Spaa to enjoy your services or renew. Thank you!`;
-          await messagingService.sendWhatsApp(`91${pkg.mobile}`, null, { body: msg }).catch(() => {});
-        }
-      }
+      // 1. Package renewal reminders (30 / 15 / 7 / 1 day before + on expiry, each once)
+      const expiringPackages = { length: await require('../controllers/userPackagesController').runPackageReminders() };
 
       // 2. Service Schedule Reminders (30 days, 7 days, 1 day prior)
       const [schedItems] = await pool.query(`
@@ -229,35 +215,67 @@ exports.initCronJobs = () => {
     }
   });
 
-  // 7. RETRY FAILED NOTIFICATIONS — Checks for failed SMS notifications to retry
-  // Runs every 30 minutes
-  cron.schedule('*/30 * * * *', async () => {
-    console.log('[CRON] Running failed notifications retry check');
+  // 6b. VISIT DAY — draft job cards for package visits and repeat visits due today (7am)
+  cron.schedule('0 7 * * *', async () => {
     try {
-      const [failedLogs] = await pool.query(`
-        SELECT * FROM v2_notification_logs 
-        WHERE status = 'failed' AND attempts < 3 AND channel = 'sms'
-      `);
+      const made = await require('../controllers/jobCartController').draftsForDueVisits(new Date().toLocaleDateString('en-CA'));
+      if (made.length) console.log(`[CRON] ${made.length} visit job card(s) ready for today`);
+    } catch (err) { console.error('[CRON] visit job cards failed:', err.message); }
+  });
 
-      for (const log of failedLogs) {
-        console.log(`[CRON] Retrying failed SMS notification #${log.id} (Attempt ${log.attempts + 1})`);
-        
-        // Mark as retry / pending during attempt
-        await pool.query('UPDATE v2_notification_logs SET status = "retry", attempts = attempts + 1, last_attempt_at = NOW() WHERE id = ?', [log.id]);
+  // 7. (removed) SMS retry — non-OTP messages are WhatsApp-only and retried by the notification queue
 
-        // Attempt SMS send
-        const smsResult = await messagingService.sendSMS(log.mobile, process.env.MSG91_PROMO_TEMPLATE_ID || 'PROMO123', null, {
-          content: log.message_body
-        });
 
-        if (smsResult.success) {
-          await pool.query('UPDATE v2_notification_logs SET status = "sent", response_data = ? WHERE id = ?', [JSON.stringify(smsResult), log.id]);
-        } else {
-          await pool.query('UPDATE v2_notification_logs SET status = "failed", response_data = ? WHERE id = ?', [JSON.stringify(smsResult), log.id]);
-        }
+  // 9. LEADS AGENT — first touch for new leads from every source + scheduled follow-ups (every 15 min, 9am–8pm)
+  cron.schedule('*/15 9-20 * * *', async () => {
+    try {
+      const notificationService = require('./notificationService');
+      const { getStudioProfile } = require('./studioProfile');
+      // a) New leads not yet contacted (non-WhatsApp sources; WhatsApp ones are answered live by the AI agent)
+      const [fresh] = await pool.query(
+        `SELECT l.* FROM leads l
+         WHERE l.stage = 'new' AND l.last_contacted_at IS NULL AND COALESCE(l.source,'') <> 'whatsapp_inbound'
+           AND l.direction = 'inbound' AND l.created_at <= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+           AND l.created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+           AND NOT EXISTS (SELECT 1 FROM whatsapp_opt_outs o WHERE RIGHT(o.phone,10) = RIGHT(l.phone,10))
+         LIMIT 50`
+      );
+      for (const l of fresh) {
+        const studio = await getStudioProfile(l.franchise_id);
+        const body = `Hi ${l.name ? l.name.split(' ')[0] : 'there'}! Thanks for your interest in ${studio.studio_name}` +
+          `${l.service_interest ? ` (${l.service_interest})` : ''}. Which car do you drive and when would you like to bring it in? ` +
+          `Reply here and we'll share prices and the next free slot.${studio.mobile ? ` Call us: ${studio.mobile}` : ''}`;
+        await notificationService.notify({ mobile: l.phone, customMessageBody: body, channels: ['whatsapp'], franchiseId: l.franchise_id,
+          referenceType: 'lead', referenceId: l.id, idempotencyKey: `lead_first_touch_${l.id}` });
+        await pool.query(
+          "UPDATE leads SET stage = 'contacted', last_contacted_at = NOW(), next_follow_up_at = DATE_ADD(NOW(), INTERVAL 2 DAY) WHERE id = ?",
+          [l.id]
+        );
+      }
+      // b) Follow-ups that are due
+      const [due] = await pool.query(
+        `SELECT l.* FROM leads l
+         WHERE l.stage IN ('new','contacted','qualified') AND l.next_follow_up_at IS NOT NULL AND l.next_follow_up_at <= NOW()
+           AND NOT EXISTS (SELECT 1 FROM whatsapp_opt_outs o WHERE RIGHT(o.phone,10) = RIGHT(l.phone,10))
+         LIMIT 50`
+      );
+      for (const l of due) {
+        const studio = await getStudioProfile(l.franchise_id);
+        const body = `Hi ${l.name ? l.name.split(' ')[0] : 'there'}, just checking in from ${studio.studio_name}. ` +
+          `Would you like us to reserve a slot for your ${l.vehicle_model || 'car'}${l.service_interest ? ` for ${l.service_interest}` : ''}? Reply YES and we'll confirm.`;
+        await notificationService.notify({ mobile: l.phone, customMessageBody: body, channels: ['whatsapp'], franchiseId: l.franchise_id,
+          referenceType: 'lead', referenceId: l.id, idempotencyKey: `lead_follow_${l.id}_${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}` });
+        // After 3 automatic follow-ups with no reply the lead is parked as lost (staff can reopen)
+        const nudges = ((l.notes || '').match(/\[auto-follow-up\]/g) || []).length + 1;
+        await pool.query(
+          `UPDATE leads SET last_contacted_at = NOW(), next_follow_up_at = ${nudges >= 3 ? 'NULL' : 'DATE_ADD(NOW(), INTERVAL 3 DAY)'},
+             stage = ${nudges >= 3 ? "'lost'" : 'stage'}, lost_reason = ${nudges >= 3 ? "'No response after 3 follow-ups'" : 'lost_reason'},
+             notes = CONCAT_WS(CHAR(10), notes, '[auto-follow-up]') WHERE id = ?`,
+          [l.id]
+        );
       }
     } catch (err) {
-      console.error('[CRON] Error in failed notification retry task:', err);
+      console.error('[CRON] Leads agent error:', err.message);
     }
   });
 

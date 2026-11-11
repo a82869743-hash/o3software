@@ -49,7 +49,7 @@ export default function StaffInventoryPage() {
       <div className="mb-8" style={{ borderImage: 'linear-gradient(to bottom, #1D4ED8, #2563EB) 1' }}>
         <div className="border-l-4 pl-6" style={{ borderImage: 'linear-gradient(to bottom, #1D4ED8, #2563EB) 1' }}>
           <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#0F172A] uppercase">Inventory</h2>
-          <p className="text-sm text-[#5f5e5e] mt-1">{data?.pagination?.total || 0} products</p>
+          <p className="text-sm text-[#64748B] mt-1">{data?.pagination?.total || 0} products</p>
         </div>
       </div>
 

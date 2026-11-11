@@ -55,7 +55,7 @@ class GuardrailService {
       'connect to agent', 'connect me', 'speak to manager', 'owner se baat', 'baat karwao',
       'call me', 'customer care number', 'talk to someone'
     ];
-    if (humanRequests.some(r => lower.includes(r)) || (lower.includes('talk') && (lower.includes('human') || lower.includes('manager')))) {
+    if (humanRequests.some(r => lower.includes(r)) || (/\b(talk|speak|baat)\b/.test(lower) && /\b(human|manager|person|someone|staff|owner|insaan)\b/.test(lower))) {
       return { triggered: true, reason: 'Customer requested human agent' };
     }
 

@@ -3,6 +3,16 @@
  * Designed for O3 Car Spaa multi-tenant detailing studio platform.
  */
 
+// The linked-phone WhatsApp (Baileys) allows ONE connection per number. Several app copies would each
+// open their own and knock each other off (reconnect loops, double replies, ban risk), so run a single
+// copy while it is on. One copy is plenty for one studio.
+const fs = require('fs');
+let baileysOn = false;
+try {
+  const env = fs.readFileSync(__dirname + '/server/.env', 'utf8');
+  baileysOn = /^\s*ENABLE_BAILEYS_DEMO\s*=\s*["']?true["']?\s*$/m.test(env);
+} catch (_) { /* no .env yet */ }
+
 module.exports = {
   apps: [
     {
@@ -11,7 +21,7 @@ module.exports = {
       cwd: __dirname,
 
       // Cluster Mode Execution (Utilizes multiple CPU cores on Hostinger VPS)
-      instances: 'max',
+      instances: baileysOn ? 1 : 'max',
       exec_mode: 'cluster',
 
       // Auto-restart & Memory Safeguards (1GB cap per worker to fit VPS RAM profile)
@@ -35,7 +45,8 @@ module.exports = {
       // Environment Profile Targets
       env_production: {
         NODE_ENV: 'production',
-        PORT: 5000
+        PORT: 5000,
+        TZ: 'Asia/Kolkata'
       },
       env_staging: {
         NODE_ENV: 'staging',

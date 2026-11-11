@@ -1,3 +1,4 @@
+import { ymd } from '../../utils/formatters';
 import {
   BarChart3, FileText, Download, Calendar, ShieldAlert,
   Clock, CheckCircle, Package, ArrowUpRight, ArrowDownRight, TrendingUp, Star
@@ -7,6 +8,7 @@ import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import { PageTransition, AnimatedCard, RippleButton } from '../../components/ui/Animations';
 
 import { useState } from 'react';
+import Dropdown from '../../components/ui/Dropdown';
 
 type TabType = 'sales' | 'inventory' | 'jobcards' | 'welcomerewards' | 'packagehistory';
 
@@ -14,8 +16,8 @@ export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<TabType>('sales');
   
   // Date states for reports
-  const today = new Date().toISOString().split('T')[0];
-  const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+  const today = ymd();
+  const firstDayOfMonth = ymd(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [dateRange, setDateRange] = useState({ from: firstDayOfMonth, to: today });
   
   // Job card report additional filters
@@ -87,29 +89,25 @@ export default function ReportsPage() {
 
       {/* Filters Card (except for Inventory/Welcome Rewards/Package History tab which doesn't need date filters) */}
       {activeTab !== 'inventory' && activeTab !== 'welcomerewards' && activeTab !== 'packagehistory' && (
-        <AnimatedCard className="bg-white p-4 rounded-2xl border border-gray-100 flex flex-wrap items-center justify-between gap-4" delay={0.1}>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Calendar size={14} className="text-gray-400" />
-              <span className="text-xs font-medium text-gray-500">Period:</span>
-            </div>
+        <AnimatedCard className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex flex-col sm:flex-row sm:items-end justify-between gap-3" delay={0.1}>
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:items-end gap-2 w-full sm:w-auto">
+            <p className="col-span-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500"><Calendar size={13} /> Period</p>
             <input
               type="date"
               value={dateRange.from}
               onChange={(e) => setDateRange((prev) => ({ ...prev, from: e.target.value }))}
-              className="text-xs border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full sm:w-auto text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
             />
-            <span className="text-gray-400 text-xs">to</span>
             <input
               type="date"
               value={dateRange.to}
               onChange={(e) => setDateRange((prev) => ({ ...prev, to: e.target.value }))}
-              className="text-xs border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full sm:w-auto text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
             />
 
             {activeTab === 'jobcards' && (
               <>
-                <select
+                <Dropdown
                   value={jobCardFilters.status}
                   onChange={(e) => setJobCardFilters((prev) => ({ ...prev, status: e.target.value }))}
                   className="text-xs border border-gray-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 bg-white"
@@ -119,15 +117,15 @@ export default function ReportsPage() {
                   <option value="in_progress">In Progress</option>
                   <option value="completed">Completed</option>
                   <option value="delivered">Delivered</option>
-                </select>
+                </Dropdown>
               </>
             )}
           </div>
 
-          <div className="flex gap-2">
+          <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
             <RippleButton
               onClick={() => handleDownload(activeTab === 'sales' ? 'sales' : 'job-cards', 'xlsx')}
-              className="flex items-center gap-1.5 text-xs py-2 px-3 border border-gray-200 text-gray-700 bg-white hover:bg-gray-50 rounded-xl"
+              className="flex items-center justify-center gap-1.5 text-sm font-bold py-2.5 px-4 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl"
               disabled={!!downloading}
             >
               <Download size={14} />
@@ -136,7 +134,7 @@ export default function ReportsPage() {
             {activeTab === 'sales' && (
               <RippleButton
                 onClick={() => handleDownload('sales', 'pdf')}
-                className="flex items-center gap-1.5 text-xs py-2 px-3 border border-blue-200 text-blue-700 bg-blue-50/50 hover:bg-blue-50 rounded-xl"
+                className="flex items-center justify-center gap-1.5 text-sm font-bold py-2.5 px-4 bg-[#2563EB] text-white hover:bg-blue-700 rounded-xl"
                 disabled={!!downloading}
               >
                 <FileText size={14} />

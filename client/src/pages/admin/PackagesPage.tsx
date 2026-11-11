@@ -1,3 +1,4 @@
+import { CAR_TYPES, emptyPrices } from '../../utils/carTypes';
 import { useState } from 'react';
 import { Plus, Package as PackageIcon, Edit2, Trash2, ToggleLeft, ToggleRight, Loader2, Eye, EyeOff, Minus, Check, X as XIcon } from 'lucide-react';
 import { usePackages, useCreatePackage, useUpdatePackage, useTogglePackage, useTogglePackageVisibility, useDeletePackage } from '../../api/hooks/usePackages';
@@ -13,18 +14,12 @@ import EmptyState from '../../components/shared/EmptyState';
 import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { useUIStore } from '../../store/uiStore';
 import { formatINR } from '../../utils/formatters';
+import PicturePicker from '../../components/admin/PicturePicker';
+import { ServiceArt, pictureSource, PictureSummary } from '../../components/customer/serviceVisuals';
+import Dropdown from '../../components/ui/Dropdown';
 
-const CATEGORY_LABELS = [
-  { key: 'price_hatchback', short: 'Hatch', label: 'Hatchback ₹' },
-  { key: 'price_medium_hatchback', short: 'Med Hatch', label: 'Med Hatchback ₹' },
-  { key: 'price_sedan', short: 'Sedan', label: 'Sedan ₹' },
-  { key: 'price_premium_sedan', short: 'Prem Sedan', label: 'Prem Sedan ₹' },
-  { key: 'price_suv', short: 'SUV', label: 'SUV ₹' },
-];
+const CATEGORY_LABELS = CAR_TYPES.map(t => ({ key: `price_${t.value}`, short: t.short, label: `${t.label} ₹` }));
 
-const emptyPrices = () => ({
-  price_hatchback: 0, price_medium_hatchback: 0, price_sedan: 0, price_premium_sedan: 0, price_suv: 0,
-});
 
 // Type for a service row in the custom builder
 interface ServiceRow {
@@ -144,6 +139,7 @@ export default function PackagesPage() {
   
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
   const [prices, setPrices] = useState<Record<string, number>>(emptyPrices());
   const [premiumPrices, setPremiumPrices] = useState<Record<string, number>>(emptyPrices());
   const [washCount, setWashCount] = useState(0);
@@ -187,7 +183,7 @@ export default function PackagesPage() {
 
   const openAdd = () => {
     setEditItem(null); 
-    setName(''); setDesc(''); setPrices(emptyPrices()); setPremiumPrices(emptyPrices());
+    setName(''); setDesc(''); setImageUrl(''); setPrices(emptyPrices()); setPremiumPrices(emptyPrices());
     setWashCount(0); setWaxCount(0); setActive(true);
     setVisibleToCustomer(true);
     setServiceRows([{ service_id: '', total_count: 1, complimentary: false, display_order: 0 }]);
@@ -199,7 +195,7 @@ export default function PackagesPage() {
 
   const openEdit = (pkg: any) => {
     setEditItem(pkg); 
-    setName(pkg.name); setDesc(pkg.description || '');
+    setName(pkg.name); setDesc(pkg.description || ''); setImageUrl(pkg.image_url || '');
 
     const getPriceForCarType = (carType: string, pricingType: 'basic' | 'premium', defaultVal: any) => {
       if (pkg.pricing && pkg.pricing.length > 0) {
@@ -209,21 +205,8 @@ export default function PackagesPage() {
       return parseFloat(defaultVal) || 0;
     };
 
-    setPrices({
-      price_hatchback: getPriceForCarType('SMALL_HATCHBACK', 'basic', pkg.price_hatchback),
-      price_medium_hatchback: getPriceForCarType('MEDIUM_HATCHBACK', 'basic', pkg.price_medium_hatchback),
-      price_sedan: getPriceForCarType('SEDAN_SUV', 'basic', pkg.price_sedan),
-      price_premium_sedan: getPriceForCarType('PREMIUM_SEDAN', 'basic', pkg.price_premium_sedan),
-      price_suv: getPriceForCarType('LARGE_CAR', 'basic', pkg.price_suv),
-    });
-
-    setPremiumPrices({
-      price_hatchback: getPriceForCarType('SMALL_HATCHBACK', 'premium', 0),
-      price_medium_hatchback: getPriceForCarType('MEDIUM_HATCHBACK', 'premium', 0),
-      price_sedan: getPriceForCarType('SEDAN_SUV', 'premium', 0),
-      price_premium_sedan: getPriceForCarType('PREMIUM_SEDAN', 'premium', 0),
-      price_suv: getPriceForCarType('LARGE_CAR', 'premium', 0),
-    });
+    setPrices(Object.fromEntries(CAR_TYPES.map(t => [`price_${t.value}`, getPriceForCarType(t.value, 'basic', pkg[`price_${t.value}`])])));
+    setPremiumPrices(Object.fromEntries(CAR_TYPES.map(t => [`price_${t.value}`, getPriceForCarType(t.value, 'premium', 0)])));
 
     setWashCount(pkg.wash_count); setWaxCount(pkg.wax_count);
     setActive(!!pkg.is_published);
@@ -261,7 +244,7 @@ export default function PackagesPage() {
 
     try {
       const payload: any = {
-        name, description: desc, 
+        name, description: desc, image_url: imageUrl, 
         ...prices,
         wash_count: washCount, wax_count: waxCount,
         is_published: active,
@@ -269,20 +252,9 @@ export default function PackagesPage() {
         products: selectedProducts,
         package_validity: packageValidity,
         pickup_enabled: pickupEnabled,
-        pricing: [
-          // Basic Pricing
-          { car_type: 'SMALL_HATCHBACK', pricing_type: 'basic', price: prices.price_hatchback || 0 },
-          { car_type: 'MEDIUM_HATCHBACK', pricing_type: 'basic', price: prices.price_medium_hatchback || 0 },
-          { car_type: 'SEDAN_SUV', pricing_type: 'basic', price: prices.price_sedan || 0 },
-          { car_type: 'PREMIUM_SEDAN', pricing_type: 'basic', price: prices.price_premium_sedan || 0 },
-          { car_type: 'LARGE_CAR', pricing_type: 'basic', price: prices.price_suv || 0 },
-          // Premium Pricing
-          { car_type: 'SMALL_HATCHBACK', pricing_type: 'premium', price: premiumPrices.price_hatchback || 0 },
-          { car_type: 'MEDIUM_HATCHBACK', pricing_type: 'premium', price: premiumPrices.price_medium_hatchback || 0 },
-          { car_type: 'SEDAN_SUV', pricing_type: 'premium', price: premiumPrices.price_sedan || 0 },
-          { car_type: 'PREMIUM_SEDAN', pricing_type: 'premium', price: premiumPrices.price_premium_sedan || 0 },
-          { car_type: 'LARGE_CAR', pricing_type: 'premium', price: premiumPrices.price_suv || 0 },
-        ]
+        pricing: (['basic', 'premium'] as const).flatMap(pt => CAR_TYPES.map(t => ({
+          car_type: t.value, pricing_type: pt, price: (pt === 'basic' ? prices : premiumPrices)[`price_${t.value}`] || 0,
+        })))
       };
 
       // Use new format: services with total_count
@@ -359,6 +331,8 @@ export default function PackagesPage() {
       ) : !packages.length ? (
         <EmptyState icon={PackageIcon} title="No Packages" description="Create your first package bundle" actionLabel="+ Create Package" onAction={openAdd} />
       ) : (
+        <>
+        <div className="mb-4"><PictureSummary items={packages} kind="packages" /></div>
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {packages.map((pkg: any) => {
             const tierKey = getTierKey(pkg.name);
@@ -372,26 +346,35 @@ export default function PackagesPage() {
               <div key={pkg.id} className={`bg-white rounded-xl shadow-sm border-l-4 ${colors.border} overflow-hidden transition-all hover:shadow-md ${!pkg.is_published ? 'opacity-60' : ''}`}>
                 {/* ─── Card Header ─── */}
                 <div className={`${colors.headerBg} px-4 py-3 flex items-start justify-between`}>
-                  <div>
-                    <h3 className="font-extrabold text-gray-900 text-sm uppercase tracking-wide">
+                  <div className="flex gap-2.5 min-w-0">
+                  <div className="w-11 h-11 rounded-lg overflow-hidden bg-white border border-gray-100 shrink-0"><ServiceArt name={`${pkg.name} package`} imageUrl={pkg.image_url} className="h-11" /></div>
+                  <div className="min-w-0">
+                    <h3 className="font-extrabold text-gray-900 text-sm uppercase tracking-wide break-words">
                       {pkg.name.replace(/ Package$/i, '')}
                     </h3>
+                    {(() => { const p = pictureSource(`${pkg.name} package`, pkg.image_url); return <span className={`inline-block mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${p.cls}`}>{p.label}</span>; })()}
                     {paidWashCount > 0 && (
                       <p className="text-[10px] font-semibold text-gray-500 mt-0.5">
                         Pay For {paidWashCount} Full Foam Wash
                       </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <button onClick={() => handleVisibilityToggle(pkg.id)} className="p-1 rounded transition-colors hover:bg-white/60" title={pkg.visible_to_customer ? 'Visible' : 'Hidden'}>
-                      {pkg.visible_to_customer ? <Eye size={14} className="text-blue-500" /> : <EyeOff size={14} className="text-gray-400" />}
-                    </button>
-                    <button onClick={() => handleToggle(pkg.id)} className="p-1 rounded hover:bg-white/60" title={pkg.is_published ? 'Active' : 'Draft'}>
-                      {pkg.is_published ? <ToggleRight size={16} className="text-green-600" /> : <ToggleLeft size={16} className="text-gray-400" />}
-                    </button>
-                    <button onClick={() => openEdit(pkg)} className="p-1 rounded hover:bg-white/60"><Edit2 size={13} className="text-gray-400" /></button>
-                    <button onClick={() => { setDeleteId(pkg.id); setDeleteOpen(true); }} className="p-1 rounded hover:bg-blue-50"><Trash2 size={13} className="text-gray-400" /></button>
                   </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button onClick={() => openEdit(pkg)} className="p-1.5 rounded hover:bg-white/60" title="Edit"><Edit2 size={14} className="text-gray-500" /></button>
+                    <button onClick={() => { setDeleteId(pkg.id); setDeleteOpen(true); }} className="p-1.5 rounded hover:bg-blue-50" title="Delete"><Trash2 size={14} className="text-gray-500" /></button>
+                  </div>
+                </div>
+                {/* Status switches — always visible, with labels */}
+                <div className="flex flex-wrap gap-2 px-4 py-2 border-b border-gray-100 bg-white">
+                  <button onClick={() => handleToggle(pkg.id)} title="Active packages can be sold; drafts cannot"
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors ${pkg.is_published ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                    {pkg.is_published ? <ToggleRight size={15} /> : <ToggleLeft size={15} />} {pkg.is_published ? 'Active' : 'Inactive (draft)'}
+                  </button>
+                  <button onClick={() => handleVisibilityToggle(pkg.id)} title="Show or hide this package in the customer app"
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors ${pkg.visible_to_customer ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                    {pkg.visible_to_customer ? <Eye size={13} /> : <EyeOff size={13} />} {pkg.visible_to_customer ? 'Visible to customers' : 'Hidden from customers'}
+                  </button>
                 </div>
 
                 {/* ─── Visibility Badge ─── */}
@@ -431,17 +414,17 @@ export default function PackagesPage() {
                 {/* ─── V2 Pricing Grid (Basic / Premium) ─── */}
                 <div className="px-4 pb-3 pt-2 border-t border-gray-100 overflow-x-auto">
                   {pkg.pricing && pkg.pricing.length > 0 ? (
-                    <div className="min-w-[280px]">
-                      <div className="grid grid-cols-6 gap-1 mb-1">
+                    <div className="min-w-[320px]">
+                      <div className="grid grid-cols-7 gap-1 mb-1">
                         <div className="text-[7px] font-bold uppercase tracking-widest text-gray-400"></div>
-                        {['S.Hatch','M.Hatch','Sedan','Prem','Large'].map(l => (
+                        {CAR_TYPES.map(t => t.short).map(l => (
                           <div key={l} className="text-center text-[7px] font-bold uppercase tracking-widest text-gray-400 leading-tight">{l}</div>
                         ))}
                       </div>
                       {['basic','premium'].map(pt => (
-                        <div key={pt} className="grid grid-cols-6 gap-1 py-0.5">
+                        <div key={pt} className="grid grid-cols-7 gap-1 py-0.5">
                           <div className={`text-[8px] font-bold uppercase tracking-wider ${pt === 'premium' ? 'text-purple-600' : 'text-gray-500'}`}>{pt}</div>
-                          {['SMALL_HATCHBACK','MEDIUM_HATCHBACK','SEDAN_SUV','PREMIUM_SEDAN','LARGE_CAR'].map(ct => {
+                          {CAR_TYPES.map(t => t.value).map(ct => {
                             const p = pkg.pricing.find((r: any) => r.car_type === ct && r.pricing_type === pt);
                             return <div key={ct} className="text-center text-[10px] font-extrabold text-gray-900">{p ? formatINR(p.price) : '—'}</div>;
                           })}
@@ -449,7 +432,7 @@ export default function PackagesPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="grid grid-cols-5 gap-1 min-w-[280px]">
+                    <div className="grid grid-cols-6 gap-1 min-w-[300px]">
                       {CATEGORY_LABELS.map(cat => (
                         <div key={cat.key} className="text-center">
                           <p className="text-[7px] font-bold uppercase tracking-widest text-gray-400 leading-tight">{cat.short}</p>
@@ -463,6 +446,7 @@ export default function PackagesPage() {
             );
           })}
         </div>
+        </>
       )}
 
       {/* Add/Edit Modal — Custom Package Builder */}
@@ -475,10 +459,11 @@ export default function PackagesPage() {
             <h4 className="font-semibold text-gray-700">Basic Info</h4>
             <Input label="Package Name" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Silver Package" />
             <Textarea label="Description" value={desc} onChange={e => setDesc(e.target.value)} placeholder="e.g. Pay For 5 Car Foam Wash" />
+            <PicturePicker name={name} description={desc} kind="package" value={imageUrl} onChange={setImageUrl} />
             
             <div className="space-y-4">
               <div className="bg-gray-50/80 p-3 rounded-xl border border-gray-100">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2 flex items-center gap-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-blue-600"></span>
                   Basic Pricing by Vehicle Category (₹)
                 </p>
@@ -527,7 +512,7 @@ export default function PackagesPage() {
                   <button type="button" onClick={() => setPickupEnabled(!pickupEnabled)} className={`w-10 h-5 rounded-full transition-colors ${pickupEnabled ? 'bg-indigo-500' : 'bg-gray-300'}`}>
                     <div className={`w-4 h-4 rounded-full bg-white shadow transform transition-transform ${pickupEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
                   </button>
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#5f5e5e]">{pickupEnabled ? 'Free Pickup Eligible' : 'No Free Pickup'}</span>
+                  <span className="text-xs font-bold uppercase tracking-wider text-[#64748B]">{pickupEnabled ? 'Free Pickup Eligible' : 'No Free Pickup'}</span>
                 </label>
               </div>
             </div>
@@ -537,7 +522,7 @@ export default function PackagesPage() {
               <button type="button" onClick={() => setActive(!active)} className={`w-10 h-5 rounded-full transition-colors ${active ? 'bg-green-500' : 'bg-gray-300'}`}>
                 <div className={`w-4 h-4 rounded-full bg-white shadow transform transition-transform ${active ? 'translate-x-5' : 'translate-x-0.5'}`} />
               </button>
-              <span className="text-xs font-bold uppercase tracking-wider text-[#5f5e5e]">{active ? 'Published' : 'Draft'}</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-[#64748B]">{active ? 'Active (can be sold)' : 'Inactive (draft)'}</span>
             </label>
 
             {/* Customer Visibility toggle */}
@@ -545,7 +530,7 @@ export default function PackagesPage() {
               <button type="button" onClick={() => setVisibleToCustomer(!visibleToCustomer)} className={`w-10 h-5 rounded-full transition-colors ${visibleToCustomer ? 'bg-blue-500' : 'bg-gray-300'}`}>
                 <div className={`w-4 h-4 rounded-full bg-white shadow transform transition-transform ${visibleToCustomer ? 'translate-x-5' : 'translate-x-0.5'}`} />
               </button>
-              <span className="text-xs font-bold uppercase tracking-wider text-[#5f5e5e]">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#64748B]">
                 {visibleToCustomer ? 'Visible to Customers' : 'Hidden from Customers'}
               </span>
             </label>
@@ -563,12 +548,12 @@ export default function PackagesPage() {
               </div>
               <p className="text-[10px] text-gray-400 mb-3">Select a service and how many times it's included in this package.</p>
               
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-72 overflow-y-auto overflow-x-hidden pr-1">
                 {serviceRows.map((row, idx) => (
-                  <div key={idx} className="flex gap-2 items-center animate-fade-in-up" style={{ animationDelay: `${idx * 0.03}s`, animationFillMode: 'forwards' }}>
+                  <div key={idx} className="flex flex-wrap gap-2 items-center p-2 rounded-xl border border-slate-200 bg-slate-50/60 animate-fade-in-up" style={{ animationDelay: `${idx * 0.03}s`, animationFillMode: 'forwards' }}>
                     {/* Service dropdown */}
-                    <select
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30 transition-all"
+                    <Dropdown
+                      className="basis-full min-w-0 px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-[#2563EB] transition-all"
                       value={row.service_id}
                       onChange={e => updateServiceRow(idx, 'service_id', parseInt(e.target.value) || '')}
                     >
@@ -576,13 +561,13 @@ export default function PackagesPage() {
                       {services.map((s: any) => (
                         <option key={s.id} value={s.id}>{s.name}</option>
                       ))}
-                    </select>
+                    </Dropdown>
                     {/* Count input */}
                     <div className="relative w-20 shrink-0">
                       <input
                         type="number"
                         min="1"
-                        className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm text-center focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30 transition-all"
+                        className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm text-center bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-[#2563EB] transition-all"
                         placeholder="Count"
                         value={row.total_count}
                         onChange={e => updateServiceRow(idx, 'total_count', parseInt(e.target.value) || 1)}
@@ -603,7 +588,7 @@ export default function PackagesPage() {
                     <div className="relative w-16 shrink-0">
                       <input
                         type="number"
-                        className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm text-center focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]/30"
+                        className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm text-center bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-[#2563EB]"
                         placeholder="Seq"
                         value={row.display_order || 0}
                         onChange={e => updateServiceRow(idx, 'display_order', parseInt(e.target.value) || 0)}
@@ -613,7 +598,7 @@ export default function PackagesPage() {
                     <button
                       type="button"
                       onClick={() => removeServiceRow(idx)}
-                      className="p-1.5 rounded-lg text-blue-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                      className="ml-auto p-1.5 rounded-lg text-rose-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"
                     >
                       <Minus size={16} />
                     </button>
@@ -639,7 +624,7 @@ export default function PackagesPage() {
               <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                 {selectedProducts.map((p, idx) => (
                   <div key={idx} className="flex gap-2">
-                    <select className="flex-1 px-3 py-1.5 border border-gray-300 rounded text-sm bg-white" value={p.product_id} onChange={e => {
+                    <Dropdown className="flex-1 px-3 py-1.5 border border-gray-300 rounded text-sm bg-white" value={p.product_id} onChange={e => {
                       const next = [...selectedProducts];
                       next[idx].product_id = parseInt(e.target.value) || '';
                       setSelectedProducts(next);
@@ -648,7 +633,7 @@ export default function PackagesPage() {
                       {inventory.map((inv: any) => (
                          <option key={inv.id} value={inv.id}>{inv.product_name} ({inv.unit})</option>
                       ))}
-                    </select>
+                    </Dropdown>
                     <input type="number" min="1" className="w-20 shrink-0 px-3 py-1.5 border border-gray-300 rounded text-sm" placeholder="Qty" value={p.quantity} onChange={e => {
                       const next = [...selectedProducts];
                       next[idx].quantity = parseFloat(e.target.value) || 1;

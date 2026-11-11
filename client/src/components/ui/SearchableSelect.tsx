@@ -50,13 +50,13 @@ export default function SearchableSelect({
   return (
     <div className={`w-full relative animate-fade-in-up ${isOpen ? 'z-50' : 'z-0'}`} ref={containerRef}>
       {label && (
-        <label className="block text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-2">
+        <label className="block text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] mb-2">
           {label}
         </label>
       )}
       <div
         onClick={() => !disabled && setIsOpen(!isOpen)}
-        className={`w-full px-4 py-3 bg-[#f6f3f2] rounded-lg text-[#0F172A] font-medium flex items-center justify-between cursor-pointer text-base md:text-sm ${
+        className={`w-full px-4 py-3 bg-[#F1F5F9] rounded-lg text-[#0F172A] font-medium flex items-center justify-between cursor-pointer text-base md:text-sm ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         } ${isOpen ? 'ring-2 ring-[#2563EB]/20 bg-white border border-[#2563EB]/30' : ''} ${
           error ? 'ring-2 ring-blue-400' : ''

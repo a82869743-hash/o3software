@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import api from '../../api/axiosInstance';
 import { CheckCircle, XCircle, Loader2, PackageOpen, User, Car, Clock, AlertTriangle, Download } from 'lucide-react';
 import ConfirmModal from '../../components/ui/ConfirmModal';
+import AdminHero from '../../components/admin/AdminHero';
 import { useAuthStore } from '../../store/authStore';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 export default function PackageApprovalsPage() {
   const [requests, setRequests] = useState<any[]>([]);
@@ -27,6 +29,7 @@ export default function PackageApprovalsPage() {
     }
   };
 
+  useLiveReload(() => { fetchRequests(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchRequests();
   }, []);
@@ -65,7 +68,7 @@ export default function PackageApprovalsPage() {
         rejection_reason: rejectionReason.trim(),
       });
       if (res.data.success) {
-        alert('Package request rejected. Customer will be notified via SMS.');
+        alert('Package request rejected. Customer will be notified on WhatsApp.');
         setRejectModalId(null);
         setRejectionReason('');
         fetchRequests();
@@ -85,6 +88,7 @@ export default function PackageApprovalsPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
+      <AdminHero title={'Package Approvals'} subtitle={'Review, approve, or reject customer package purchases.'} />
         <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
       </div>
     );
@@ -93,11 +97,8 @@ export default function PackageApprovalsPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#0F172A] flex items-center gap-2">
-          <PackageOpen className="text-[#2563EB] w-7 h-7" />
-          Package Approvals
-        </h1>
-        <p className="text-sm text-[#5f5e5e] mt-1">Review, approve, or reject customer package purchases.</p>
+        
+        
       </div>
 
       {/* ─── Tab Bar ─── */}
@@ -213,16 +214,7 @@ export default function PackageApprovalsPage() {
                         Reject
                       </button>
                     </div>
-                    <button
-                      onClick={() => {
-                        const token = useAuthStore.getState().token;
-                        window.open(`/api/packages/requests/${req.id}/invoice?token=${token}`, '_blank');
-                      }}
-                      className="w-full flex justify-center items-center gap-1.5 px-3 py-2 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg hover:bg-blue-100 transition-colors"
-                    >
-                      <Download className="w-4 h-4" />
-                      Download Invoice
-                    </button>
+                    {/* invoice appears once the package is approved */}
                   </div>
                 </div>
               ))}
@@ -282,7 +274,7 @@ export default function PackageApprovalsPage() {
                         {new Date(req.approved_at || req.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true })}
                       </td>
                       <td className="p-4 text-right">
-                        <button
+                        {req.status === 'approved' && <button
                           onClick={() => {
                             const token = useAuthStore.getState().token;
                             window.open(`/api/packages/requests/${req.id}/invoice?token=${token}`, '_blank');
@@ -291,7 +283,7 @@ export default function PackageApprovalsPage() {
                         >
                           <Download className="w-3.5 h-3.5" />
                           Receipt
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                   ))}
@@ -362,7 +354,7 @@ export default function PackageApprovalsPage() {
                 <XCircle className="w-5 h-5" />
                 Reject Package Request
               </h3>
-              <p className="text-sm text-blue-600 mt-1">The customer will be notified via SMS.</p>
+              <p className="text-sm text-blue-600 mt-1">The customer will be notified on WhatsApp.</p>
             </div>
             <div className="p-6">
               <label className="block text-sm font-semibold text-gray-700 mb-2">

@@ -59,6 +59,12 @@ exports.awardWelcome = async (req, res) => {
   try {
     const { customer_id } = req.body;
     if (!customer_id) return res.status(400).json({ success: false, error: 'Customer ID required' });
+    // the reward must go to a customer of this studio (not a staff member, not another studio)
+    const [[cust]] = await pool.query(
+      "SELECT id FROM users WHERE id = ? AND role = 'customer' AND COALESCE(is_deleted, 0) = 0" +
+      (req.user.role === 'super_admin' ? '' : ' AND COALESCE(franchise_id, 1) = ?'),
+      req.user.role === 'super_admin' ? [customer_id] : [customer_id, Number(req.franchiseId) || Number(req.user.franchise_id) || 1]);
+    if (!cust) return res.status(404).json({ success: false, error: 'Customer not found' });
 
     const insertId = await awardWelcomeRewardInternal(customer_id);
     if (!insertId) {
@@ -88,13 +94,25 @@ exports.redeem = async (req, res) => {
       return res.status(403).json({ success: false, error: 'You are not authorized to redeem this reward' });
     }
 
-    await pool.query('UPDATE customer_rewards SET redeemed = 1, redeemed_at = NOW() WHERE id = ?', [id]);
-    
-    // Also add to loyalty points ledger if there are points
-    if (existing[0].points_awarded > 0) {
+    if (req.user && req.user.role !== 'customer' && req.user.role !== 'super_admin') {
+      const [[owner]] = await pool.query('SELECT franchise_id FROM users WHERE id = ?', [existing[0].customer_id]);
+      if (owner && Number(owner.franchise_id || 1) !== (Number(req.franchiseId) || Number(req.user.franchise_id) || 1)) {
+        return res.status(404).json({ success: false, error: 'Reward not found' });
+      }
+    }
+
+    // Mark used only if it is still unused — two taps at the same moment cannot both pass this.
+    const [upd] = await pool.query('UPDATE customer_rewards SET redeemed = 1, redeemed_at = NOW() WHERE id = ? AND redeemed = 0', [id]);
+    if (!upd.affectedRows) return res.status(400).json({ success: false, error: 'Reward already redeemed' });
+
+    // Add the points to the customer's balance and the points history
+    const pts = Number(existing[0].points_awarded) || 0;
+    if (pts > 0) {
+      await pool.query('INSERT INTO loyalty (customer_id, credits, free_washes, wax_count, points) VALUES (?, 0, 0, 0, ?) ON DUPLICATE KEY UPDATE points = points + VALUES(points)', [existing[0].customer_id, pts]);
+      const [[bal]] = await pool.query('SELECT points FROM loyalty WHERE customer_id = ?', [existing[0].customer_id]);
       await pool.query(
-        `INSERT INTO loyalty_transactions (customer_id, type, points, description) VALUES (?, 'earn', ?, ?)`,
-        [existing[0].customer_id, existing[0].points_awarded, existing[0].description]
+        `INSERT INTO loyalty_transactions (customer_id, type, points, balance_after, description) VALUES (?, 'earn', ?, ?, ?)`,
+        [existing[0].customer_id, pts, bal ? bal.points : pts, existing[0].description]
       );
     }
 

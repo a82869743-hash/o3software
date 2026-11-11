@@ -23,15 +23,16 @@ exports.customers = async (req, res) => {
         v.brand AS vehicle_brand,
         v.model AS vehicle_model,
         v.registration_no AS vehicle_reg_no,
-        NULL AS vehicle_category
+        v.category AS vehicle_category
       FROM users u
       LEFT JOIN vehicles v ON (v.customer_id = u.id AND (v.is_primary = 1 OR v.id = (SELECT MIN(id) FROM vehicles WHERE customer_id = u.id)))
       WHERE u.role = 'customer' AND u.is_active = 1
         AND (u.franchise_id = ? OR (u.franchise_id IS NULL AND ? = 1))
-        AND (u.name LIKE ? OR u.mobile LIKE ? OR u.email LIKE ? OR v.registration_no LIKE ?)
+        AND (u.name LIKE ? OR u.mobile LIKE ? OR u.email LIKE ?
+             OR EXISTS (SELECT 1 FROM vehicles vx WHERE vx.customer_id = u.id AND REPLACE(vx.registration_no, ' ', '') LIKE ?))
       ORDER BY u.name ASC
       LIMIT ?
-    `, [franchiseId, franchiseId, search, search, search, search, parseInt(limit)]);
+    `, [franchiseId, franchiseId, search, search, search, `%${String(q || '').replace(/\s+/g, '').toUpperCase()}%`, parseInt(limit)]);
 
     // 2. Fetch customers from manual_bills
     const [billRows] = await pool.query(`
@@ -119,7 +120,7 @@ exports.inventory = async (req, res) => {
     const search = `%${q}%`;
     const [rows] = await pool.query(`
       SELECT id, product_name, unit, quantity, low_stock_threshold,
-        (quantity <= low_stock_threshold) AS is_low_stock
+        ((low_stock_threshold > 0 AND quantity <= low_stock_threshold)) AS is_low_stock
       FROM inventory
       WHERE (is_deleted = 0 OR is_deleted IS NULL)
         AND (franchise_id = ? OR (franchise_id IS NULL AND ? = 1))
@@ -175,8 +176,9 @@ exports.global = async (req, res) => {
     const lim = parseInt(limit);
 
     const [customers] = await pool.query(
-      `SELECT id, name, mobile FROM users WHERE role = 'customer' AND is_active = 1 AND (franchise_id = ? OR (franchise_id IS NULL AND ? = 1)) AND (name LIKE ? OR mobile LIKE ?) LIMIT ?`,
-      [franchiseId, franchiseId, search, search, lim]
+      `SELECT id, name, mobile FROM users WHERE role = 'customer' AND is_active = 1 AND (franchise_id = ? OR (franchise_id IS NULL AND ? = 1))
+         AND (name LIKE ? OR mobile LIKE ? OR id IN (SELECT customer_id FROM vehicles WHERE REPLACE(registration_no, ' ', '') LIKE ?)) LIMIT ?`,
+      [franchiseId, franchiseId, search, search, `%${String(q || '').replace(/\s+/g, '').toUpperCase()}%`, lim]
     );
     const [vehicles] = await pool.query(
       `SELECT v.id, v.registration_no, v.brand, v.model, u.name AS customer_name FROM vehicles v JOIN users u ON v.customer_id = u.id WHERE (u.franchise_id = ? OR (u.franchise_id IS NULL AND ? = 1)) AND (v.registration_no LIKE ? OR v.brand LIKE ?) LIMIT ?`,

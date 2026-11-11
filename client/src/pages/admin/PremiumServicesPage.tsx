@@ -1,3 +1,4 @@
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState } from 'react';
 import { Sparkles, Plus, Edit2, Trash2, Clock, DollarSign, ChevronDown, ChevronUp, ToggleLeft, ToggleRight } from 'lucide-react';
 import { usePremiumServices, useServiceAddons, useCreateAddon, useUpdateAddon, useDeleteAddon } from '../../api/hooks/usePremiumServices';
@@ -12,13 +13,7 @@ import { SkeletonCard } from '../../components/ui/SkeletonLoader';
 import { useUIStore } from '../../store/uiStore';
 import { formatINR } from '../../utils/formatters';
 
-const CATEGORY_LABELS = [
-  { key: 'price_hatchback', short: 'Hatch' },
-  { key: 'price_medium_hatchback', short: 'Med Hatch' },
-  { key: 'price_sedan', short: 'Sedan' },
-  { key: 'price_premium_sedan', short: 'Prem Sedan' },
-  { key: 'price_suv', short: 'SUV' },
-];
+const CATEGORY_LABELS = CAR_TYPES.map(t => ({ key: `price_${t.value}`, short: t.short, label: `${t.label} ₹` }));
 
 export default function PremiumServicesPage() {
   const toast = useUIStore((s) => s.toast);
@@ -113,13 +108,7 @@ export default function PremiumServicesPage() {
     setEditSvc(svc);
     setSvcDesc(svc.description || '');
     setSvcDuration(svc.duration_minutes || 60);
-    setSvcPrices({
-      price_hatchback: parseFloat(svc.price_hatchback) || 0,
-      price_medium_hatchback: parseFloat(svc.price_medium_hatchback) || 0,
-      price_sedan: parseFloat(svc.price_sedan) || 0,
-      price_premium_sedan: parseFloat(svc.price_premium_sedan) || 0,
-      price_suv: parseFloat(svc.price_suv) || 0,
-    });
+    setSvcPrices(Object.fromEntries(CAR_TYPES.map(t => [`price_${t.value}`, parseFloat(svc[`price_${t.value}`]) || 0])));
     setSvcModalOpen(true);
   };
 
@@ -208,7 +197,7 @@ export default function PremiumServicesPage() {
           <Input label="Description" value={svcDesc} onChange={e => setSvcDesc(e.target.value)} placeholder="Service description" />
           <Input label="Duration (minutes)" type="number" value={svcDuration || ''} onChange={e => setSvcDuration(parseInt(e.target.value) || 60)} />
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Pricing by Vehicle Category</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2">Pricing by Vehicle Category</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
               {CATEGORY_LABELS.map(cat => (
                 <Input
@@ -288,13 +277,13 @@ function PremiumServiceCard({
                 <h3 className="font-extrabold text-[#0F172A] text-sm truncate">{svc.name}</h3>
                 <span className="text-[8px] font-extrabold uppercase tracking-widest px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">Premium</span>
               </div>
-              {svc.description && <p className="text-xs text-[#5f5e5e] mt-0.5 line-clamp-1">{svc.description}</p>}
+              {svc.description && <p className="text-xs text-[#64748B] mt-0.5 line-clamp-1">{svc.description}</p>}
             </div>
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
             {svc.duration_minutes && (
-              <span className="text-[10px] text-[#5f5e5e] flex items-center gap-1 mr-2">
+              <span className="text-[10px] text-[#64748B] flex items-center gap-1 mr-2">
                 <Clock size={12} /> {svc.duration_minutes}m
               </span>
             )}
@@ -310,7 +299,7 @@ function PremiumServiceCard({
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 mt-3 pt-3 border-t border-gray-50">
           {CATEGORY_LABELS.map(cat => (
             <div key={cat.key} className="text-center">
-              <p className="text-[8px] font-bold uppercase tracking-widest text-[#5f5e5e] leading-tight">{cat.short}</p>
+              <p className="text-[8px] font-bold uppercase tracking-widest text-[#64748B] leading-tight">{cat.short}</p>
               <p className="text-xs font-extrabold text-[#0F172A] mt-0.5">{formatINR(svc[cat.key])}</p>
             </div>
           ))}
@@ -321,12 +310,12 @@ function PremiumServiceCard({
       {isExpanded && (
         <div className="border-t border-gray-100 bg-[#faf9f8] p-5">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e]">Add-ons</p>
+            <p className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Add-ons</p>
             <Button size="sm" variant="ghost" onClick={onAddAddon} icon={<Plus size={12} />}>Add</Button>
           </div>
 
           {!addons?.length ? (
-            <p className="text-xs text-[#5f5e5e] text-center py-3">No add-ons yet</p>
+            <p className="text-xs text-[#64748B] text-center py-3">No add-ons yet</p>
           ) : (
             <div className="space-y-2">
               {addons.map((addon: any) => (
@@ -335,7 +324,7 @@ function PremiumServiceCard({
                     <div className={`w-2 h-2 rounded-full ${addon.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
                     <div>
                       <p className="text-sm font-bold text-[#0F172A]">{addon.addon_name}</p>
-                      <div className="flex items-center gap-3 mt-0.5 text-[10px] text-[#5f5e5e]">
+                      <div className="flex items-center gap-3 mt-0.5 text-[10px] text-[#64748B]">
                         <span className="flex items-center gap-1"><DollarSign size={10} /> {formatINR(addon.addon_price)}</span>
                         <span className="flex items-center gap-1"><Clock size={10} /> {addon.duration_minutes}m</span>
                       </div>

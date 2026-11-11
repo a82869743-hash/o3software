@@ -1,478 +1,279 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { 
-  Calendar, Clock, Car, Sparkles, Gift, ArrowRight, ChevronRight,
-  Shield, CalendarCheck, Wrench, Plus, Package
-} from 'lucide-react';
+import FitImg from '../../components/shared/FitImg';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { MapPin, ChevronDown, Car, Layers, ShoppingBag, Activity, Gift, Headphones, Star, Calendar, ChevronRight, X, Copy, Sparkles, Armchair } from 'lucide-react';
 import { useCustomerDashboard } from '../../api/hooks/useDashboard';
+import { useServices, useServiceCategories } from '../../api/hooks/useServices';
+import { categoryArt } from '../../components/admin/CategoriesManager';
+import { useStudio } from '../../api/hooks/useStudio';
+import { useMyVehicles } from '../../api/hooks/useMyVehicles';
+import { useVehicleStore, priceForCategory } from '../../store/vehicleStore';
 import { useAuthStore } from '../../store/authStore';
-import { SkeletonCard } from '../../components/ui/SkeletonLoader';
-import ErrorState from '../../components/shared/ErrorState';
-import Button from '../../components/ui/Button';
-import StatusBadge from '../../components/ui/StatusBadge';
-import CountUp from 'react-countup';
-import { formatINR, formatDate, formatTime } from '../../utils/formatters';
-import AddCarModal from '../../components/shared/AddCarModal';
+import CustomerActionCenter from '../../components/shared/CustomerActionCenter';
+import { ServiceArt, ILLUSTRATIONS, PHOTOS, photoFor } from '../../components/customer/serviceVisuals';
+import { mediaFor, assignServiceMedia, HOME_MEDIA } from '../../components/customer/serviceMedia';
+import MediaShowcase from '../../components/customer/MediaShowcase';
+import HeroCarousel from '../../components/customer/HeroCarousel';
+import { formatINR, formatDate, ymd } from '../../utils/formatters';
+import { fileUrl } from '../../utils/endpoints';
+import { carImage } from '../../utils/carImage';
+import { copyText } from '../../utils/copyText';
 
+/** Customer home — modelled on modern car-care apps: hero offer, category tiles, popular services, rewards. */
 export default function CustomerDashboardPage() {
   const navigate = useNavigate();
-  const { user } = useAuthStore();
-  const { data, isLoading, isError, refetch } = useCustomerDashboard();
-  const [showAddCar, setShowAddCar] = useState(false);
+  const user = useAuthStore(s => s.user);
+  const { data } = useCustomerDashboard();
+  const { data: servicesRes } = useServices({ active_only: true, for_app: true });
+  const { data: studio } = useStudio();
+  const { data: categories = [] } = useServiceCategories();
+  const { selected } = useMyVehicles();
+  const openSheet = useVehicleStore(s => s.openSheet);
+  const [popup, setPopup] = useState(false);
 
-  const firstName = user?.name?.split(' ')[0] || 'there';
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good Morning' : hour < 17 ? 'Good Afternoon' : 'Good Evening';
+  const services: any[] = servicesRes?.data || [];
+  const s: any = studio || {};
 
-  if (isError) {
-    return (
-      <div className="pt-4">
-        <ErrorState
-          message="Failed to load dashboard. Please check your connection and try again."
-          onRetry={() => refetch()}
-        />
-      </div>
-    );
-  }
+  // Offer popup once per day when the studio enables it
+  useEffect(() => {
+    if (!s.app_offer_popup || !s.app_offer_title) return;
+    const key = `o3-offer-seen-${ymd()}`;
+    try { if (!localStorage.getItem(key)) { setPopup(true); localStorage.setItem(key, '1'); } } catch { /* private mode */ }
+  }, [s.app_offer_popup, s.app_offer_title]);
 
-  if (isLoading) {
-    return (
-      <div className="pt-4 space-y-6">
-        <div className="h-48 bg-slate-100 animate-pulse rounded-2xl" />
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">{[1,2,3].map(i => <div key={i} className="h-28 bg-slate-100 animate-pulse rounded-2xl" />)}</div>
-        <div className="h-64 bg-slate-100 animate-pulse rounded-2xl" />
-      </div>
-    );
-  }
 
-  const loyalty = data?.loyalty || { credits: 0, free_washes: 0, wax_count: 0 };
-  const vehicles = data?.vehicles || [];
-  const upcomingBookings = data?.upcoming_bookings || [];
-  const recentJobs = data?.recent_jobs || [];
-  const totalVisits = data?.total_visits || 0;
-  const primaryCar = data?.primary_car || (vehicles.length > 0 ? vehicles[0] : null);
-  const activePackage = data?.active_package || null;
-  const activePackages = data?.active_packages || (activePackage ? [activePackage] : []);
+  // Popular = services the studio featured (in its order); if none are featured, the first ones in its order
+  // same picture picks as the Services screen (full list, same order)
+  useMemo(() => assignServiceMedia((servicesRes?.data || []).map((s: any) => s.name)), [servicesRes]);
+  const popular = useMemo(() => {
+    const feat = services.filter(sv => sv.is_featured);
+    return (feat.length ? feat : services).slice(0, 8);
+  }, [services]);
+  const firstName = (user?.name || '').split(' ')[0];
+  const shortAddress = (s.address || '').split(',').slice(-3).join(',').trim();
+
+  // Hoora-style tiles: 3 big "what we do" tiles + 8 small shortcuts (always shown, even before services are added)
+  // Tiles = categories the studio marked "Show on home" (Admin → Services → Categories & home); defaults until it picks some
+  // (only categories that have something to book, so a tile never opens an empty list)
+  const homeCats = categories.filter((c: any) => c.show_on_home && c.is_active && services.some(sv => sv.category_id === c.id));
+  const bigTiles = homeCats.length
+    ? homeCats.map((c: any) => ({ label: c.name, to: `/customer/services?category=${c.id}`, img: c.image_url ? categoryArt(c) : (photoFor(c.name) || categoryArt(c)) }))
+    : [
+      { label: 'Washing & Detailing', to: '/customer/services?q=wash', img: PHOTOS.wash },
+      { label: 'Ceramic Coating', to: '/customer/services?q=ceramic', img: PHOTOS.coating },
+      { label: 'PPF & Protection', to: '/customer/services?q=ppf', img: PHOTOS.ppf },
+      { label: 'Interior Spa', to: '/customer/services?q=interior', img: PHOTOS.interior },
+    ];
+  const quickTiles: { label: string; icon: typeof Armchair; img: string; to: string; tint: string }[] = [
+    ...(homeCats.length ? [] : [
+      { label: 'Polish & Rubbing', icon: Sparkles, img: PHOTOS.polish, to: '/customer/services?q=polish', tint: 'bg-violet-50 text-violet-600' },
+    ]),
+    { label: 'Packages & AMC', icon: Layers, img: ILLUSTRATIONS.packages, to: '/customer/buy-packages', tint: 'bg-emerald-50 text-emerald-600' },
+    { label: 'Shop products', icon: ShoppingBag, img: ILLUSTRATIONS.shop, to: '/customer/products', tint: 'bg-orange-50 text-orange-600' },
+    { label: 'My services', icon: Activity, img: ILLUSTRATIONS.history, to: '/customer/job-carts', tint: 'bg-sky-50 text-sky-600' },
+    { label: 'Rewards', icon: Star, img: ILLUSTRATIONS.rewards, to: '/customer/loyalty', tint: 'bg-rose-50 text-rose-600' },
+    { label: 'Refer & Earn', icon: Gift, img: ILLUSTRATIONS.refer, to: '/customer/refer', tint: 'bg-pink-50 text-pink-600' },
+    { label: 'Help', icon: Headphones, img: ILLUSTRATIONS.help, to: '/customer/support', tint: 'bg-slate-100 text-slate-700' },
+  ];
 
   return (
-    <div className="pt-2 space-y-6">
-      {/* ── 50% OFF First Wash Banner ─────────── */}
-      {data?.first_wash_eligible && (
-        <div className="bg-[#2563EB] rounded-2xl p-5 text-white shadow-md relative overflow-hidden">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 relative z-10">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-white/20 rounded-xl shrink-0">
-                <Sparkles size={22} className="text-white" />
-              </div>
-              <div>
-                <span className="px-2 py-0.5 bg-white text-[#2563EB] text-[10px] font-extrabold uppercase tracking-widest rounded-full">
-                  Welcome Offer
-                </span>
-                <h3 className="text-lg font-extrabold text-white mt-1">
-                  Get 50% OFF Your First Wash! 🎉
-                </h3>
-                <p className="text-xs text-blue-100 font-medium mt-0.5">
-                  Discount auto-applied on your first detailing booking.
-                </p>
-              </div>
-            </div>
-            <Link
-              to="/customer/bookings/new"
-              className="px-5 py-2.5 bg-white text-[#2563EB] hover:bg-blue-50 font-extrabold text-xs rounded-xl shadow-sm transition-all shrink-0 flex items-center gap-1.5"
-            >
-              Book @ 50% OFF <ArrowRight size={14} />
+    <div>
+      {/* ── Top bar: studio + greeting + car chip ── */}
+      <section className="px-4 pt-4 pb-3 bg-white rounded-b-[24px] shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[12px] font-semibold text-slate-500">Hi {firstName || 'there'} 👋</p>
+            <div className="flex items-center gap-1 text-[16px] font-black text-slate-900 mt-0.5"><MapPin size={16} className="text-[#2563EB]" /> {s.studio_name || 'O3 Car Spaa'}</div>
+            <p className="text-[11.5px] text-slate-500 truncate max-w-[210px]">{shortAddress || 'Premium car detailing studio'}</p>
+          </div>
+          <button onClick={openSheet} className="tap shrink-0 flex items-center gap-2 bg-[#F1F6FF] border border-blue-100 rounded-2xl pl-3 pr-2 py-1.5 text-right">
+            <span className="leading-tight">
+              <span className="block text-[12.5px] font-extrabold text-slate-900 max-w-[100px] truncate">{selected ? selected.model : 'Add your car'}</span>
+              <span className="flex items-center justify-end gap-0.5 text-[10.5px] font-semibold text-[#2563EB]">{selected ? selected.brand : 'Tap here'} <ChevronDown size={11} /></span>
+            </span>
+            <img src={carImage(selected)} alt="" className="w-14 h-9 object-contain mix-blend-multiply" />
+          </button>
+        </div>
+      </section>
+
+      {/* ── Banner carousel ── */}
+      <section className="pt-4">
+        <HeroCarousel settings={s} />
+      </section>
+
+      {/* ── Category tiles ── */}
+      <section className="px-4 mt-5">
+        <h3 className="text-[15px] font-black text-slate-900 mb-2.5">What does your car need?</h3>
+        {/* 4 tiles: 2x2, 3: one row, 5+: rows of 3 (never a lone tile on its own row) */}
+        <div className={`grid gap-2.5 ${bigTiles.length === 4 || bigTiles.length === 2 ? 'grid-cols-2' : bigTiles.length === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
+          {bigTiles.map((c, i) => {
+            const photo = /photo-|^http|\/uploads\//.test(c.img);
+            return (
+              <Link key={c.label} to={c.to} style={{ animationDelay: `${i * 60}ms` }}
+                className={`rise tap relative rounded-2xl overflow-hidden shadow-[0_6px_20px_rgba(15,23,42,0.10)] hover:-translate-y-0.5 transition-transform ${bigTiles.length % 3 === 0 ? 'aspect-[3/4]' : 'aspect-[4/3]'} ${photo ? 'bg-slate-900' : 'bg-white'}`}>
+                <img src={c.img} alt="" loading="lazy" className={photo ? 'absolute inset-0 w-full h-full object-cover' : 'absolute left-2 right-2 bottom-2 top-9 w-[calc(100%-1rem)] h-[calc(100%-2.75rem)] object-contain mix-blend-multiply'} />
+                {photo && <span className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-900/20 to-transparent" />}
+                <span className={`absolute left-2.5 right-2.5 text-[12.5px] font-extrabold leading-snug ${photo ? 'bottom-2.5 text-white drop-shadow' : 'top-2.5 text-slate-800'}`}>{c.label}</span>
+                {photo && <ChevronRight size={18} className="absolute top-2 right-2 text-white bg-white/20 backdrop-blur rounded-full p-0.5" />}
+              </Link>
+            );
+          })}
+        </div>
+        <div className={`grid gap-2 mt-2.5 ${quickTiles.length % 4 === 0 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+          {quickTiles.map((t, i) => (
+            <Link key={t.label} to={t.to} style={{ animationDelay: `${180 + i * 40}ms` }}
+              className="rise tap bg-white rounded-2xl px-1.5 py-2.5 shadow-sm flex flex-col items-center text-center gap-1.5 hover:-translate-y-0.5 transition-transform">
+              {t.img
+                ? <img src={t.img} alt="" className={t.img.startsWith("/photos/") ? "w-12 h-12 rounded-xl object-cover" : "w-12 h-12 object-contain mix-blend-multiply"} loading="lazy" />
+                : <span className={`w-12 h-12 rounded-xl flex items-center justify-center ${t.tint}`}><t.icon size={22} /></span>}
+              <span className="text-[11px] font-bold text-slate-700 leading-tight">{t.label}</span>
             </Link>
-          </div>
+          ))}
         </div>
-      )}
+      </section>
 
-      {/* ── Continuous Notification Banner (Service due / Package close to expiry) ─────────── */}
-      {activePackage?.days_remaining !== null && activePackage?.days_remaining <= 30 && (
-        <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 rounded-2xl p-4 text-white shadow-md flex items-center justify-between gap-3 border border-amber-400">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-white shrink-0 font-bold">
-              <Package size={20} />
-            </div>
-            <div>
-              <span className="text-[10px] font-black tracking-widest uppercase bg-white/20 px-2 py-0.5 rounded-full text-amber-100">
-                Notice: Service Due
-              </span>
-              <p className="text-sm font-extrabold text-white mt-0.5">
-                Service is due package close to expiry ({activePackage.days_remaining > 0 ? `${activePackage.days_remaining} days left` : 'Expiring / Due'})
-              </p>
-              <p className="text-xs text-amber-100 font-medium">
-                Package: <strong>{activePackage.package_name}</strong> • Redeem your remaining detailing services at O3 Car Spaa
-              </p>
-            </div>
-          </div>
-          <Link
-            to="/customer/bookings/new"
-            className="px-4 py-2 bg-white text-slate-900 hover:bg-amber-50 font-extrabold text-xs rounded-xl shadow-xs transition-all shrink-0 whitespace-nowrap"
-          >
-            Book Appointment
+      <div className="px-4 mt-5 space-y-5">
+        {/* Live car status, ratings due, referral code & points */}
+        <CustomerActionCenter data={data} />
+
+        {/* First-wash offer */}
+        {data?.first_wash_eligible && (
+          <Link to="/customer/services" className="tap block rounded-2xl p-4 bg-gradient-to-r from-amber-400 to-orange-400 text-slate-900">
+            <p className="text-[11px] font-black uppercase tracking-wider">Welcome offer</p>
+            <p className="text-lg font-black leading-tight">50% OFF your first wash</p>
+            <p className="text-xs font-semibold mt-0.5">Applied automatically at booking →</p>
           </Link>
-        </div>
-      )}
+        )}
 
-      {/* ── Package Expiry Maintenance Reminder Pop-Up Modal (3-Tier Rule: 1 Month, 1 Week, 1 Day) ─────────── */}
-      {activePackage?.is_popup_eligible && activePackage?.end_date && (() => {
-        const daysLeft = activePackage.days_remaining ?? Math.ceil((new Date(activePackage.end_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        const stageLabel = daysLeft <= 1 ? '1 Day Before Reminder' : daysLeft <= 7 ? '1 Week Before Reminder' : '1 Month Before Reminder (11 Months Mark)';
-        const [dismissed, setDismissed] = useState(false);
-
-        if (dismissed) return null;
-
-        return (
-          <div className="fixed inset-0 bg-black/65 backdrop-blur-md z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-amber-200 text-center animate-in fade-in zoom-in-95 duration-200 relative">
-              <button
-                onClick={() => setDismissed(true)}
-                className="absolute right-4 top-4 text-gray-400 hover:text-gray-600 text-lg font-bold"
-              >
-                ✕
-              </button>
-
-              <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600 shadow-sm">
-                <Package size={32} />
-              </div>
-
-              <span className="text-[10px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full mb-3 inline-block">
-                {stageLabel}
-              </span>
-
-              <h3 className="text-xl font-black text-slate-900 mb-2">Package Maintenance Reminder</h3>
-              
-              <div className="text-sm font-semibold text-slate-700 bg-amber-50/90 border border-amber-200 p-4 rounded-2xl mb-5 leading-relaxed text-left space-y-2">
-                <p>
-                  Your package <strong className="text-amber-950 font-extrabold">{activePackage.package_name}</strong> {activePackage.vehicle_reg_no ? `for vehicle ${activePackage.vehicle_reg_no}` : ''} is about to expire next month ({activePackage.end_date ? new Date(activePackage.end_date).toLocaleDateString('en-IN') : 'soon'}).
-                </p>
-                <p className="text-xs text-amber-800 font-bold">
-                  Kindly visit O3 Car Spaa to redeem your remaining service sessions!
-                </p>
-              </div>
-
-              {activePackage.usage && activePackage.usage.length > 0 && (
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-4 text-left text-xs">
-                  <p className="text-slate-500 font-bold uppercase text-[10px] mb-1.5">Remaining Service Balance:</p>
-                  <div className="space-y-1">
-                    {activePackage.usage.map((svc: any, idx: number) => (
-                      <div key={idx} className="flex justify-between text-slate-700 font-semibold text-[11px]">
-                        <span>{svc.service_name}</span>
-                        <span className="font-bold text-blue-600">{svc.remaining} / {svc.total_count} left</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {activePackage.service_schedules && activePackage.service_schedules.length > 0 && (
-                <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3 mb-4 text-left text-xs">
-                  <p className="text-blue-800 font-extrabold uppercase text-[10px] mb-1.5 flex items-center gap-1">
-                    📅 Service-Wise Scheduled Dates Breakdown:
-                  </p>
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {activePackage.service_schedules.map((s: any, idx: number) => (
-                      <div key={idx} className="flex justify-between items-center bg-white p-2 rounded-lg border border-blue-100 text-[11px]">
-                        <span className="font-bold text-slate-800 truncate max-w-[170px]">{s.service_name} #{s.instance_number}</span>
-                        <span className="font-extrabold text-blue-700">{s.scheduled_date_formatted || new Date(s.scheduled_date).toLocaleDateString('en-IN')}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-5 text-left text-xs space-y-1">
-                <p className="text-slate-500 font-bold uppercase text-[10px]">Autodate Milestones:</p>
-                <div className="grid grid-cols-3 gap-1 text-[11px] font-semibold text-slate-700">
-                  <div>1 Month: <span className="text-slate-900">{activePackage.autodate_1month || 'N/A'}</span></div>
-                  <div>1 Week: <span className="text-slate-900">{activePackage.autodate_1week || 'N/A'}</span></div>
-                  <div>1 Day: <span className="text-slate-900">{activePackage.autodate_1day || 'N/A'}</span></div>
-                </div>
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setDismissed(true)}
-                  className="px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs rounded-xl transition-all"
-                >
-                  Remind Me Later
-                </button>
-                <button
-                  onClick={() => navigate('/customer/bookings/new')}
-                  className="flex-1 py-3 bg-[#2563EB] hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md"
-                >
-                  Book Appointment Now
-                </button>
-              </div>
-            </div>
+        {/* Popular services */}
+        <section>
+          <div className="flex items-center justify-between mb-2.5">
+            <h3 className="text-[17px] font-extrabold text-slate-900">Popular services</h3>
+            <Link to="/customer/services" className="text-xs font-bold text-blue-600 flex items-center">See all <ChevronRight size={14} /></Link>
           </div>
-        );
-      })()}
-
-      {/* ── Welcome Hero ─────────────────── */}
-      <div className="relative overflow-hidden bg-[#0284C7] rounded-3xl p-6 sm:p-8 shadow-md border border-[#0284C7]">
-        {/* Background subtle highlights */}
-        <div className="absolute -right-10 -top-10 w-48 h-48 bg-white/10 rounded-full blur-2xl pointer-events-none" />
-        <div className="absolute left-1/3 -bottom-10 w-40 h-40 bg-white/5 rounded-full blur-xl pointer-events-none" />
-
-
-        <div className="relative z-10">
-          <p className="text-sky-100 text-xs font-semibold uppercase tracking-wider">{greeting},</p>
-          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight mt-1 drop-shadow-xs">
-            {firstName} 👋
-          </h1>
-          <p className="text-sky-100 text-xs font-medium mt-1 mb-6">
-            Welcome to O3 Car Spaa Detailing Studio
-          </p>
-
-          {/* Loyalty Stats + Studio Live Counter */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
-              <p className="text-2xl font-black text-slate-900 tracking-tight">{loyalty.credits || 0}</p>
-              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Reward Points</p>
-            </div>
-            <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
-              <p className="text-2xl font-black text-slate-900 tracking-tight">{loyalty.free_washes || 0}</p>
-              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Free Washes</p>
-            </div>
-            <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
-              <p className="text-2xl font-black text-slate-900 tracking-tight">{loyalty.wax_count || 0}</p>
-              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">Wax Treatments</p>
-            </div>
-            <div className="bg-white hover:bg-slate-50 shadow-md border border-white/90 transition-all rounded-2xl p-3.5 text-center group">
-              <p className="text-2xl font-black text-slate-900 tracking-tight">{totalVisits}</p>
-              <p className="text-[10px] text-slate-700 font-extrabold uppercase tracking-wider mt-1">My Total Visits</p>
-            </div>
-            <div className="bg-gradient-to-br from-amber-50 to-amber-100 hover:from-amber-100 hover:to-amber-200 shadow-md border border-amber-200/80 transition-all rounded-2xl p-3.5 text-center group col-span-2 sm:col-span-1">
-              <p className="text-2xl font-black text-amber-900 tracking-tight flex items-center justify-center gap-1.5">
-                <CountUp end={Number(data?.cars_serviced_this_year || 0)} duration={2} separator="," />
-                <Sparkles size={16} className="text-amber-600 animate-pulse" />
-              </p>
-              <p className="text-[10px] text-amber-800 font-black uppercase tracking-wider mt-1">Cars Serviced This Year</p>
-              <div className="flex items-center justify-center gap-1 mt-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                <span className="text-[9px] font-black text-emerald-700 uppercase tracking-widest">Live Counter</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-
-      {/* ── Quick Actions ────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { to: '/customer/bookings/new', icon: CalendarCheck, label: 'Book Service' },
-          { to: '/customer/services', icon: Wrench, label: 'Services' },
-          { to: '/customer/loyalty', icon: Gift, label: 'Rewards' },
-          { to: '/customer/vehicles', icon: Car, label: 'My Cars' },
-        ].map(({ to, icon: Icon, label }) => (
-          <Link
-            key={to}
-            to={to}
-            className="bg-white border border-slate-200 rounded-2xl p-4 text-center hover:border-blue-300 hover:shadow-md transition-all group"
-          >
-            <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center mx-auto mb-2 group-hover:bg-blue-100 transition-colors">
-              <Icon size={20} className="text-[#2563EB]" />
-            </div>
-            <p className="text-xs font-bold text-slate-700">{label}</p>
-          </Link>
-        ))}
-      </div>
-
-      {/* ── Primary Car + Active Package ──────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-[#2563EB]">
-                <Car size={20} />
-              </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Primary Car</p>
-                {primaryCar ? (
-                  <p className="font-bold text-slate-900 text-sm">{primaryCar.brand} {primaryCar.model}</p>
-                ) : (
-                  <p className="text-slate-400 text-sm">No car added</p>
-                )}
-              </div>
-            </div>
-            <button
-              onClick={() => setShowAddCar(true)}
-              className="flex items-center gap-1 px-3 py-1.5 bg-[#2563EB] text-white text-[10px] font-bold uppercase rounded-lg hover:bg-[#1D4ED8] transition-colors"
-            >
-              <Plus size={12} /> Add Car
-            </button>
-          </div>
-          {primaryCar?.registration_no && (
-            <p className="text-xs text-slate-500 ml-[52px]">{primaryCar.registration_no}</p>
-          )}
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-[#2563EB]">
-              <Package size={20} />
-            </div>
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Active Package</p>
-              {activePackage ? (
-                <p className="font-bold text-slate-900 text-sm">{activePackage.package_name}</p>
-              ) : (
-                <p className="text-slate-400 text-sm">No active package</p>
-              )}
-            </div>
-          </div>
-          {activePackage?.service_schedules && activePackage.service_schedules.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
-              <p className="text-[9px] font-bold uppercase tracking-wider text-blue-600">📅 Service Schedule Breakdown:</p>
-              <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
-                {activePackage.service_schedules.map((s: any, idx: number) => (
-                  <div key={idx} className="flex justify-between text-[10px] font-semibold text-slate-700 bg-slate-50 px-2 py-1 rounded">
-                    <span className="truncate max-w-[130px]">{s.service_name} #{s.instance_number}</span>
-                    <span className="font-extrabold text-blue-700">{s.scheduled_date_formatted || new Date(s.scheduled_date).toLocaleDateString('en-IN')}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Upcoming Appointments + My Cars Grid ────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        <div className="lg:col-span-3 bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
-            <h2 className="font-bold text-slate-900 text-sm">Upcoming Appointments</h2>
-            <Link to="/customer/bookings" className="text-[#2563EB] text-xs font-bold hover:underline flex items-center gap-1">
-              All <ChevronRight size={12} />
-            </Link>
-          </div>
-          {upcomingBookings.length > 0 ? (
-            <div className="divide-y divide-slate-100">
-              {upcomingBookings.map((b: any) => {
-                const dateObj = b.slot_date ? new Date(b.slot_date) : null;
+          {popular.length === 0 ? (
+            <div className="bg-white rounded-2xl p-6 text-center text-sm text-slate-500">Services will appear here soon.</div>
+          ) : (
+            <div className="flex gap-3 overflow-x-auto no-scrollbar -mx-4 px-4 pb-1 snap-x">
+              {popular.map(sv => {
+                const price = priceForCategory(sv, selected?.category);
                 return (
-                  <div key={b.id} className="px-5 py-4 hover:bg-slate-50 transition-colors">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-                          <CalendarCheck size={18} />
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-bold text-slate-900">{b.service_name || b.package_name || 'Service Booking'}</h4>
-                          <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
-                            {dateObj && (
-                              <span className="flex items-center gap-1">
-                                <Calendar size={11} />
-                                {dateObj.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
-                              </span>
-                            )}
-                            {b.start_time && (
-                              <span className="flex items-center gap-1">
-                                <Clock size={11} />
-                                {formatTime(b.start_time)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                  <button key={sv.id} onClick={() => navigate(`/customer/bookings/new?service_id=${sv.id}`)} className="tap snap-start shrink-0 w-[200px] bg-white rounded-2xl overflow-hidden shadow-sm text-left">
+                    {(() => {
+                      // real studio photo (the "after" shot) when there is one
+                      const md = mediaFor(sv.name);
+                      const real = md?.after || md?.photo || md?.poster;
+                      return real ? <FitImg src={real} alt={sv.name} className="aspect-video" /> : <ServiceArt name={sv.name} imageUrl={sv.image_url} className="aspect-video" />;
+                    })()}
+                    <div className="p-3">
+                      <p className="text-[13.5px] font-extrabold text-slate-900 line-clamp-2 min-h-[36px]">{sv.name}</p>
+                      <p className="text-xs text-slate-500 mt-1">{selected ? `For your ${selected.model}` : 'Starts at'}</p>
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-base font-black text-slate-900">{price ? formatINR(price) : '—'}</span>
+                        <span className="text-[11px] font-extrabold text-white bg-blue-600 px-2.5 py-1 rounded-lg">Book</span>
                       </div>
-                      <StatusBadge status={b.status} />
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
-          ) : (
-            <div className="p-10 text-center">
-              <Calendar size={32} className="text-slate-300 mx-auto mb-2" />
-              <p className="text-slate-500 text-sm font-medium mb-3">No upcoming appointments</p>
-              <Button onClick={() => navigate('/customer/bookings/new')} icon={<CalendarCheck size={14} />} size="sm">
-                Book a Service
-              </Button>
-            </div>
           )}
-        </div>
+        </section>
 
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
-            <h2 className="font-bold text-slate-900 text-sm">My Vehicles</h2>
-            <Link to="/customer/vehicles" className="text-[#2563EB] text-xs font-bold hover:underline flex items-center gap-1">
-              All <ChevronRight size={12} />
-            </Link>
+        {/* Real results from the studio */}
+        <section>
+          <h3 className="text-[17px] font-extrabold text-slate-900 mb-2.5">Real results from our studio</h3>
+          <div className="bg-white rounded-2xl overflow-hidden shadow-sm">
+            <MediaShowcase media={HOME_MEDIA} name="Muddy SUV made spotless" className="h-52" />
+            <div className="p-3 flex items-center justify-between gap-3">
+              <p className="text-[13px] text-slate-600">Drag the line to see the difference. Tap <b>Video</b> to watch us work.</p>
+              <Link to="/customer/services" className="shrink-0 text-xs font-bold text-blue-600 flex items-center">Services <ChevronRight size={14} /></Link>
+            </div>
           </div>
-          {vehicles.length > 0 ? (
-            <div className="divide-y divide-slate-100">
-              {vehicles.slice(0, 4).map((v: any) => (
-                <div key={v.id} className="px-5 py-3.5 hover:bg-slate-50 transition-colors flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center text-[#2563EB]">
-                    <Car size={16} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm text-slate-900 truncate">{v.registration_no}</p>
-                    <p className="text-xs text-slate-500">{v.brand} {v.model}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="p-8 text-center">
-              <Car size={32} className="text-slate-300 mx-auto mb-2" />
-              <p className="text-slate-500 text-sm font-medium">No vehicles registered</p>
-            </div>
-          )}
-        </div>
-      </div>
+        </section>
 
-      {/* ── Recent Service History ────────────────── */}
-      {recentJobs.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
-            <h2 className="font-bold text-slate-900 text-sm">Recent Service History</h2>
-            <Link to="/customer/job-carts" className="text-[#2563EB] text-xs font-bold hover:underline flex items-center gap-1">
-              View All <ChevronRight size={12} />
+        {/* Active package — photo card */}
+        {data?.active_package && (() => {
+          const ap = data.active_package;
+          const end = ap.end_date ? new Date(ap.end_date) : null;
+          const daysLeft = end ? Math.max(0, Math.ceil((end.getTime() - Date.now()) / 864e5)) : null;
+          return (
+            <Link to="/customer/buy-packages" className="tap relative block rounded-2xl overflow-hidden shadow-sm min-h-[118px]">
+              <img src={PHOTOS.coating} alt="" className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+              <div className="absolute inset-0 bg-gradient-to-r from-[#064E3B]/95 via-[#065F46]/80 to-[#065F46]/20" />
+              <div className="relative p-4 text-white">
+                <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider bg-emerald-400 text-emerald-950 px-2 py-0.5 rounded">Active package</span>
+                <p className="text-lg font-black leading-tight mt-1.5 max-w-[75%]">{ap.package_name || ap.name}</p>
+                {end && <p className="text-xs text-white/80 mt-0.5">Valid till {formatDate(ap.end_date)}{daysLeft !== null ? ` · ${daysLeft} days left` : ''}</p>}
+                <span className="inline-flex items-center gap-0.5 mt-2 text-[12px] font-extrabold px-3 py-1.5 rounded-xl bg-white text-emerald-800">Use a service <ChevronRight size={13} /></span>
+              </div>
             </Link>
-          </div>
-          <div className="divide-y divide-slate-100">
-            {recentJobs.map((job: any) => (
-              <div key={job.id} className="px-5 py-4 hover:bg-slate-50 transition-colors flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-[#2563EB] text-xs font-extrabold">
-                    V{job.visit_number}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-sm text-slate-900">{job.registration_no}</h4>
-                      <StatusBadge status={job.status === 'complete' ? 'completed' : job.status} />
-                    </div>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {job.brand} {job.model}
-                      {job.visit_date && <span className="text-slate-400 ml-2">• {formatDate(job.visit_date)}</span>}
-                    </p>
-                  </div>
+          );
+        })()}
+
+        {/* Upcoming bookings */}
+        {(data?.upcoming_bookings || []).length > 0 && (
+          <section className="bg-white rounded-2xl p-4 shadow-sm">
+            <h3 className="font-extrabold text-slate-900 mb-2 flex items-center gap-2"><Calendar size={17} className="text-blue-600" /> Upcoming</h3>
+            {data.upcoming_bookings.map((b: any) => (
+              <div key={b.id} className="flex items-center justify-between py-2 border-t border-slate-100 first:border-0">
+                <div>
+                  <p className="text-sm font-bold text-slate-900">{b.service_name || b.package_name || 'Service'}</p>
+                  <p className="text-xs text-slate-500">{formatDate(b.slot_date)} · {String(b.start_time || '').slice(0, 5)}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Link
-                    to={`/job/${job.id}`}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#2563EB] rounded-xl text-xs font-bold transition-all shadow-xs"
-                    title="Track Detailing Pipeline Live"
-                  >
-                    <Clock size={12} />
-                    <span>Track Live</span>
-                  </Link>
-                  {job.invoice_number && (
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-md border border-slate-100 hidden sm:block">
-                      {job.invoice_number}
-                    </span>
-                  )}
-                </div>
+                <span className="text-[11px] font-bold px-2 py-1 rounded-lg bg-blue-50 text-blue-700 capitalize">{b.status}</span>
               </div>
             ))}
+          </section>
+        )}
+
+        {/* Refer & earn — photo banner */}
+        <Link to="/customer/refer" className="tap relative block rounded-2xl overflow-hidden min-h-[132px] shadow-sm">
+          <img src={PHOTOS.wash} alt="" className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#0B1F4D] via-[#0B1F4D]/85 to-transparent" />
+          <div className="relative p-5 text-white max-w-[72%]">
+            <span className="inline-flex items-center gap-1 bg-amber-400 text-slate-900 text-[10px] font-black uppercase px-2 py-0.5 rounded"><Gift size={11} /> Refer & earn</span>
+            <p className="text-[19px] font-black leading-tight mt-2">Invite friends, earn on every car they bring</p>
+            <p className="text-xs text-white/80 mt-1">Share your code on WhatsApp →</p>
+          </div>
+        </Link>
+
+        {/* Help */}
+        <Link to="/customer/support" className="tap flex items-center gap-3 bg-white rounded-2xl p-4 shadow-sm">
+          <span className="w-11 h-11 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center"><Headphones size={21} /></span>
+          <div className="flex-1">
+            <p className="font-extrabold text-slate-900">Help & support</p>
+            <p className="text-xs text-slate-500">Ask a question — we reply on WhatsApp</p>
+          </div>
+          <ChevronRight className="text-slate-300" />
+        </Link>
+
+        {data?.cars_serviced_this_year > 0 && (
+          <p className="text-center text-xs text-slate-400 flex items-center justify-center gap-1"><Sparkles size={12} /> {data.cars_serviced_this_year} cars pampered this year</p>
+        )}
+      </div>
+
+      {/* Offer popup */}
+      {popup && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center p-6">
+          <div className="absolute inset-0 bg-slate-900/60" onClick={() => setPopup(false)} />
+          <div className="relative w-full max-w-sm rounded-3xl overflow-hidden bg-gradient-to-br from-[#0F172A] to-[#2563EB] text-white p-6 shadow-2xl animate-slide-up">
+            <button onClick={() => setPopup(false)} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white text-slate-900 flex items-center justify-center"><X size={16} /></button>
+            <div className="-mx-6 -mt-6 mb-3 h-40 bg-white overflow-hidden">
+              <img src={s.app_banner_url ? fileUrl(s.app_banner_url) : PHOTOS.showroom} alt=""
+                className="w-full h-full object-cover" />
+            </div>
+            <p className="text-2xl font-black mt-3 leading-tight">{s.app_offer_title}</p>
+            {s.app_offer_subtitle && <p className="text-sm text-white/80 mt-2">{s.app_offer_subtitle}</p>}
+            {s.app_offer_code && (
+              <button onClick={() => { copyText(s.app_offer_code); }} className="mt-4 flex items-center gap-2 bg-white/10 border border-white/30 rounded-xl px-3 py-2 text-sm">
+                Code: <b className="text-amber-300">{s.app_offer_code}</b> <Copy size={14} />
+              </button>
+            )}
+            <button onClick={() => { try { if (s.app_offer_code) sessionStorage.setItem('o3-offer', s.app_offer_code); } catch { /* private mode */ } setPopup(false); navigate('/customer/services'); }} className="mt-5 w-full bg-white text-[#1D4ED8] font-extrabold py-3 rounded-xl">{Number(s.app_offer_value) > 0 ? `Claim ${s.app_offer_type === 'flat' ? '₹' + s.app_offer_value : s.app_offer_value + '%'} off →` : 'Book now →'}</button>
           </div>
         </div>
       )}
-
-      <AddCarModal isOpen={showAddCar} onClose={() => setShowAddCar(false)} />
     </div>
   );
 }

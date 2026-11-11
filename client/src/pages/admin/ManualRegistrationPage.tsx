@@ -1,9 +1,14 @@
+import { ymd } from '../../utils/formatters';
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState, useEffect } from 'react';
 import api from '../../api/axiosInstance';
 import { PlusCircle, Search, User, Car, Phone, Mail, Box, Calendar, Loader2, IndianRupee } from 'lucide-react';
 import { useBrands, useModels } from '../../api/hooks/useVehicles';
 import { getCategoryForModel } from '../../utils/carData';
+import AdminHero from '../../components/admin/AdminHero';
 import SearchableSelect from '../../components/ui/SearchableSelect';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface OfflineRegistration {
   customer_id: number;
@@ -29,17 +34,19 @@ export default function ManualRegistrationPage() {
     name: '',
     mobile: '',
     email: '',
+    password: '',
     brand: '',
     model: '',
     category: '',
     registration_no: '',
     package_id: '',
     price: '',
-    package_start_date: new Date().toISOString().split('T')[0],
+    package_start_date: ymd(),
     package_end_date: ''
   });
 
   const [packages, setPackages] = useState<any[]>([]);
+  const [existingCustomer, setExistingCustomer] = useState(false);
   const [packageServices, setPackageServices] = useState<any[]>([]);
   const [customBrand, setCustomBrand] = useState('');
   const [customModel, setCustomModel] = useState('');
@@ -60,6 +67,7 @@ export default function ManualRegistrationPage() {
     { value: 'Others', label: 'Others (Enter Manually)' }
   ];
 
+  useLiveReload(() => { fetchPackages(); fetchRegistrations(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchRegistrations();
     fetchPackages();
@@ -89,6 +97,26 @@ export default function ManualRegistrationPage() {
     };
     loadServices();
   }, [formData.package_id]);
+
+  // Package chosen (or car type / start date changed): fill the package's price for this car type and its end date.
+  // Admin can still type a different price.
+  useEffect(() => {
+    const pkg = packages.find(p => String(p.id) === String(formData.package_id));
+    if (!pkg) return;
+    const cat = formData.category || 'sedan';
+    const row = (pkg.pricing || []).find((r: any) => r.car_type === cat && (r.pricing_type || 'basic') === 'basic');
+    const price = Number(row?.price) || Number(pkg[`price_${cat}`]) || 0;
+    const months = Number(pkg.package_validity) || 0;
+    setFormData((f: any) => {
+      let end = f.package_end_date;
+      if (months && f.package_start_date) {
+        const d = new Date(`${f.package_start_date}T00:00:00`);
+        d.setMonth(d.getMonth() + months);
+        end = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+      return { ...f, price: price ? String(price) : f.price, package_end_date: end };
+    });
+  }, [formData.package_id, formData.category, formData.package_start_date, packages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchRegistrations = async () => {
     setLoading(true);
@@ -144,9 +172,9 @@ export default function ManualRegistrationPage() {
       if (res.data.success) {
         alert('Customer registered successfully!');
         setFormData({
-          name: '', mobile: '', email: '', brand: '', model: '',
+          name: '', mobile: '', email: '', password: '', brand: '', model: '',
           category: '', registration_no: '', package_id: '', price: '',
-          package_start_date: new Date().toISOString().split('T')[0],
+          package_start_date: ymd(),
           package_end_date: ''
         });
         setCustomBrand('');
@@ -169,6 +197,7 @@ export default function ManualRegistrationPage() {
       const lookupCustomer = async () => {
         try {
           const res = await api.get(`/customers/lookup/${cleanMobile}`);
+          setExistingCustomer(!!(res.data.success && res.data.found));
           if (res.data.success && res.data.found) {
             const cust = res.data.data;
             setFormData(prev => ({
@@ -190,17 +219,19 @@ export default function ManualRegistrationPage() {
   }, [formData.mobile]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+    let { name, value } = e.target;
+    // strict formats: 10-digit mobile, GJ06AB1234-style number plate
+    if (name === 'mobile') value = value.replace(/\D/g, '').slice(0, 10);
+    if (name === 'registration_no') value = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11);
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto font-sans">
+      <AdminHero title={'Offline Registration'} subtitle={'Manually register walk-in customers, their vehicles, and directly assign packages.'} />
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <User className="text-blue-600 w-7 h-7" />
-          Offline Registration
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">Manually register walk-in customers, their vehicles, and directly assign packages.</p>
+        
+        
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -241,6 +272,16 @@ export default function ManualRegistrationPage() {
                     placeholder="9876543210"
                   />
                 </div>
+                {existingCustomer && <p className="text-[11px] text-emerald-700 mt-1">Already a customer. Details filled in.</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
+                <input type="email" name="email" value={formData.email} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="name@example.com" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">App password {existingCustomer ? '(leave empty to keep theirs)' : '*'}</label>
+                <input type="text" name="password" required={!existingCustomer} minLength={6} autoComplete="new-password" value={formData.password} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="At least 6 characters" />
+                <p className="text-[11px] text-gray-500 mt-1">The customer logs in to the O3 app with this mobile and password.</p>
               </div>
             </div>
 
@@ -323,14 +364,10 @@ export default function ManualRegistrationPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
-                  <select name="category" value={formData.category} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500">
+                  <Dropdown name="category" value={formData.category} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500">
                     <option value="">Select...</option>
-                    <option value="hatchback">Hatchback</option>
-                    <option value="medium_hatchback">Med Hatchback</option>
-                    <option value="sedan">Sedan</option>
-                    <option value="premium_sedan">Premium Sedan</option>
-                    <option value="suv">SUV</option>
-                  </select>
+                    {CAR_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </Dropdown>
                 </div>
               </div>
             </div>
@@ -340,12 +377,12 @@ export default function ManualRegistrationPage() {
               <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Package Details (Optional)</h4>
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Select Package</label>
-                <select name="package_id" value={formData.package_id} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500">
+                <Dropdown name="package_id" value={formData.package_id} onChange={handleChange} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:bg-white focus:ring-2 focus:ring-blue-500">
                   <option value="">No Package</option>
                   {packages.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
               {formData.package_id && (
                 <div className="space-y-4">

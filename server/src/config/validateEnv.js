@@ -59,7 +59,11 @@ function validateEnv() {
 
   // ── 6. Client & Base URLs ───────────────────────────────────────────────────
   if (isProd && !process.env.CLIENT_URL) {
-    warnings.push('CLIENT_URL is not set in production. CORS will fall back to wildcards.');
+    // also used for tracking / invoice links sent to customers — must be the real app address
+    errors.push('CLIENT_URL must be set in production (e.g. https://app.o3carspaa.com). It controls CORS and the links in customer messages.');
+  }
+  if (isProd && activeProvider === 'meta_cloud' && !process.env.WHATSAPP_APP_SECRET) {
+    warnings.push('WHATSAPP_APP_SECRET is not set — incoming WhatsApp webhook calls cannot be verified as coming from Meta.');
   }
 
   // ── 7. Reporting & Enforcement ──────────────────────────────────────────────

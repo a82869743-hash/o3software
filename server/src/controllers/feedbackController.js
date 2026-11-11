@@ -68,6 +68,15 @@ exports.submitFeedback = async (req, res) => {
       await conn.rollback();
       return res.status(400).json({ success: false, error: 'Feedback has already been submitted for this request' });
     }
+    // one rating per job (or booking), even if several review links were sent
+    const [[rated]] = await conn.query(
+      'SELECT id FROM v2_feedback WHERE customer_id = ? AND ((? IS NOT NULL AND job_cart_id = ?) OR (? IS NOT NULL AND booking_id = ?)) LIMIT 1',
+      [request.customer_id, request.job_cart_id, request.job_cart_id, request.booking_id, request.booking_id]);
+    if (rated) {
+      await conn.query("UPDATE v2_review_requests SET status = 'responded' WHERE customer_id = ? AND (job_cart_id <=> ?)", [request.customer_id, request.job_cart_id]);
+      await conn.commit();
+      return res.status(400).json({ success: false, error: 'You have already rated this service — thank you!' });
+    }
 
     // 2. Insert into v2_feedback
     await conn.query(
@@ -121,7 +130,7 @@ exports.getFeedback = async (req, res) => {
     );
 
     const [rows] = await pool.query(
-      `SELECT f.*, u.name as customer_name, u.mobile as customer_mobile, jc.invoice_number
+      `SELECT f.*, f.overall_rating AS rating, f.comments AS review_text, u.name as customer_name, u.mobile as customer_mobile, jc.invoice_number
        FROM v2_feedback f
        LEFT JOIN users u ON u.id = f.customer_id
        LEFT JOIN job_carts jc ON jc.id = f.job_cart_id
@@ -147,11 +156,13 @@ exports.replyToFeedback = async (req, res) => {
   try {
     const { id } = req.params;
     const { admin_reply } = req.body;
+    if (!admin_reply || !String(admin_reply).trim()) return res.status(400).json({ success: false, error: 'Type a reply first' });
 
-    await pool.query(
+    const [r] = await pool.query(
       'UPDATE v2_feedback SET admin_reply = ?, admin_replied_at = NOW() WHERE id = ?',
-      [admin_reply, id]
+      [String(admin_reply).trim(), id]
     );
+    if (!r.affectedRows) return res.status(404).json({ success: false, error: 'Feedback not found' });
 
     res.json({ success: true, message: 'Reply saved successfully' });
   } catch (err) {
@@ -166,10 +177,11 @@ exports.publishFeedback = async (req, res) => {
     const { id } = req.params;
     const { is_public } = req.body;
 
-    await pool.query(
+    const [r] = await pool.query(
       'UPDATE v2_feedback SET is_public = ? WHERE id = ?',
       [is_public ? 1 : 0, id]
     );
+    if (!r.affectedRows) return res.status(404).json({ success: false, error: 'Feedback not found' });
 
     res.json({ success: true, message: 'Visibility updated successfully' });
   } catch (err) {
@@ -229,28 +241,28 @@ exports.requestFeedbackManual = async (req, res) => {
     if (!carts.length) return res.status(404).json({ success: false, error: 'Job cart not found' });
     const cart = carts[0];
 
-    const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `INSERT INTO v2_review_requests (customer_id, booking_id, job_cart_id, sent_via, status, feedback_token)
-       VALUES (?, ?, ?, 'whatsapp', 'sent', ?)`,
-      [cart.customer_id, cart.booking_id, cart.id, token]
-    );
+    const [[done]] = await pool.query('SELECT id FROM v2_feedback WHERE job_cart_id = ? LIMIT 1', [cart.id]);
+    if (done) return res.status(400).json({ success: false, error: 'The customer has already rated this job' });
+    // re-use the open link for this job instead of creating a second one
+    const [[open]] = await pool.query("SELECT feedback_token FROM v2_review_requests WHERE job_cart_id = ? AND status <> 'responded' AND feedback_token IS NOT NULL ORDER BY id DESC LIMIT 1", [cart.id]);
+    const token = open?.feedback_token || crypto.randomBytes(32).toString('hex');
+    if (!open) {
+      await pool.query(
+        `INSERT INTO v2_review_requests (customer_id, booking_id, job_cart_id, sent_via, status, feedback_token)
+         VALUES (?, ?, ?, 'whatsapp', 'sent', ?)`,
+        [cart.customer_id, cart.booking_id, cart.id, token]
+      );
+    }
 
     // Construct Redirect URL for manual send
     const domain = process.env.CLIENT_URL || 'http://localhost:5173';
     const feedbackUrl = `${domain}/feedback/${token}`;
     const message = `Dear ${cart.customer_name || 'Customer'}, thank you for choosing O3 Car Spaa! We would love to hear your feedback. Please rate your experience here: ${feedbackUrl}`;    // Log Click-to-Chat notification
-    await pool.query(
-      `INSERT INTO v2_notification_logs (customer_id, template_name, channel, mobile, message_body, status, response_data)
-       VALUES (?, 'FEEDBACK_REQUEST', 'whatsapp', ?, ?, 'pending', ?)`,
-      [
-        cart.customer_id,
-        cart.customer_mobile,
-        message,
-        JSON.stringify({ redirect_url: `https://api.whatsapp.com/send?phone=${cart.customer_mobile}&text=${encodeURIComponent(message)}` })
-      ]
-    );
-    res.json({ success: true, message: 'Feedback request logged and ready to send via WhatsApp' });
+    await require('../services/notificationService').notify({
+      customerId: cart.customer_id, customMessageBody: message, channels: ['whatsapp'],
+      referenceType: 'job_card', referenceId: cart.id,
+    });
+    res.json({ success: true, message: 'Feedback request sent to the customer on WhatsApp' });
   } catch (err) {
     console.error('Request feedback manual error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
@@ -258,40 +270,6 @@ exports.requestFeedbackManual = async (req, res) => {
 };
 
 // ─── KEEP REFERRAL FUNCTIONS UNCHANGED ─────────────────
-exports.generateReferralCode = async (req, res) => {
-  try {
-    const cid = req.user.id;
-    const [existing] = await pool.query('SELECT * FROM referral_codes WHERE customer_id=? AND is_active=1', [cid]);
-    if (existing.length) return res.json({ success: true, data: existing[0] });
-    const code = `GK${cid}${Math.random().toString(36).substring(2,6).toUpperCase()}`;
-    const [result] = await pool.query('INSERT INTO referral_codes (customer_id,code,reward_points) VALUES (?,?,100)', [cid, code]);
-    await pool.query('UPDATE users SET referral_code=? WHERE id=?', [code, cid]);
-    res.status(201).json({ success: true, data: { id: result.insertId, code, reward_points: 100 } });
-  } catch (err) {
-    console.error('Generate referral error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
-  }
-};
-
-exports.applyReferralCode = async (req, res) => {
-  try {
-    const { code } = req.body; const rid = req.user.id;
-    const [cr] = await pool.query('SELECT * FROM referral_codes WHERE code=? AND is_active=1', [code]);
-    if (!cr.length) return res.status(404).json({ success: false, error: 'Invalid referral code' });
-    if (cr[0].customer_id === rid) return res.status(400).json({ success: false, error: 'Cannot use own code' });
-    const [used] = await pool.query('SELECT id FROM referral_rewards WHERE referred_id=?', [rid]);
-    if (used.length) return res.status(400).json({ success: false, error: 'Already used a referral code' });
-    await pool.query(`INSERT INTO referral_rewards (referrer_id,referred_id,referral_code,reward_type,reward_value,status,credited_at) VALUES (?,?,?,'points',?,'credited',NOW())`, [cr[0].customer_id, rid, code, cr[0].reward_points]);
-    await pool.query('UPDATE referral_codes SET current_uses=current_uses+1 WHERE id=?', [cr[0].id]);
-    await pool.query('UPDATE users SET referred_by=? WHERE id=?', [cr[0].customer_id, rid]);
-    await pool.query(`INSERT INTO wallets (customer_id,balance,total_earned) VALUES (?,?,?) ON DUPLICATE KEY UPDATE balance=balance+?,total_earned=total_earned+?`, [cr[0].customer_id, cr[0].reward_points, cr[0].reward_points, cr[0].reward_points, cr[0].reward_points]);
-    res.json({ success: true, message: `Referral applied! ${cr[0].reward_points} points credited.` });
-  } catch (err) {
-    console.error('Apply referral error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
-  }
-};
-
 exports.getReferralStats = async (req, res) => {
   try {
     const cid = req.user.role === 'admin' ? req.query.customer_id : req.user.id;
@@ -301,6 +279,33 @@ exports.getReferralStats = async (req, res) => {
     res.json({ success: true, data: { referral_code: code[0]||null, ...rewards[0], wallet: wallet[0]||{balance:0} } });
   } catch (err) {
     console.error('Get referral stats error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// ─── CUSTOMER: pending review requests (after delivery) + my submitted feedback ──
+exports.mine = async (req, res) => {
+  try {
+    const [pending] = await pool.query(
+      `SELECT r.feedback_token AS token, r.job_cart_id, r.booking_id, r.sent_at,
+              COALESCE(v.registration_no, b.vehicle_reg_no) AS registration_no,
+              COALESCE(CONCAT(v.brand,' ',v.model), CONCAT(b.vehicle_brand,' ',b.vehicle_model)) AS vehicle,
+              IF(r.job_cart_id IS NOT NULL, 'Job card', 'Quick wash') AS service_type
+       FROM v2_review_requests r
+       LEFT JOIN job_carts jc ON jc.id = r.job_cart_id
+       LEFT JOIN vehicles v ON v.id = jc.vehicle_id
+       LEFT JOIN bookings b ON b.id = r.booking_id
+       WHERE r.customer_id = ? AND r.status <> 'responded' AND r.feedback_token IS NOT NULL
+       ORDER BY r.sent_at DESC LIMIT 20`,
+      [req.user.id]
+    );
+    const [given] = await pool.query(
+      'SELECT id, job_cart_id, booking_id, overall_rating, comments, admin_reply, created_at FROM v2_feedback WHERE customer_id = ? ORDER BY created_at DESC LIMIT 20',
+      [req.user.id]
+    );
+    res.json({ success: true, data: { pending, given } });
+  } catch (err) {
+    console.error('feedback mine error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };

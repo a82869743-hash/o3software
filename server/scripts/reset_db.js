@@ -1,6 +1,6 @@
 // WARNING: Development only. Do NOT run in production.
 /**
- * O3 Car Spa — Full Database Reset & Rebuild
+ * O3 Car Spaa — Full Database Reset & Rebuild
  * Drops the database completely and re-runs all 21 migrations from scratch.
  * Usage: node scripts/reset_db.js
  */
@@ -15,7 +15,7 @@ async function resetAndRebuild() {
   const dbName = process.env.DB_NAME || 'o3_car_spa';
 
   console.log('========================================');
-  console.log('  O3 Car Spa — Database Reset');
+  console.log('  O3 Car Spaa — Database Reset');
   console.log('========================================\n');
 
   // 1. Connect without database

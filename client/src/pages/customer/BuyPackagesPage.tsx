@@ -1,3 +1,6 @@
+import { ymd } from '../../utils/formatters';
+import { useVehicleStore } from '../../store/vehicleStore';
+import FitImg from '../../components/shared/FitImg';
 import { useState, useEffect } from 'react';
 import api from '../../api/axiosInstance';
 import { useAuthStore } from '../../store/authStore';
@@ -5,14 +8,18 @@ import { useToastStore } from '../../store/toastStore';
 import { PackageOpen, Car, CheckCircle, Loader2, ArrowRight, ShieldCheck, X, AlertCircle, Clock, XCircle, Check, Minus, FileSpreadsheet, FileDown, CreditCard, QrCode, Search, Sparkles, SlidersHorizontal } from 'lucide-react';
 import QrPaymentModal from '../../components/shared/QrPaymentModal';
 import ErrorState from '../../components/shared/ErrorState';
+import { ServiceArt, ILLUSTRATIONS, PHOTOS, photoFor, pictureSrc } from '../../components/customer/serviceVisuals';
 import { getCategoryForModel } from '../../utils/carData';
+import { CAR_TYPES, carTypeLabel, normalizeCarType } from '../../utils/carTypes';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 interface Vehicle {
   id: number;
   registration_no: string;
   brand: string;
   model: string;
-  category: 'hatchback' | 'medium_hatchback' | 'sedan' | 'premium_sedan' | 'suv';
+  category: string | null;
 }
 
 interface PkgPricing {
@@ -22,14 +29,6 @@ interface PkgPricing {
   price: number;
 }
 
-// Map old vehicle categories to new car_type enum values
-const CAR_TYPE_MAP: Record<string, string> = {
-  hatchback: 'SMALL_HATCHBACK',
-  medium_hatchback: 'MEDIUM_HATCHBACK',
-  sedan: 'SEDAN_SUV',
-  premium_sedan: 'PREMIUM_SEDAN',
-  suv: 'LARGE_CAR',
-};
 
 interface PkgService {
   id: number;
@@ -39,16 +38,18 @@ interface PkgService {
 }
 
 interface Pkg {
+  image_url?: string | null;
   id: number;
   name: string;
   description: string;
   wash_count: number;
   paid_wash_count?: number;
   price_hatchback: number;
-  price_medium_hatchback: number;
+  price_semi_sedan: number;
   price_sedan: number;
   price_premium_sedan: number;
   price_suv: number;
+  price_premium_suv?: number;
   services?: PkgService[];
   pricing?: PkgPricing[];
 }
@@ -62,44 +63,6 @@ const TIER_COLORS: Record<string, { gradient: string; border: string; badge: str
   platinum: { gradient: 'from-purple-700 to-purple-950', border: 'border-purple-400', badge: 'bg-purple-100 text-purple-800',  text: 'text-purple-300' },
 };
 
-const HARDCODED_PRICES: Record<string, Record<string, { basic: number, premium: number }>> = {
-  'SMALL_HATCHBACK': {
-    bronze: { basic: 1200, premium: 1650 },
-    silver: { basic: 2000, premium: 2750 },
-    gold: { basic: 3200, premium: 4400 },
-    diamond: { basic: 4000, premium: 5500 },
-    platinum: { basic: 4800, premium: 6600 },
-  },
-  'MEDIUM_HATCHBACK': {
-    bronze: { basic: 1350, premium: 1800 },
-    silver: { basic: 2250, premium: 3000 },
-    gold: { basic: 3600, premium: 4800 },
-    diamond: { basic: 4500, premium: 6000 },
-    platinum: { basic: 5400, premium: 7200 },
-  },
-  'SEDAN_SUV': {
-    bronze: { basic: 1500, premium: 2000 },
-    silver: { basic: 2500, premium: 3300 },
-    gold: { basic: 4000, premium: 5200 },
-    diamond: { basic: 5000, premium: 6500 },
-    platinum: { basic: 6000, premium: 7800 },
-  },
-  'PREMIUM_SEDAN': {
-    bronze: { basic: 1650, premium: 2200 },
-    silver: { basic: 2750, premium: 3600 },
-    gold: { basic: 4400, premium: 5700 },
-    diamond: { basic: 5500, premium: 7150 },
-    platinum: { basic: 6600, premium: 8580 },
-  },
-  'LARGE_CAR': {
-    bronze: { basic: 1800, premium: 2400 },
-    silver: { basic: 3000, premium: 3900 },
-    gold: { basic: 4800, premium: 6240 },
-    diamond: { basic: 6000, premium: 7800 },
-    platinum: { basic: 7200, premium: 9360 },
-  }
-};
-
 const DEFAULT_TIER_COLOR = { gradient: 'from-gray-700 to-gray-900', border: 'border-blue-500', badge: 'bg-blue-100 text-blue-800', text: 'text-blue-400' };
 
 function getTierKey(name: string): string {
@@ -110,58 +73,22 @@ function getTierKey(name: string): string {
   return '';
 }
 
-const ALL_SERVICES = [
-  'Full Foam Wash',
-  'Body Wax Coat',
-  'Two Wheeler Wash',
-  'Two Wheeler Wax Coat',
-  'Body Hybrid Ceramic Wax Coat',
-  'Deep Cleaning',
-];
-
-const INCLUDED_SERVICES: Record<string, { service_name: string, count: number }[]> = {
-  'bronze': [
-    { service_name: 'Full Foam Wash', count: 4 },
-    { service_name: 'Body Wax Coat', count: 1 },
-  ],
-  'silver': [
-    { service_name: 'Full Foam Wash', count: 7 },
-    { service_name: 'Body Wax Coat', count: 2 },
-    { service_name: 'Two Wheeler Wash', count: 1 },
-  ],
-  'gold': [
-    { service_name: 'Full Foam Wash', count: 12 },
-    { service_name: 'Body Wax Coat', count: 3 },
-    { service_name: 'Two Wheeler Wash', count: 1 },
-    { service_name: 'Two Wheeler Wax Coat', count: 1 },
-  ],
-  'diamond': [
-    { service_name: 'Full Foam Wash', count: 16 },
-    { service_name: 'Body Wax Coat', count: 2 },
-    { service_name: 'Two Wheeler Wash', count: 2 },
-    { service_name: 'Two Wheeler Wax Coat', count: 1 },
-    { service_name: 'Body Hybrid Ceramic Wax Coat', count: 1 },
-  ],
-  'platinum': [
-    { service_name: 'Full Foam Wash', count: 20 },
-    { service_name: 'Body Wax Coat', count: 3 },
-    { service_name: 'Two Wheeler Wash', count: 2 },
-    { service_name: 'Two Wheeler Wax Coat', count: 1 },
-    { service_name: 'Body Hybrid Ceramic Wax Coat', count: 1 },
-    { service_name: 'Deep Cleaning', count: 1 },
-  ],
-};
 
 export default function BuyPackagesPage() {
   const { user } = useAuthStore();
   const { addToast } = useToastStore();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+  // car switched in the header while on this page
+  const headerCarId = useVehicleStore(s => s.selectedId);
+  useEffect(() => {
+    const v = vehicles.find(x => x.id === headerCarId);
+    if (v && v.id !== selectedVehicle?.id) setSelectedVehicle(v);
+  }, [headerCarId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<number | null>(null);
-  const [filterCarType, setFilterCarType] = useState<string>('SMALL_HATCHBACK');
   const [pricingType, setPricingType] = useState<'basic' | 'premium'>('basic');
   // Confirmation modal state
   const [confirmPkg, setConfirmPkg] = useState<Pkg | null>(null);
@@ -175,8 +102,6 @@ export default function BuyPackagesPage() {
   const [activePackageRequestId, setActivePackageRequestId] = useState<number | undefined>(undefined);
 
   // Car model auto-detect state
-  const [carSearchInput, setCarSearchInput] = useState('');
-  const [detectedBadge, setDetectedBadge] = useState<{ carName: string; categoryName: string } | null>(null);
 
   const handleExport = async (format: 'pdf' | 'excel') => {
     if (format === 'pdf') setExportingPdf(true);
@@ -190,7 +115,7 @@ export default function BuyPackagesPage() {
       });
       const link = document.createElement('a');
       link.href = window.URL.createObjectURL(blob);
-      link.download = `Package_History_${new Date().toISOString().slice(0, 10)}.${format === 'pdf' ? 'pdf' : 'xlsx'}`;
+      link.download = `Package_History_${ymd()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`;
       link.click();
       window.URL.revokeObjectURL(link.href);
       addToast('success', `Package history exported to ${format.toUpperCase()} successfully!`);
@@ -214,7 +139,8 @@ export default function BuyPackagesPage() {
       if (vehRes.data.success) {
         setVehicles(vehRes.data.data);
         if (vehRes.data.data.length > 0) {
-          setSelectedVehicle(vehRes.data.data.find((v: any) => v.is_primary) || vehRes.data.data[0]);
+          const current = useVehicleStore.getState().selectedId;
+          setSelectedVehicle(vehRes.data.data.find((v: any) => v.id === current) || vehRes.data.data.find((v: any) => v.is_primary) || vehRes.data.data[0]);
         }
       }
       if (pkgRes.data.success) {
@@ -228,6 +154,7 @@ export default function BuyPackagesPage() {
     }
   };
 
+  useLiveReload(() => { loadData(); }); // reload when anything changes elsewhere
   useEffect(() => {
     loadData();
     // Fetch customer's own package requests
@@ -236,36 +163,19 @@ export default function BuyPackagesPage() {
     }).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (selectedVehicle) {
-      const type = CAR_TYPE_MAP[selectedVehicle.category] || 'SEDAN_SUV';
-      setFilterCarType(type);
-    }
-  }, [selectedVehicle]);
+  // prices always follow the selected car's own type
+  const filterCarType: string = selectedVehicle
+    ? (normalizeCarType(selectedVehicle.category) || getCategoryForModel(selectedVehicle.brand, selectedVehicle.model) || 'sedan')
+    : 'sedan';
 
+  // Price set by the studio for this car type (package price list first, then the package's own column)
   const getPrice = (pkg: Pkg) => {
-    const tierKey = getTierKey(pkg.name);
-    const hardcoded = HARDCODED_PRICES[filterCarType]?.[tierKey];
-    if (hardcoded) {
-      return pricingType === 'premium' ? hardcoded.premium : hardcoded.basic;
-    }
-
-    const categoryFieldMap: Record<string, keyof Pkg> = {
-      SMALL_HATCHBACK: 'price_hatchback',
-      MEDIUM_HATCHBACK: 'price_medium_hatchback',
-      SEDAN_SUV: 'price_sedan',
-      PREMIUM_SEDAN: 'price_premium_sedan',
-      LARGE_CAR: 'price_suv',
-    };
-    const field = categoryFieldMap[filterCarType];
-    const basePrice = (field && pkg[field] && Number(pkg[field]) > 0)
-      ? Number(pkg[field])
-      : Number(pkg.price_sedan || pkg.price_suv || pkg.price_hatchback || 0);
-    return pricingType === 'premium' ? Math.round(basePrice * 1.35) : basePrice;
+    const row = (pkg.pricing || []).find(r => r.car_type === filterCarType && r.pricing_type === pricingType);
+    if (row && Number(row.price) > 0) return Number(row.price);
+    if (pricingType === 'premium') return 0;
+    return Number((pkg as any)[`price_${filterCarType}`]) || 0;
   };
-
-  // We no longer need getServiceCount since we use PACKAGE_BREAKDOWN directly based on tier
-  // but we keep a dummy function if it's used elsewhere, though it's not.
+  const hasPremium = packages.some(p => (p.pricing || []).some(r => r.pricing_type === 'premium' && Number(r.price) > 0));
 
   // Step 1: User clicks "Request to Buy" → show confirmation modal
   const handleBuyClick = (pkg: Pkg) => {
@@ -285,15 +195,14 @@ export default function BuyPackagesPage() {
       const res = await api.post('/packages/requests', {
         vehicle_id: selectedVehicle.id,
         package_id: confirmPkg.id,
-        price,
         pricing_type: pricingType,
         car_type: filterCarType
       });
       if (res.data.success) {
         addToast('success', 'Package request submitted! Admin will review and approve it shortly.');
       }
-    } catch (err) {
-      addToast('error', 'Failed to submit package request. Please try again.');
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.error || 'Could not send the package request. Please try again.');
     } finally {
       setSubmittingId(null);
       setConfirmPkg(null);
@@ -301,128 +210,6 @@ export default function BuyPackagesPage() {
   };
 
   const [submittingOnline, setSubmittingOnline] = useState(false);
-
-  const loadRazorpayScript = () => {
-    return new Promise<boolean>((resolve) => {
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
-  const handlePayOnline = async () => {
-    if (!confirmPkg || !selectedVehicle) return;
-    setSubmittingOnline(true);
-    try {
-      const price = getPrice(confirmPkg);
-
-      const sdkLoaded = await loadRazorpayScript();
-      if (!sdkLoaded) {
-        addToast('error', 'Razorpay SDK failed to load. Are you online?');
-        setSubmittingOnline(false);
-        return;
-      }
-
-      // 1. Submit the package request first to get requestId
-      const resRequest = await api.post('/packages/requests', {
-        vehicle_id: selectedVehicle.id,
-        package_id: confirmPkg.id,
-        price,
-        pricing_type: pricingType,
-        car_type: filterCarType
-      });
-
-      if (!resRequest.data.success) {
-        throw new Error('Failed to submit package request');
-      }
-
-      const requestId = resRequest.data.requestId;
-
-      // 2. Create Razorpay order on backend
-      const resOrder = await api.post('/payments/razorpay/order', {
-        amount: price,
-        package_id: confirmPkg.id,
-        package_request_id: requestId
-      });
-
-      if (!resOrder.data.success) {
-        throw new Error(resOrder.data.error || 'Failed to create payment order');
-      }
-
-      const orderData = resOrder.data.data;
-
-      // 3. Open Razorpay checkout
-      const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
-        amount: orderData.amount,
-        currency: orderData.currency,
-        name: 'O3 Car Spaa',
-        description: `Car Care Package: ${confirmPkg.name}`,
-        order_id: orderData.id,
-        prefill: {
-          name: user?.name || '',
-          email: user?.email || '',
-          contact: user?.mobile || ''
-        },
-        handler: async function (response: any) {
-          try {
-            const resVerify = await api.post('/payments/razorpay/verify', {
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
-            });
-
-            if (resVerify.data.success) {
-              addToast('success', 'Payment successful! Your package is now active.');
-              setConfirmPkg(null);
-              window.location.reload();
-            } else {
-              throw new Error('Payment verification failed');
-            }
-          } catch (err: any) {
-            addToast('error', err.response?.data?.error || 'Payment verification failed. Please contact support.');
-          }
-        },
-        modal: {
-          ondismiss: function () {
-            addToast('warning', 'Payment cancelled. You can retry from your package requests list.');
-            setConfirmPkg(null);
-            // Refresh list to show pending request
-            api.get('/packages/requests/my').then(res => {
-              if (res.data.success) setMyRequests(res.data.data || []);
-            }).catch(() => {});
-          }
-        },
-        theme: { color: '#2563EB' }
-      };
-
-      if (orderData.id.startsWith('order_mock_')) {
-        const confirmSimulate = window.confirm(
-          "RAZORPAY SANDBOX MODE (Keys Missing)\n\nWould you like to simulate a successful online payment?"
-        );
-        if (confirmSimulate) {
-          await options.handler({
-            razorpay_order_id: orderData.id,
-            razorpay_payment_id: 'pay_mock_' + Date.now(),
-            razorpay_signature: 'sig_mock_' + Date.now()
-          });
-        } else {
-          options.modal.ondismiss();
-        }
-        return;
-      }
-
-      const rzp = new (window as any).Razorpay(options);
-      rzp.open();
-    } catch (err: any) {
-      console.error(err);
-      addToast('error', err.message || 'An error occurred during payment checkout.');
-    } finally {
-      setSubmittingOnline(false);
-    }
-  };
 
   const handlePayQR = async () => {
     if (!confirmPkg || !selectedVehicle) return;
@@ -434,7 +221,6 @@ export default function BuyPackagesPage() {
       const resRequest = await api.post('/packages/requests', {
         vehicle_id: selectedVehicle.id,
         package_id: confirmPkg.id,
-        price,
         pricing_type: pricingType,
         car_type: filterCarType
       });
@@ -444,13 +230,13 @@ export default function BuyPackagesPage() {
       }
 
       const requestId = resRequest.data.requestId;
-      setQrAmount(price);
+      setQrAmount(Number(resRequest.data.price) || price);
       setActivePackageRequestId(requestId);
       setShowQrModal(true);
       setConfirmPkg(null);
     } catch (err: any) {
       console.error(err);
-      addToast('error', err.message || 'An error occurred during payment checkout.');
+      addToast('error', err?.response?.data?.error || err.message || 'An error occurred during payment checkout.');
     } finally {
       setSubmittingOnline(false);
     }
@@ -477,19 +263,16 @@ export default function BuyPackagesPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 font-sans">
-      {/* Header */}
-      <div className="mb-8 text-center">
-        <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider mb-3">
-          <PackageOpen className="w-4 h-4" />
-          Almost 45% Discount
+    <div className="font-sans">
+      {/* Header: showroom photo */}
+      <div className="rise relative overflow-hidden rounded-3xl h-40 sm:h-48 mb-5 shadow-[0_10px_30px_rgba(11,31,77,0.16)]">
+        <img src={PHOTOS.showroom} alt="" className="absolute inset-0 w-full h-full object-cover" />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#0B1F4D]/90 via-[#0B1F4D]/60 to-transparent" />
+        <div className="relative h-full flex flex-col justify-end p-5 text-white max-w-[78%]">
+          <span className="inline-flex w-fit items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.16em] bg-amber-400 text-slate-900 px-2 py-0.5 rounded"><PackageOpen className="w-3.5 h-3.5" /> Prepaid packages</span>
+          <h1 className="text-[22px] sm:text-3xl font-black leading-tight mt-2">Annual car care, sorted</h1>
+          <p className="text-xs sm:text-sm text-white/75 mt-1">Prices below are for your car.</p>
         </div>
-        <h1 className="text-3xl font-extrabold text-gray-900">
-          Annual Car Care Packages
-        </h1>
-        <p className="mt-2 text-gray-600 text-sm">
-          Select your vehicle to see personalized pricing for our exclusive car care packages.
-        </p>
       </div>
 
       {vehicles.length === 0 ? (
@@ -502,92 +285,30 @@ export default function BuyPackagesPage() {
         <div className="mb-10 max-w-xl mx-auto space-y-4">
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">Select Saved Garage Vehicle</label>
-            <select
+            <Dropdown
               className="w-full bg-white border-2 border-blue-100 focus:border-blue-500 focus:ring-0 rounded-xl py-3 px-4 shadow-sm text-gray-900 font-medium transition-colors"
               value={selectedVehicle?.id || ''}
               onChange={(e) => {
                 const v = vehicles.find(v => v.id === Number(e.target.value)) || null;
                 setSelectedVehicle(v);
-                if (v) {
-                  setCarSearchInput(`${v.brand} ${v.model}`);
-                  const cat = getCategoryForModel(v.brand, v.model);
-                  const type = CAR_TYPE_MAP[cat] || 'SEDAN_SUV';
-                  setFilterCarType(type);
-                  setDetectedBadge({ carName: `${v.brand} ${v.model}`, categoryName: type.replace('_', ' ') });
-                }
+                if (v) useVehicleStore.getState().select(v.id);
               }}
             >
               {vehicles.map(v => (
                 <option key={v.id} value={v.id}>
-                  {v.brand} {v.model} ({v.registration_no || 'No Reg'}) - {v.category ? v.category.replace('_', ' ').toUpperCase() : 'UNKNOWN'}
+                  {v.brand} {v.model} ({v.registration_no || 'No Reg'}) - {carTypeLabel(v.category)}
                 </option>
               ))}
-            </select>
+            </Dropdown>
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm space-y-4">
-            {/* Quick Car Search & Auto-Detect Segment */}
-            <div>
-              <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
-                <span>🚗 Type Car Name (Auto-Detect Segment)</span>
-                <span className="text-[10px] text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded">e.g. Virtus GT → Sedan</span>
-              </label>
-              <div className="relative">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={carSearchInput}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setCarSearchInput(val);
-                    if (val.trim().length >= 2) {
-                      const detectedCat = getCategoryForModel('', val);
-                      const type = CAR_TYPE_MAP[detectedCat] || 'SEDAN_SUV';
-                      setFilterCarType(type);
-                      setDetectedBadge({ carName: val, categoryName: type.replace('_', ' ') });
-                    } else {
-                      setDetectedBadge(null);
-                    }
-                  }}
-                  placeholder="Type any car name e.g. Virtus GT, Creta, Swift, Fortuner..."
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all placeholder:text-slate-400"
-                />
-              </div>
-            </div>
-
-            {/* Live Auto-Detected Badge */}
-            {detectedBadge && (
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-900 rounded-xl p-3 text-xs font-extrabold flex items-center justify-between shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <Sparkles size={16} className="text-[#2563EB]" />
-                  <span>
-                    Auto-Selected for "<strong>{detectedBadge.carName}</strong>": Classified as <span className="text-[#2563EB] uppercase tracking-wider">{detectedBadge.categoryName}</span>
-                  </span>
-                </div>
-                <span className="text-[10px] bg-[#2563EB] text-white px-2 py-0.5 rounded-full uppercase">
-                  Prices Updated
-                </span>
-              </div>
-            )}
-
-            {/* Manual Segment Override Dropdown */}
-            <div>
-              <label className="block text-xs font-extrabold text-slate-600 mb-1">Manual Vehicle Type Segment</label>
-              <select
-                className="w-full bg-slate-50 border border-slate-200 focus:border-blue-500 focus:ring-0 rounded-xl py-2 px-3 text-xs font-extrabold text-slate-900 transition-colors"
-                value={filterCarType}
-                onChange={(e) => setFilterCarType(e.target.value)}
-              >
-                <option value="SMALL_HATCHBACK">Small Hatchback (e.g. Alto, Kwid, Swift)</option>
-                <option value="MEDIUM_HATCHBACK">Medium Hatchback (e.g. Baleno, i20, Altroz)</option>
-                <option value="SEDAN_SUV">Sedan / Compact SUV (e.g. Virtus GT, Verna, City, Creta)</option>
-                <option value="PREMIUM_SEDAN">Premium Sedan (e.g. Superb, BMW 3 Series, C-Class)</option>
-                <option value="LARGE_CAR">SUV / Large Car (e.g. Fortuner, Endeavour, Harrier)</option>
-              </select>
-            </div>
+            <p className="text-sm text-slate-600">
+              Prices for your <b className="text-slate-900">{selectedVehicle?.brand} {selectedVehicle?.model}</b> · <span className="font-bold text-[#2563EB]">{carTypeLabel(filterCarType)}</span>
+            </p>
 
             {/* Basic / Premium Toggle */}
-            <div className="flex items-center justify-center gap-3 pt-3 border-t border-gray-100">
+            {hasPremium && <div className="flex items-center justify-center gap-3 pt-3 border-t border-gray-100">
               <span className={`text-xs font-bold uppercase tracking-wider ${pricingType === 'basic' ? 'text-blue-600' : 'text-gray-400'}`}>Basic</span>
               <button
                 onClick={() => setPricingType(pricingType === 'basic' ? 'premium' : 'basic')}
@@ -596,15 +317,15 @@ export default function BuyPackagesPage() {
                 <div className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${pricingType === 'premium' ? 'translate-x-7' : ''}`} />
               </button>
               <span className={`text-xs font-bold uppercase tracking-wider ${pricingType === 'premium' ? 'text-purple-600' : 'text-gray-400'}`}>Premium</span>
-            </div>
-            <p className="text-center text-[10px] text-gray-400">Premium includes additional interior care & product upgrades</p>
+            </div>}
+            {hasPremium && <p className="text-center text-[10px] text-gray-400">Premium includes additional interior care & product upgrades</p>}
           </div>
         </div>
       )}
 
       {/* ─── Package Cards Grid ─────────────────────── */}
       {selectedVehicle && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {packages.map(pkg => {
             const price = getPrice(pkg);
             const isSubmitting = submittingId === pkg.id;
@@ -618,15 +339,18 @@ export default function BuyPackagesPage() {
             return (
               <div
                 key={pkg.id}
-                className={`bg-white rounded-2xl shadow-[0_4px_24px_-4px_rgba(0,0,0,0.12)] overflow-hidden flex flex-col transition-all hover:-translate-y-1 hover:shadow-[0_8px_30px_-4px_rgba(0,0,0,0.18)] duration-300 border-t-4 ${colors.border}`}
+                className={`bg-white rounded-2xl shadow-[0_4px_24px_-4px_rgba(0,0,0,0.12)] overflow-hidden flex flex-col transition-all hover:-translate-y-1 hover:shadow-[0_8px_30px_-4px_rgba(0,0,0,0.18)] duration-300`}
               >
-                {/* ─── Package Header ─── */}
-                <div className={`bg-gradient-to-br ${colors.gradient} p-5 text-white text-center relative overflow-hidden`}>
-                  <PackageOpen className="absolute -right-4 -bottom-4 w-24 h-24 text-white/5" />
-                  <h3 className="text-lg font-extrabold uppercase tracking-wide relative z-10">
-                    {pkg.name.replace(/ Package$/i, '')}
-                  </h3>
-                  <p className="text-[11px] font-bold uppercase tracking-wider opacity-80 relative z-10">Package</p>
+                {/* ─── Package Header: studio photo, O3 blue overlay, tier badge ─── */}
+                <div className="relative aspect-video overflow-hidden">
+                  <FitImg src={pkg.image_url && !/illustrations\//.test(pkg.image_url) ? pictureSrc(pkg.image_url) : [PHOTOS.showroom, PHOTOS.studio, PHOTOS.beading, PHOTOS.coating, PHOTOS.glass][pkg.id % 5]}
+                    className="absolute inset-0 h-full" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#0B1F4D]/90 via-[#0B1F4D]/20 to-transparent" />
+                  <span className={`absolute top-3 left-3 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded ${colors.badge}`}>{tierKey !== 'default' ? tierKey : 'Package'}</span>
+                  <div className="absolute bottom-3 left-4 right-4 text-white text-left">
+                    <h3 className="text-xl font-black leading-tight">{pkg.name.replace(/ Package$/i, '')}</h3>
+                    <p className="text-[11px] font-semibold text-white/75">Prepaid package · valid 12 months</p>
+                  </div>
                 </div>
 
                 {/* ─── Services ─── */}
@@ -858,20 +582,6 @@ export default function BuyPackagesPage() {
               </div>
 
               <div className="flex flex-col gap-2">
-                <button
-                  onClick={handlePayQR}
-                  disabled={submittingId !== null || submittingOnline}
-                  className="w-full py-3 px-4 bg-[#0284C7] text-white rounded-xl font-extrabold text-sm hover:bg-[#0369A1] shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-75"
-                >
-                  {submittingOnline ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <>
-                      <QrCode size={16} />
-                      Scan & Pay via UPI QR
-                    </>
-                  )}
-                </button>
 
                 <button
                   onClick={handleConfirmPurchase}
@@ -883,7 +593,7 @@ export default function BuyPackagesPage() {
                   ) : (
                     <>
                       <CheckCircle size={16} />
-                      Request Cash/Store Payment
+                      Request package — pay at studio
                     </>
                   )}
                 </button>

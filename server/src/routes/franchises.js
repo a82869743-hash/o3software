@@ -1,4 +1,5 @@
 const router = require('express').Router();
+require('../middleware/numericIds')(router, ['id', 'userId']);
 const auth = require('../middleware/auth');
 const superAdmin = require('../middleware/superAdmin');
 const role = require('../middleware/role');
@@ -6,6 +7,9 @@ const ctrl = require('../controllers/franchiseController');
 
 // List franchises (Super Admin sees all, others see active only)
 router.get('/', auth, ctrl.list);
+
+// Studios a new customer can choose at sign-up (no login)
+router.get('/public', ctrl.publicList);
 
 // Consolidated cross-franchise view (Super Admin only)
 router.get('/consolidated/overview', auth, superAdmin, ctrl.consolidatedOverview);
@@ -34,6 +38,8 @@ router.delete('/:id', auth, superAdmin, ctrl.softDelete);
 router.get('/:id/entitlements', auth, superAdmin, ctrl.getEntitlements);
 router.put('/:id/entitlements', auth, superAdmin, ctrl.updateEntitlements);
 router.post('/:id/entitlements/preset', auth, superAdmin, ctrl.applyPreset);
+
+router.get('/:id/users', auth, superAdmin, ctrl.listUsers);
 
 // Franchise Owner Account Creation (Super Admin only)
 router.post('/:id/owner', auth, superAdmin, ctrl.createOwnerAccount);

@@ -1,3 +1,4 @@
+import { dateOnly } from '../../utils/formatters';
 import { useState, useRef, useEffect } from 'react';
 import { Plus, Package, Edit2, Trash2, Check, Upload, Search, ShieldAlert, BarChart3, HelpCircle, RefreshCw, FolderPlus, CheckSquare, Square, Layers, ShoppingCart } from 'lucide-react';
 import { useInventory, useCreateInventory, useUpdateInventory, useAdjustQuantity, useDeleteInventory, useInventoryCategories, useCreateCategory, useRenameCategory, useDeleteCategory } from '../../api/hooks/useInventory';
@@ -10,6 +11,7 @@ import Modal from '../../components/ui/Modal';
 import ConfirmDialog from '../../components/shared/ConfirmDialog';
 import { useUIStore } from '../../store/uiStore';
 import api from '../../api/axiosInstance';
+import { PRODUCT_LIBRARY } from '../../utils/productLibrary';
 
 const unitOptions = [
   { value: 'ml', label: 'ml' },
@@ -47,6 +49,15 @@ const INVENTORY_CATEGORIES = [
 ];
 
 import { useAuthStore } from '../../store/authStore';
+import Dropdown from '../../components/ui/Dropdown';
+
+import { askForm } from '../../utils/ask';
+const firstImage = (row: any): string => {
+  try {
+    const arr = typeof row.images_json === 'string' ? JSON.parse(row.images_json) : row.images_json;
+    return (Array.isArray(arr) && arr[0]) || row.image_url || '';
+  } catch { return row.image_url || ''; }
+};
 
 export default function InventoryPage() {
   const { user } = useAuthStore();
@@ -186,6 +197,7 @@ export default function InventoryPage() {
 
   const [uploadingImage, setUploadingImage] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [showLibrary, setShowLibrary] = useState(false);
 
   const createMut = useCreateInventory();
   const updateMut = useUpdateInventory();
@@ -346,12 +358,12 @@ export default function InventoryPage() {
     setFormDiscountPct(parseFloat(item.discount_pct) || 0);
     setFormGstPct(parseFloat(item.gst_pct) || 0);
     setFormSupplier(item.supplier || '');
-    setFormPurchaseDate(item.purchase_date ? item.purchase_date.split('T')[0] : '');
+    setFormPurchaseDate(dateOnly(item.purchase_date));
     setFormPurchaseInvoiceNo(item.purchase_invoice_no || '');
     setFormWarehouseLocation(item.warehouse_location || '');
     setFormWarranty(item.warranty || '');
     setFormSerialNumber(item.serial_number || '');
-    setFormExpiryDate(item.expiry_date ? item.expiry_date.split('T')[0] : '');
+    setFormExpiryDate(dateOnly(item.expiry_date));
     setFormStatus(item.status || 'active');
     setActiveTab('basic');
     let imgArr: string[] = [];
@@ -637,10 +649,13 @@ export default function InventoryPage() {
               <Button
                 variant="secondary"
                 onClick={async () => {
-                  const prodName = window.prompt('Product Name or ID to request:');
-                  if (!prodName) return;
-                  const qty = window.prompt('Quantity to request from Main Admin:', '10');
-                  if (!qty) return;
+                  const f = await askForm('Request stock from main studio', [
+                    { name: 'prod', label: 'Product name', placeholder: 'Type part of the name', required: true },
+                    { name: 'qty', label: 'Quantity', type: 'number', value: '10', required: true },
+                  ], { okLabel: 'Send request' });
+                  if (!f) return;
+                  const prodName = f.prod.trim(), qty = f.qty.trim();
+                  if (!(parseInt(qty, 10) > 0)) { toast('error', 'Enter a quantity above 0'); return; }
                   try {
                     const match = allItems.find((i: any) => i.product_name.toLowerCase().includes(prodName.toLowerCase()) || String(i.id) === prodName);
                     if (!match) { toast('error', 'Product not found'); return; }
@@ -666,7 +681,7 @@ export default function InventoryPage() {
       />
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
         <PremiumStatCard
           title="Active Stock Items"
           value={totalProducts}
@@ -773,7 +788,7 @@ export default function InventoryPage() {
           />
         </div>
         <div className="w-full md:w-48 text-left">
-          <select
+          <Dropdown
             className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             value={categoryFilter}
             onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
@@ -782,7 +797,7 @@ export default function InventoryPage() {
             {categoryOptions.map(c => (
               <option key={c} value={c}>{c}</option>
             ))}
-          </select>
+          </Dropdown>
         </div>
         <div className="w-full md:w-48 text-left">
           <input
@@ -795,7 +810,7 @@ export default function InventoryPage() {
         </div>
         {isMainStudioAdmin && (
           <div className="w-full md:w-56 text-left">
-            <select
+            <Dropdown
               className="w-full px-3 py-2 border-2 border-blue-400 bg-blue-50/80 text-blue-900 font-extrabold rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 shadow-sm"
               value={pricingView}
               onChange={(e: any) => setPricingView(e.target.value)}
@@ -804,11 +819,11 @@ export default function InventoryPage() {
               <option value="franchise">🏬 Pricing: Franchise Price</option>
               <option value="selling">🏷️ Pricing: Customer Price</option>
               <option value="staff">🔧 Pricing: Staff Reference Price</option>
-            </select>
+            </Dropdown>
           </div>
         )}
         <div className="w-full md:w-48 text-left">
-          <select
+          <Dropdown
             className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -817,7 +832,7 @@ export default function InventoryPage() {
             <option value="ok">Stock level OK</option>
             <option value="low">Low stock alert</option>
             <option value="out">Out of stock</option>
-          </select>
+          </Dropdown>
         </div>
       </div>
 
@@ -830,7 +845,7 @@ export default function InventoryPage() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1">
-              <select
+              <Dropdown
                 className="px-2.5 py-1.5 bg-gray-800 border border-gray-700 text-white text-xs rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
                 value={bulkCategoryTarget}
                 onChange={(e) => setBulkCategoryTarget(e.target.value)}
@@ -839,7 +854,7 @@ export default function InventoryPage() {
                 {categoryOptions.map(c => (
                   <option key={c} value={c}>{c}</option>
                 ))}
-              </select>
+              </Dropdown>
               <Button
                 variant="secondary"
                 size="sm"
@@ -906,7 +921,52 @@ export default function InventoryPage() {
             <p className="text-xs text-gray-400 mt-1">Try refining search parameters.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Phone: picture cards with a stock bar */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {filteredItems.map((row: any) => {
+              const qty = parseFloat(row.quantity) || 0;
+              const min = parseFloat(row.min_stock_threshold ?? row.threshold ?? 5) || 5;
+              const isOut = qty <= 0;
+              const isLow = !isOut && (row.is_low_stock || qty <= min);
+              const pct = Math.max(4, Math.min(100, (qty / Math.max(min * 3, 1)) * 100));
+              const img = firstImage(row);
+              const generic = !img || /\/illustrations\//.test(img);
+              return (
+                <div key={row.id} className={`flex gap-3 p-3 ${selectedIds.includes(row.id) ? 'bg-blue-50/40' : ''}`}>
+                  <div className="relative shrink-0">
+                    {img ? <img src={img} alt="" className="w-16 h-16 rounded-xl object-contain bg-slate-50 border border-slate-100" loading="lazy" />
+                      : <div className="w-16 h-16 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-black">{(row.product_name || 'P')[0]}</div>}
+                    <input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => handleSelectOne(row.id)}
+                      className="absolute -top-1 -left-1 w-4 h-4 rounded border-gray-300 text-blue-600 bg-white" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-bold text-[14px] text-slate-900 leading-snug line-clamp-2">{row.product_name}</p>
+                      <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${isOut ? 'bg-rose-50 text-rose-600' : isLow ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                        {isOut ? 'Out of stock' : isLow ? 'Low' : 'In stock'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 truncate">{[row.category, row.brand].filter(Boolean).join(' · ') || row.sku || `#INV-${String(row.id).padStart(4, '0')}`}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                        <div className={`h-full rounded-full ${isOut ? 'bg-rose-500' : isLow ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${isOut ? 0 : pct}%` }} />
+                      </div>
+                      <span className="text-[11.5px] font-black text-slate-800 whitespace-nowrap">{qty} {row.unit || 'pcs'}</span>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-[12.5px] font-black text-slate-900">₹{Number(row.selling_price || 0).toLocaleString('en-IN')}</span>
+                      <span className="flex gap-1.5">
+                        {generic && <button onClick={() => openEditModal(row)} className="px-2.5 py-1 rounded-lg border border-blue-200 text-[#2563EB] text-[11px] font-bold">Add photo</button>}
+                        <button onClick={() => openEditModal(row)} className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold">Edit</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="overflow-x-auto hidden md:block">
             <table className="min-w-full divide-y divide-gray-100 text-left text-sm">
               <thead className="bg-gray-50">
                 <tr className="text-xs font-bold text-gray-500 uppercase tracking-wider">
@@ -1156,6 +1216,7 @@ export default function InventoryPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 
@@ -1274,7 +1335,7 @@ export default function InventoryPage() {
               <p className="text-gray-600 text-[11px]">
                 If products are assigned to this category, select a target category to reassign them to:
               </p>
-              <select
+              <Dropdown
                 className="w-full px-2 py-1.5 border border-blue-300 rounded text-xs bg-white focus:outline-none"
                 value={reassignCatTarget}
                 onChange={(e) => setReassignCatTarget(e.target.value)}
@@ -1283,7 +1344,7 @@ export default function InventoryPage() {
                 {masterCategoryList?.filter((dc: any) => dc.category !== deletingCatName).map((dc: any) => (
                   <option key={dc.category} value={dc.category}>{dc.category}</option>
                 ))}
-              </select>
+              </Dropdown>
               <div className="flex justify-end gap-2 pt-1">
                 <Button size="sm" variant="secondary" onClick={() => setDeletingCatName(null)}>Cancel</Button>
                 <Button
@@ -1323,7 +1384,7 @@ export default function InventoryPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">Select Franchise</label>
-                <select
+                <Dropdown
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
                   value={selectedFranchiseId}
                   onChange={(e) => setSelectedFranchiseId(e.target.value ? Number(e.target.value) : '')}
@@ -1332,7 +1393,7 @@ export default function InventoryPage() {
                   {franchisesList.map((f: any) => (
                     <option key={f.id} value={f.id}>{f.name} ({f.code || `#FR-${f.id}`})</option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">Wholesale Price (₹) *</label>
@@ -1417,6 +1478,97 @@ export default function InventoryPage() {
             {/* Tab 1: Basic Info */}
             {activeTab === 'basic' && (
               <div className="space-y-4 text-left">
+                {/* photos first, so adding a picture is the first thing in the form */}
+                <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Product photos — first photo is shown in the shop</label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {formImages.map((imgUrl, idx) => (
+                      <div key={idx} className="relative w-16 h-16 rounded-xl border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center shrink-0 group">
+                        <img src={imgUrl} alt={`Product ${idx + 1}`} className="w-full h-full object-contain" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const filtered = formImages.filter((_, i) => i !== idx);
+                            setFormImages(filtered);
+                            if (formImage === imgUrl) setFormImage(filtered[0] || '');
+                          }}
+                          className="absolute inset-0 bg-black/60 text-white flex items-center justify-center text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+
+                    <button
+                      type="button"
+                      disabled={uploadingImage}
+                      onClick={() => imageInputRef.current?.click()}
+                      className="w-16 h-16 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/50 hover:bg-blue-100/50 flex flex-col items-center justify-center text-blue-600 font-bold transition-all shrink-0 cursor-pointer"
+                    >
+                      <Upload size={16} />
+                      <span className="text-[9px] font-extrabold mt-1">{uploadingImage ? 'Uploading...' : 'Upload File'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowLibrary(v => !v)}
+                      className={`w-16 h-16 rounded-xl border-2 flex flex-col items-center justify-center font-bold transition-all shrink-0 cursor-pointer ${showLibrary ? 'border-blue-600 bg-blue-600 text-white' : 'border-blue-200 bg-white text-blue-600 hover:bg-blue-50'}`}
+                    >
+                      <Layers size={16} />
+                      <span className="text-[9px] font-extrabold mt-1">Library</span>
+                    </button>
+                    <input
+                      type="file"
+                      ref={imageInputRef}
+                      className="hidden"
+                      accept="image/*"
+                      multiple
+                      onChange={handleImageUpload}
+                    />
+                  </div>
+                  
+                  {showLibrary && (
+                    <div className="mt-3 rounded-xl bg-white border border-blue-100 p-2">
+                      <p className="text-[11px] font-bold text-gray-500 px-1 mb-2">Product library — tap a photo to add it</p>
+                      <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                        {PRODUCT_LIBRARY.map(ph => {
+                          const added = formImages.includes(ph.url);
+                          return (
+                            <button key={ph.key} type="button" title={ph.label}
+                              onClick={() => {
+                                const next = added ? formImages.filter(u => u !== ph.url) : [...formImages, ph.url];
+                                setFormImages(next);
+                                if (!added && !formImage) setFormImage(ph.url);
+                                if (added && formImage === ph.url) setFormImage(next[0] || '');
+                              }}
+                              className={`relative rounded-lg overflow-hidden border-2 ${added ? 'border-blue-600' : 'border-transparent'}`}>
+                              <img src={ph.url} alt={ph.label} className="w-full aspect-square object-cover" loading="lazy" />
+                              <span className="absolute inset-x-0 bottom-0 bg-black/55 text-white text-[9px] font-bold px-1 py-0.5 truncate">{ph.label}</span>
+                              {added && <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center"><Check size={10} /></span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Direct Image URL input option */}
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      type="url"
+                      placeholder="Or paste image URL (https://...)"
+                      value={formImage}
+                      onChange={(e) => {
+                        const url = e.target.value;
+                        setFormImage(url);
+                        if (url && !formImages.includes(url)) {
+                          setFormImages(prev => [url, ...prev]);
+                        }
+                      }}
+                      className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">Upload files or paste direct web URLs. JPG, PNG, WEBP supported.</p>
+                </div>
                 <Input label="Product Name *" value={formName} onChange={e => setFormName(e.target.value)} placeholder="e.g. Android Touchscreen Stereo" />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Input label="SKU / Model Code" value={formSku} onChange={e => setFormSku(e.target.value)} placeholder="e.g. ACC-STER-02" />
@@ -1425,7 +1577,7 @@ export default function InventoryPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-gray-700 mb-1">Category *</label>
-                    <select
+                    <Dropdown
                       className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                       value={isCustomCategory ? '__custom__' : formCategory}
                       onChange={(e) => {
@@ -1442,7 +1594,7 @@ export default function InventoryPage() {
                         <option key={c} value={c}>{c}</option>
                       ))}
                       <option value="__custom__">➕ Add Custom Category...</option>
-                    </select>
+                    </Dropdown>
                     {isCustomCategory && (
                       <input
                         type="text"
@@ -1616,81 +1768,24 @@ export default function InventoryPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Product Status</label>
-                  <select
+                  <Dropdown
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     value={formStatus}
                     onChange={(e: any) => setFormStatus(e.target.value)}
                   >
                     <option value="active">Active (Available)</option>
                     <option value="inactive">Inactive (Suspended)</option>
-                  </select>
+                  </Dropdown>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Description Features</label>
                   <textarea
-                    className="w-full px-3 py-2 bg-[#f6f3f2] border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all placeholder:text-[#8f6f6c]/60"
+                    className="w-full px-3 py-2 bg-[#F1F5F9] border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all placeholder:text-[#94A3B8]/60"
                     rows={2}
                     value={formDescription}
                     onChange={e => setFormDescription(e.target.value)}
                     placeholder="Enter additional details, features..."
                   />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Product Images (Multi-Image Support)</label>
-                  <div className="flex flex-wrap items-center gap-3">
-                    {formImages.map((imgUrl, idx) => (
-                      <div key={idx} className="relative w-16 h-16 rounded-xl border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center shrink-0 group">
-                        <img src={imgUrl} alt={`Product ${idx + 1}`} className="w-full h-full object-contain" />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const filtered = formImages.filter((_, i) => i !== idx);
-                            setFormImages(filtered);
-                            if (formImage === imgUrl) setFormImage(filtered[0] || '');
-                          }}
-                          className="absolute inset-0 bg-black/60 text-white flex items-center justify-center text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-
-                    <button
-                      type="button"
-                      disabled={uploadingImage}
-                      onClick={() => imageInputRef.current?.click()}
-                      className="w-16 h-16 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/50 hover:bg-blue-100/50 flex flex-col items-center justify-center text-blue-600 font-bold transition-all shrink-0 cursor-pointer"
-                    >
-                      <Upload size={16} />
-                      <span className="text-[9px] font-extrabold mt-1">{uploadingImage ? 'Uploading...' : 'Upload File'}</span>
-                    </button>
-                    <input
-                      type="file"
-                      ref={imageInputRef}
-                      className="hidden"
-                      accept="image/*"
-                      multiple
-                      onChange={handleImageUpload}
-                    />
-                  </div>
-                  
-                  {/* Direct Image URL input option */}
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      type="url"
-                      placeholder="Or paste image URL (https://...)"
-                      value={formImage}
-                      onChange={(e) => {
-                        const url = e.target.value;
-                        setFormImage(url);
-                        if (url && !formImages.includes(url)) {
-                          setFormImages(prev => [url, ...prev]);
-                        }
-                      }}
-                      className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-400 mt-1">Upload files or paste direct web URLs. JPG, PNG, WEBP supported.</p>
                 </div>
               </div>
             )}

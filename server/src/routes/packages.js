@@ -1,4 +1,5 @@
 const router = require('express').Router();
+require('../middleware/numericIds')(router, ['id']);
 const auth = require('../middleware/auth');
 const role = require('../middleware/role');
 const optionalAuth = require('../middleware/optionalAuth');
@@ -16,7 +17,7 @@ router.get('/requests/my',          auth, role(['customer']), ctrl.getMyRequests
 router.get('/requests',             auth, role(['admin']), ctrl.listRequests);
 router.put('/requests/:id/approve', auth, role(['admin']), ctrl.approveRequest);
 router.put('/requests/:id/reject',  auth, role(['admin']), ctrl.rejectRequest);
-router.get('/requests/:id/invoice', optionalAuth, ctrl.downloadInvoice);
+router.get('/requests/:id/invoice', auth, ctrl.downloadInvoice); // login required; customers only their own
 
 // ─── Package Services (for filtered booking flow) ────────────
 router.get('/:id/services',  auth, ctrl.getPackageServices);

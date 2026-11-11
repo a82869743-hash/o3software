@@ -10,7 +10,10 @@ import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import Modal from '../../components/ui/Modal';
 import { useUIStore } from '../../store/uiStore';
+import api from '../../api/axiosInstance';
+import Dropdown from '../../components/ui/Dropdown';
 
+import { askText } from '../../utils/ask';
 export default function PackageTrackingPage() {
   const navigate = useNavigate();
   const toast = useUIStore((s) => s.toast);
@@ -56,6 +59,17 @@ export default function PackageTrackingPage() {
   };
 
   // Compute stat totals from all records (unfiltered)
+  const handleCancel = async (pkg: any) => {
+    const reason = await askText(`Cancel "${pkg.package_name}" of ${pkg.customer_name}? Remaining credits will stop working.\n\nReason:`, '', { title: 'Cancel package', okLabel: 'Cancel package' });
+    if (!reason || !reason.trim()) return;
+    try {
+      const r = await api.patch(`/user-packages/${pkg.id}/cancel`, { reason });
+      const open = r.data?.open_bookings || [];
+      toast('success', open.length ? `Package cancelled. Check open booking(s) #${open.join(', #')} that use it.` : 'Package cancelled');
+      refetch();
+    } catch (e: any) { toast('error', e?.response?.data?.error || 'Could not cancel'); }
+  };
+
   const unfilteredPackages = allPackages || [];
   
   const totalSubscribed = unfilteredPackages.length;
@@ -66,7 +80,7 @@ export default function PackageTrackingPage() {
   ).length;
 
   const totalRevenue = unfilteredPackages
-    .filter((p: any) => p.payment_status === 'paid' || p.payment_status === 'completed')
+    .filter((p: any) => (p.payment_status === 'paid' || p.payment_status === 'completed') && p.package_status !== 'cancelled')
     .reduce((sum: number, p: any) => sum + (parseFloat(p.price_paid) || 0), 0);
 
   return (
@@ -130,7 +144,7 @@ export default function PackageTrackingPage() {
           />
         </div>
         <div className="w-full md:w-48">
-          <select
+          <Dropdown
             className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -139,7 +153,8 @@ export default function PackageTrackingPage() {
             <option value="active">Active</option>
             <option value="expired">Expired</option>
             <option value="renewed">Renewed</option>
-          </select>
+            <option value="cancelled">Cancelled</option>
+          </Dropdown>
         </div>
       </div>
 
@@ -180,6 +195,9 @@ export default function PackageTrackingPage() {
                   if (pkg.package_status === 'expired') {
                     daysLeftColor = 'text-blue-700 bg-blue-50 border-blue-200';
                     daysLeftText = 'Expired';
+                  } else if (pkg.package_status === 'cancelled') {
+                    daysLeftColor = 'text-red-700 bg-red-50 border-red-200';
+                    daysLeftText = 'Cancelled';
                   } else if (pkg.package_status === 'renewed') {
                     daysLeftColor = 'text-gray-600 bg-gray-50 border-gray-200';
                     daysLeftText = 'Renewed';
@@ -230,10 +248,17 @@ export default function PackageTrackingPage() {
                           <span className={`inline-block w-fit mt-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                             pkg.package_status === 'active' ? 'bg-emerald-100 text-emerald-800' :
                             pkg.package_status === 'expired' ? 'bg-blue-100 text-blue-800' :
+                            pkg.package_status === 'cancelled' ? 'bg-red-100 text-red-800' :
                             'bg-gray-100 text-gray-800'
                           }`}>
                             {pkg.package_status.toUpperCase()}
                           </span>
+                          {!Number(pkg.plan_active ?? 1) && (
+                            <span className="text-[10px] font-bold text-amber-700 mt-1">Plan discontinued — this customer's package still runs till its end date</span>
+                          )}
+                          {pkg.package_status === 'cancelled' && pkg.cancel_reason && (
+                            <span className="text-[10px] text-red-700 mt-1">Reason: {pkg.cancel_reason}</span>
+                          )}
                         </div>
                       </td>
 
@@ -293,6 +318,17 @@ export default function PackageTrackingPage() {
                           >
                             <Eye size={15} />
                           </Button>
+                          {pkg.package_status === 'active' && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="text-xs text-red-700"
+                              title="Cancel this customer's package"
+                              onClick={() => handleCancel(pkg)}
+                            >
+                              Cancel
+                            </Button>
+                          )}
                           {(pkg.package_status === 'expired' || (pkg.package_status === 'active' && pkg.days_remaining !== null && pkg.days_remaining <= 30)) && (
                             <Button
                               variant="primary"
@@ -348,7 +384,7 @@ export default function PackageTrackingPage() {
 
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-700">Payment Mode *</label>
-              <select
+              <Dropdown
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                 value={renewMode}
                 onChange={(e) => setRenewMode(e.target.value)}
@@ -356,8 +392,7 @@ export default function PackageTrackingPage() {
                 <option value="cash">Cash</option>
                 <option value="upi">UPI Manual</option>
                 <option value="card">Credit/Debit Card</option>
-                <option value="razorpay">Razorpay Online</option>
-              </select>
+              </Dropdown>
             </div>
 
             <div className="flex justify-end gap-2 pt-4">

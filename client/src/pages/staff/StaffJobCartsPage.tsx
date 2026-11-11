@@ -65,7 +65,7 @@ export default function StaffJobCartsPage() {
 
               <div className="ml-2">
                 <h3 className="font-bold text-[#0F172A] text-lg mb-1 group-hover:text-[#2563EB] transition-colors">{job.registration_no}</h3>
-                <p className="text-sm text-[#5f5e5e] mb-4">{job.brand} {job.model}</p>
+                <p className="text-sm text-[#64748B] mb-4">{job.brand} {job.model}</p>
 
                 <div className="bg-[#F8FAFC] p-3 rounded-lg text-sm text-gray-600 mb-4 border border-gray-100">
                   <span className="font-medium text-gray-800 block mb-1 text-xs uppercase tracking-wider">Services:</span>

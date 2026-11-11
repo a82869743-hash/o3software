@@ -30,7 +30,7 @@ html, body {
 }
 
 body {
-  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
   background-color: #F8FAFC;
   color: #0F172A;
   -webkit-font-smoothing: antialiased;
@@ -122,3 +122,83 @@ body {
   outline-offset: 2px;
   border-radius: 6px;
 }
+
+/* ── Customer app (mobile-first) ── */
+@keyframes o3SlideUp { from { transform: translateY(100%); opacity: .6 } to { transform: translateY(0); opacity: 1 } }
+.animate-slide-up { animation: o3SlideUp .28s cubic-bezier(.2,.9,.3,1) both; }
+@keyframes o3FadeIn { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+/* page fade only — no transform, or fixed pop-ups inside the page get trapped under the bottom bar */
+@keyframes o3PageFade { from { opacity: 0 } to { opacity: 1 } }
+.app-fade { animation: o3PageFade .25s ease; }
+@keyframes o3FadeInUp { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+.animate-fade-in-up { animation: o3FadeInUp .35s ease-out both; }
+.animate-fade, .animate-fade-in, .animate-in { animation: o3FadeIn .3s ease both; }
+@keyframes o3ScaleIn { from { opacity: 0; transform: scale(.96) } to { opacity: 1; transform: none } }
+.animate-scale-in { animation: o3ScaleIn .22s ease-out both; }
+@keyframes o3SlideIn { from { opacity: 0; transform: translateX(16px) } to { opacity: 1; transform: none } }
+.animate-slide-in { animation: o3SlideIn .28s ease-out both; }
+@keyframes o3SlideLeft { from { transform: translateX(100%) } to { transform: none } }
+.animate-slide-left { animation: o3SlideLeft .28s cubic-bezier(.2,.9,.3,1) both; }
+@keyframes o3Float { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+.animate-float { animation: o3Float 4s ease-in-out infinite; }
+@keyframes o3GradientShift { 0%,100% { background-position: 0% 50% } 50% { background-position: 100% 50% } }
+.animate-gradient-shift { background-size: 200% 200%; animation: o3GradientShift 6s ease infinite; }
+/* standard white card used on customer lists */
+.card-premium { background: #fff; border: 1px solid #E2E8F0; border-radius: 1rem; box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 6px 20px rgba(15,23,42,.05); }
+@media (prefers-reduced-motion: reduce) { .animate-float, .animate-gradient-shift { animation: none; } }
+/* dark brand panel (login side panel, rewards summary, tracking header) */
+.hero-bg { background: linear-gradient(135deg, #0B1F4D 0%, #12306E 55%, #1D4ED8 100%); color: #fff; }
+.pattern-overlay { position: relative; }
+.pattern-overlay::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(rgba(255,255,255,.07) 1px, transparent 1px); background-size: 18px 18px; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+.safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 8px); }
+.tap { -webkit-tap-highlight-color: transparent; transition: transform .12s ease; }
+.tap:active { transform: scale(.97); }
+
+/* ── Admin: usable on phones ── */
+@media (max-width: 1023px) {
+  /* any card that directly holds a table scrolls sideways instead of cutting columns off */
+  .admin-main :where(div):has(> table) { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+  .admin-main table { min-width: 640px; }
+  .admin-main table td, .admin-main table th { white-space: nowrap; }
+  /* tab strips scroll instead of wrapping into a mess */
+  .admin-main :where(.border-b, .bg-gray-100, .bg-slate-100, .bg-white\/60):has(> button + button + button) { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .admin-main :where(.border-b, .bg-gray-100, .bg-slate-100, .bg-white\/60):has(> button + button + button) > button { flex-shrink: 0; }
+  /* grid/flex children may shrink to the screen instead of stretching to their content */
+  .admin-main .grid > * { min-width: 0; }
+  .admin-main .flex > :where(div) { min-width: 0; }
+  /* rows of action buttons wrap onto a second line */
+  .admin-main .flex:has(> button + button):not(:where(.border-b, .bg-gray-100, .bg-slate-100, .bg-white\/60, .overflow-x-auto)) { flex-wrap: wrap; }
+  .admin-main input[type="date"], .admin-main input[type="month"] { min-width: 0; }
+  .admin-main p, .admin-main h3, .admin-main td, .admin-main span { overflow-wrap: anywhere; }
+  /* big headline numbers shrink a little */
+  .admin-main .text-3xl { font-size: 1.5rem; line-height: 2rem; }
+}
+@media (max-width: 640px) {
+  .admin-main input, .admin-main select, .admin-main textarea { font-size: 16px; } /* stops iOS zoom-on-focus */
+}
+
+/* Customer app: tiles rise in one after another */
+@keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+.rise { animation: rise .42s cubic-bezier(.2,.8,.2,1) both; }
+@media (prefers-reduced-motion: reduce) { .rise { animation: none; } }
+
+/* Browser autofill keeps our white field look instead of tinting boxes blue/yellow */
+input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus,
+textarea:-webkit-autofill, select:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  -webkit-text-fill-color: #0f172a !important;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* ── Admin look: every module's tables and cards share the O3 style ── */
+.admin-main table thead tr { background: linear-gradient(90deg, #EEF4FF, #F8FAFF); }
+.admin-main table thead th { color: #1E3A8A; font-weight: 800; letter-spacing: .04em; }
+.admin-main table tbody tr { transition: background-color .15s ease; }
+.admin-main table tbody tr:hover { background-color: #F5F9FF; }
+.admin-main .rounded-xl.border.border-gray-200,
+.admin-main .rounded-xl.border.border-gray-100,
+.admin-main .rounded-lg.border.border-gray-100 { border-color: #E6ECF7; box-shadow: 0 4px 18px rgba(15, 23, 42, .05); }

@@ -2,7 +2,25 @@ const router = require('express').Router();
 const auth = require('../middleware/auth');
 const role = require('../middleware/role');
 const ctrl = require('../controllers/servicesController');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
+// Pictures for services / packages (uploaded photos and AI pictures share uploads/illustrations)
+const picDir = path.join(__dirname, '..', '..', 'uploads', 'illustrations');
+fs.mkdirSync(picDir, { recursive: true });
+const picUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, picDir),
+    filename: (req, file, cb) => cb(null, `photo_${Date.now()}_${require('crypto').randomBytes(4).toString('hex')}${(path.extname(file.originalname) || '.jpg').toLowerCase()}`),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => (/^image\/(png|jpe?g|webp)$/.test(file.mimetype) ? cb(null, true) : cb(new Error('Only JPG, PNG or WebP pictures'))),
+});
+
+router.post('/generate-image', auth, role(['admin']), ctrl.generateImage);
+router.post('/upload-image',   auth, role(['admin']), picUpload.single('image'), ctrl.uploadImage);
+router.put('/reorder/:kind', auth, role(['admin']), ctrl.reorder); // kind: services | categories
 router.get('/',             ctrl.list);  // public
 router.get('/:id',          ctrl.getOne);
 router.post('/',            auth, role(['admin']), ctrl.create);

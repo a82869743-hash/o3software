@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { X, Camera, Trash2, Plus, PackageOpen } from 'lucide-react';
 import api from '../../api/axiosInstance';
 import { useUIStore } from '../../store/uiStore';
@@ -20,6 +20,8 @@ interface Props {
 export default function BelongingsSection({ jobCartId, initialBelongings, canEdit, onUpdate }: Props) {
   const toast = useUIStore((s) => s.toast);
   const [belongings, setBelongings] = useState<Belonging[]>(initialBelongings);
+  // the list loads after this box first shows — keep it in step, or saved items look lost after a refresh
+  useEffect(() => { setBelongings(initialBelongings); }, [initialBelongings]);
   const [description, setDescription] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);

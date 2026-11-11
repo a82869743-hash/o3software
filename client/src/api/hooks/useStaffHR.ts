@@ -43,22 +43,11 @@ export function useStaffLeaves(params?: Record<string, string>) {
   });
 }
 
-export function useRequestLeave() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: any) => {
-      const { data } = await api.post('/staff-hr/leaves', payload);
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['staff-leaves'] }),
-  });
-}
-
 export function useUpdateLeaveStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, status }: { id: number; status: string }) => {
-      const { data } = await api.put(`/staff-hr/leaves/${id}/status`, { status });
+    mutationFn: async ({ id, status, pay_type }: { id: number; status: string; pay_type?: 'paid' | 'unpaid' }) => {
+      const { data } = await api.put(`/staff-hr/leaves/${id}/status`, { status, pay_type });
       return data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['staff-leaves'] }),
@@ -72,17 +61,6 @@ export function useStaffPerformance(params?: Record<string, string>) {
       const { data } = await api.get('/staff-hr/performance', { params });
       return data.data;
     },
-  });
-}
-
-export function useAddPerformanceReview() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: any) => {
-      const { data } = await api.post('/staff-hr/performance', payload);
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['staff-performance'] }),
   });
 }
 
@@ -117,37 +95,5 @@ export function useMarkStaffAttendance() {
       qc.invalidateQueries({ queryKey: ['staff-attendance-summary'] });
       qc.invalidateQueries({ queryKey: ['staff-attendance'] });
     },
-  });
-}
-
-export function useStaffPayroll(params?: Record<string, string>) {
-  return useQuery({
-    queryKey: ['staff-payroll', params],
-    queryFn: async () => {
-      const { data } = await api.get('/staff-hr/payroll', { params });
-      return data.data || [];
-    },
-  });
-}
-
-export function useProcessPayroll() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: { month: number; year: number }) => {
-      const { data } = await api.post('/staff-hr/payroll/process', payload);
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['staff-payroll'] }),
-  });
-}
-
-export function useUpdatePayrollItem() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ id, ...payload }: { id: number; [key: string]: any }) => {
-      const { data } = await api.put(`/staff-hr/payroll/${id}`, payload);
-      return data;
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['staff-payroll'] }),
   });
 }

@@ -6,6 +6,8 @@ import { useAuthStore } from '../../store/authStore';
 import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import Modal from '../../components/ui/Modal';
 import Button from '../../components/ui/Button';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 export default function FranchiseStockApprovalsPage() {
   const toast = useUIStore((s) => s.toast);
@@ -61,6 +63,7 @@ export default function FranchiseStockApprovalsPage() {
     }
   };
 
+  useLiveReload(() => { loadRequests(); }); // reload when anything changes elsewhere
   useEffect(() => {
     loadRequests();
   }, []);
@@ -190,7 +193,7 @@ export default function FranchiseStockApprovalsPage() {
 
         <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
           <Building2 size={16} className="text-gray-400 shrink-0" />
-          <select
+          <Dropdown
             value={selectedFranchiseId}
             onChange={(e) => setSelectedFranchiseId(e.target.value)}
             className="px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-[#2563EB]"
@@ -201,7 +204,7 @@ export default function FranchiseStockApprovalsPage() {
                 {f.name} ({f.code})
               </option>
             ))}
-          </select>
+          </Dropdown>
 
           <button
             type="button"

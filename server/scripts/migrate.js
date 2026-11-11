@@ -1,5 +1,5 @@
 /**
- * O3 Car Spa — Database Migration Runner
+ * O3 Car Spaa — Database Migration Runner
  * Runs all SQL migration files in sequence.
  * Usage: node scripts/migrate.js
  */
@@ -49,9 +49,46 @@ async function migrate() {
     queue.push({ name: `${f} (re-run)`, path: path.join(MIGRATIONS_DIR, f) });
   }
 
-  console.log(`\nRunning ${queue.length} migrations in sequence...\n`);
+  // Track applied files so each migration runs only once. Without this, every deploy re-ran the
+  // seed migrations and brought back deleted packages, payment methods, roles and permissions.
+  await initConn.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    name VARCHAR(255) NOT NULL PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  const allNames = [...mainFiles, ...phase2Files.map(f => `phase2/${f}`)];
+  const [appliedRows] = await initConn.query('SELECT name FROM schema_migrations');
+  const applied = new Set(appliedRows.map(r => r.name));
+  const record = async (names) => {
+    for (const n of names) await initConn.query('INSERT IGNORE INTO schema_migrations (name) VALUES (?)', [n]);
+  };
 
-  for (const item of queue) {
+  let runQueue = queue;
+  if (applied.size === 0) {
+    const [[{ n: hasUsers }]] = await initConn.query(
+      "SELECT COUNT(*) n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'users'");
+    if (hasUsers) {
+      // Existing database (e.g. the go-live import): its schema is already current. Record every
+      // file as applied and run nothing, so no starter data is inserted again.
+      await record(allNames);
+      await initConn.end();
+      console.log(`\n✓ Existing database: recorded ${allNames.length} migrations as applied. Nothing was re-run.`);
+      return;
+    }
+    // Brand-new empty database: run everything (three passes, as before), then record.
+  } else {
+    const pending = new Set(allNames.filter(n => !applied.has(n)));
+    if (!pending.size) {
+      await initConn.end();
+      console.log('\n✓ Database is up to date. No new migrations.');
+      return;
+    }
+    runQueue = queue.filter(q => pending.has(q.name));
+    console.log(`New migrations: ${[...pending].join(', ')}`);
+  }
+
+  console.log(`\nRunning ${runQueue.length} migrations in sequence...\n`);
+
+  for (const item of runQueue) {
     const file = item.name;
     const filePath = item.path;
     let sql = fs.readFileSync(filePath, 'utf8').trim();
@@ -124,6 +161,7 @@ async function migrate() {
     }
   }
 
+  await record(applied.size === 0 ? allNames : runQueue.map(q => q.name));
   await initConn.end();
   console.log('\n✓ All migrations completed successfully.');
 }

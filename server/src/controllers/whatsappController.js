@@ -7,8 +7,10 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
 async function sendWhatsAppMessage(phone, templateName, params = [], messageBody = '') {
+  // customer's own WhatsApp number when it differs from their login mobile
+  phone = await require('../services/whatsapp/WhatsAppManager').resolveTo(phone);
   // Normalize phone to E.164
-  let normalized = phone.replace(/\D/g, '');
+  let normalized = String(phone || '').replace(/\D/g, '');
   if (normalized.length === 10) normalized = '91' + normalized;
   if (!normalized.startsWith('+')) normalized = '+' + normalized;
 
@@ -286,6 +288,10 @@ exports.stats = async (req, res, next) => {
 exports.baileysStatus = async (req, res) => {
   try {
     const baileys = require('../services/whatsappBaileys');
+    // Admin is looking at the WhatsApp page and nothing is linked: make a fresh QR for them
+    if (process.env.ENABLE_BAILEYS_DEMO === 'true' && baileys.needsFreshQr()) {
+      baileys.connect().catch(err => console.error('[Baileys] connect error:', err.message));
+    }
     res.json({ success: true, data: baileys.getStatus() });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -294,6 +300,9 @@ exports.baileysStatus = async (req, res) => {
 
 /** POST /api/whatsapp/baileys/connect — triggers (re)connect + QR generation */
 exports.baileysConnect = async (req, res) => {
+  if (process.env.ENABLE_BAILEYS_DEMO !== 'true') {
+    return res.status(403).json({ success: false, error: 'WhatsApp demo engine is disabled (ENABLE_BAILEYS_DEMO=false). Use the official Meta Cloud API.' });
+  }
   try {
     const baileys = require('../services/whatsappBaileys');
     // Non-blocking: client listens for whatsapp:qr via Socket.io
@@ -317,6 +326,9 @@ exports.baileysDisconnect = async (req, res) => {
 
 /** POST /api/whatsapp/baileys/send-test — send a test message to verify connection */
 exports.baileysSendTest = async (req, res) => {
+  if (process.env.ENABLE_BAILEYS_DEMO !== 'true') {
+    return res.status(403).json({ success: false, error: 'WhatsApp demo engine is disabled (ENABLE_BAILEYS_DEMO=false). Use the official Meta Cloud API.' });
+  }
   try {
     const { mobile, message } = req.body;
     if (!mobile) return res.status(400).json({ success: false, error: 'mobile is required' });
@@ -332,6 +344,9 @@ exports.baileysSendTest = async (req, res) => {
 
 /** POST /api/whatsapp/baileys/pairing-code — requests 8-digit pairing code */
 exports.baileysRequestPairingCode = async (req, res) => {
+  if (process.env.ENABLE_BAILEYS_DEMO !== 'true') {
+    return res.status(403).json({ success: false, error: 'WhatsApp demo engine is disabled (ENABLE_BAILEYS_DEMO=false). Use the official Meta Cloud API.' });
+  }
   try {
     const phone = req.body.phone || process.env.ADMIN_WHATSAPP_NUMBER || '9316668760';
     const baileys = require('../services/whatsappBaileys');
@@ -393,6 +408,10 @@ exports.updateProviderConfig = async (req, res) => {
       demoWhitelist,
       isEnabled
     } = req.body;
+
+    if (!['meta_cloud', 'aisensy', 'baileys_demo', 'mock'].includes(provider)) {
+      return res.status(400).json({ success: false, error: 'Choose a WhatsApp provider' });
+    }
 
     // Only super_admin or franchise admin can change provider
     if (provider === 'baileys_demo' && process.env.ENABLE_BAILEYS_DEMO !== 'true') {

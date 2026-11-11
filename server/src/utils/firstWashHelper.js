@@ -32,7 +32,7 @@ async function checkFirstWashEligibility(dbConnOrPool, customerId) {
 
   // 3. Check for any booking already holding a discount_percent > 0
   const [discRows] = await executor.query(
-    "SELECT COUNT(*) AS total FROM bookings WHERE customer_id = ? AND discount_percent > 0",
+    "SELECT COUNT(*) AS total FROM bookings WHERE customer_id = ? AND discount_percent > 0 AND status NOT IN ('cancelled', 'rejected', 'expired')",
     [customerId]
   );
   if (discRows[0].total > 0) {

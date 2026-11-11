@@ -1,4 +1,16 @@
 const pool = require('../config/db');
+
+/** Who allowed a job card's discount: the approver picked on the job card, else the typed reference. */
+async function discountApprover(cart) {
+  if (!cart || !(Number(cart.discount_amount) > 0 || Number(cart.discount_value) > 0)) return '';
+  if (cart.discount_approved_by) {
+    try {
+      const [[u]] = await pool.query('SELECT name FROM users WHERE id = ?', [cart.discount_approved_by]);
+      if (u?.name) return u.name;
+    } catch (_) { /* fall back to the reference */ }
+  }
+  return cart.discount_reference || '';
+}
 const path = require('path');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
@@ -8,6 +20,59 @@ const puppeteer = require('puppeteer');
 // cold-starting Chrome for every single invoice (the #1 cause of slow PDFs).
 let _browser = null;
 let _browserLaunchPromise = null;
+
+
+// ─── Live studio profile (Settings → studio details + active payment QR) ───
+const { getStudioProfile, getQrDataUri } = require('./studioProfile');
+let STUDIO = {};
+async function loadStudio(franchiseId) {
+  try { STUDIO = await getStudioProfile(franchiseId || 1, 'invoice'); } catch { STUDIO = {}; }
+  return STUDIO;
+}
+function studioSettings() {
+  return { ...(STUDIO.settings || {}), studio_name: STUDIO.studio_name, studio_address: STUDIO.address, studio_mobile: STUDIO.mobile,
+    studio_email: STUDIO.email, studio_gst: STUDIO.gstin, upi_id: STUDIO.upi_id, upi_name: STUDIO.upi_name };
+}
+/** "Scan & pay" block for a document (dynamic UPI QR for the amount due, or the uploaded QR). */
+async function paymentQrHtml(amount, note) {
+  try {
+    const uri = await getQrDataUri(STUDIO, amount > 0 ? amount : null, note);
+    if (!uri) return '';
+    return `<div style="display:flex;align-items:center;gap:12px;margin-top:10px;padding:8px 10px;border:1px solid #DBEAFE;background:#F8FBFF;border-radius:8px;page-break-inside:avoid;">
+      <img src="${uri}" style="width:84px;height:84px;border-radius:4px;background:#fff;" alt="UPI QR"/>
+      <div style="font-size:10px;color:#334155;line-height:1.5;"><b style="font-size:11px;color:#0F172A;">Scan &amp; pay with any UPI app</b><br>${STUDIO.upi_id ? `UPI ID: ${STUDIO.upi_id}<br>` : ''}${amount > 0 ? `Amount due: <b>₹${Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</b>` : 'GPay · PhonePe · Paytm · BHIM'}</div>
+    </div>`;
+  } catch { return ''; }
+}
+
+/** Image for a PDF: local /uploads files are embedded (the PDF browser cannot reach them), web links are kept. */
+function pdfImageSrc(url) {
+  if (!url) return null;
+  if (/^(https?:|data:)/.test(url)) return url;
+  try {
+    const path = require('path'); const fs = require('fs');
+    const file = path.join(__dirname, '..', '..', String(url).replace(/^\//, ''));
+    if (!fs.existsSync(file)) return null;
+    const ext = (path.extname(file).slice(1).toLowerCase() || 'jpeg').replace('jpg', 'jpeg');
+    return `data:image/${ext};base64,${fs.readFileSync(file).toString('base64')}`;
+  } catch { return null; }
+}
+
+/** One slim row for the job card: small Before / After / Belongings thumbnails, so it stays one page. */
+function jobPhotosHtml(photos, belongings) {
+  const esc = (t) => String(t || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const thumb = (src, cap) => `<div style="width:19mm;text-align:center">${src
+    ? `<img src="${src}" style="width:19mm;height:14mm;object-fit:cover;border-radius:3px;border:1px solid #DBEAFE;display:block"/>`
+    : `<div style="width:19mm;height:14mm;border-radius:3px;border:1px dashed #CBD5E1;background:#F8FAFC;display:flex;align-items:center;justify-content:center;font-size:7px;color:#94A3B8">no photo</div>`}${cap ? `<div style="font-size:7px;color:#334155;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(cap)}</div>` : ''}</div>`;
+  const group = (label, cells) => cells.length ? `<div style="min-width:0"><div style="font-size:7.5px;font-weight:800;letter-spacing:.6px;color:#0F3D91;margin-bottom:2px">${label}</div><div style="display:flex;gap:1.5mm">${cells.join('')}</div></div>` : '';
+  const before = photos.filter(p => p.type === 'before').slice(0, 2).map(p => thumb(pdfImageSrc(p.url)));
+  const after = photos.filter(p => p.type === 'after').slice(0, 2).map(p => thumb(pdfImageSrc(p.url)));
+  const items = belongings.slice(0, 4).map(b => thumb(pdfImageSrc(b.image_url), b.description));
+  const more = belongings.length > 4 ? `<div style="font-size:7px;color:#64748B;align-self:center">+${belongings.length - 4} more: ${esc(belongings.slice(4).map(b => b.description).join(', '))}</div>` : '';
+  const groups = [group('BEFORE', before), group('AFTER', after), group(`BELONGINGS (${belongings.length})`, items) + more].filter(Boolean);
+  if (!groups.length) return '';
+  return `<div style="display:flex;gap:5mm;align-items:flex-start;margin:5mm 10mm 0;padding:2.5mm 4mm;border:1px solid #DBEAFE;background:#F8FBFF;border-radius:6px;page-break-inside:avoid">${groups.join('<div style="width:1px;align-self:stretch;background:#DBEAFE"></div>')}</div>`;
+}
 
 async function getBrowser() {
   if (_browser && _browser.isConnected()) return _browser;
@@ -32,16 +97,57 @@ async function getBrowser() {
   return _browserLaunchPromise;
 }
 
+// Open the PDF engine a few seconds after start, so the first bill a customer downloads does not wait ~4 s for it
+if (process.env.NODE_ENV !== 'test') {
+  const t = setTimeout(() => { getBrowser().catch(e => console.warn('[pdf] engine warm-up failed:', e.message)); }, 8000);
+  if (t.unref) t.unref();
+}
+
+// Same document asked again (double tap, re-download, share) → served from memory instantly
+const _pdfCache = new Map();
 async function htmlToPdfBuffer(html, pdfOptions = {}) {
+  const key = require('crypto').createHash('sha1').update(html).update(JSON.stringify(pdfOptions)).digest('hex');
+  if (_pdfCache.has(key)) return _pdfCache.get(key);
+  const out = await renderHtmlToPdf(html, pdfOptions);
+  _pdfCache.set(key, out);
+  if (_pdfCache.size > 60) _pdfCache.delete(_pdfCache.keys().next().value);
+  return out;
+}
+async function renderHtmlToPdf(html, pdfOptions = {}) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 15000 });
+    // fonts and images are inlined, so there is nothing to wait for on the network
+    await page.setContent(require('./pdfFonts').inlineFonts(html), { waitUntil: 'load', timeout: 15000 });
+    await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
+    // fitOnePage: shrink the whole document just enough to fit one A4 page (job card with many services / photos)
+    const { fitOnePage, ...opts } = pdfOptions;
+    if (fitOnePage) {
+      await page.setViewport({ width: 733, height: 1000 }); // A4 width minus 8 mm margins, in CSS px
+      // photos are shown small — re-encode them at 3× their printed size so the PDF stays light for WhatsApp
+      await page.evaluate(async () => {
+        for (const img of Array.from(document.images)) {
+          const w = img.clientWidth, h = img.clientHeight;
+          if (!w || !h || !img.naturalWidth || img.naturalWidth <= w * 3) continue;
+          const c = document.createElement('canvas');
+          c.width = w * 3; c.height = h * 3;
+          const ctx = c.getContext('2d');
+          const r = Math.max(c.width / img.naturalWidth, c.height / img.naturalHeight); // same crop as object-fit: cover
+          const dw = img.naturalWidth * r, dh = img.naturalHeight * r;
+          ctx.drawImage(img, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+          img.src = c.toDataURL('image/jpeg', 0.8);
+          await img.decode().catch(() => {});
+        }
+      }).catch(() => {});
+      const h = await page.evaluate(() => document.documentElement.scrollHeight);
+      const scale = Math.max(0.5, Math.min(1, 1058 / (h || 1058))); // A4 height minus margins ≈ 1062 px
+      Object.assign(opts, { scale, pageRanges: '1' });
+    }
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
       margin: { top: '8mm', right: '8mm', bottom: '8mm', left: '8mm' },
-      ...pdfOptions,
+      ...opts,
     });
     return pdfBuffer;
   } finally {
@@ -56,7 +162,7 @@ const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'
 const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
 
 function numberToWords(num) {
-  if (num === 0) return 'Zero Rupees';
+  if (num === 0) return 'Zero';
   num = Math.round(num);
   if (num < 0) return 'Minus ' + numberToWords(-num);
 
@@ -90,6 +196,13 @@ function numberToWords(num) {
   return result.trim();
 }
 
+/** Line note for a ₹0 service paid by the customer's package, so the bill says why it is free. */
+function packageNote(s, amount) {
+  const fromPkg = s.user_package_id || s.package_service_name || /from package/i.test(s.custom_notes || '');
+  if (!fromPkg || amount > 0) return '';
+  return '₹0 — included in your package' + (s.package_name ? ` (${s.package_name})` : '');
+}
+
 function amountInWords(amount) {
   const rupees = Math.floor(amount);
   const paise = Math.round((amount - rupees) * 100);
@@ -99,15 +212,26 @@ function amountInWords(amount) {
 }
 
 // ─── Format currency Indian style ──────────────────────────────
+/** dd/mm/yyyy in Indian time (server may run in UTC). */
+function istDate(d) {
+  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata' });
+}
+
 function formatINR(num) {
   const n = parseFloat(num) || 0;
   return n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 // ─── Load logo as base64 ───────────────────────────────────────
+let _logoCache;
 function getLogoBase64() {
+  if (_logoCache !== undefined) return _logoCache;
+  _logoCache = getLogoBase64Uncached();
+  return _logoCache;
+}
+function getLogoBase64Uncached() {
   try {
-    const candidates = ['o3_logo.jpeg', 'logo.jpeg', 'logo.png', 'gk_logo.png'];
+    const candidates = ['o3_logo.jpeg', 'logo.jpeg', 'logo.png'];
     for (const f of candidates) {
       const logoPath = path.join(__dirname, '..', 'assets', f);
       if (fs.existsSync(logoPath)) {
@@ -124,8 +248,8 @@ async function generateInvoicePDF(jobCartId) {
   const conn = await pool.getConnection();
   try {
     const [carts] = await conn.query(`
-      SELECT jc.*, v.registration_no, v.brand, v.model, v.customer_id,
-             u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email
+      SELECT jc.*, v.registration_no, v.brand, v.model, v.customer_id, v.color AS car_color, v.category AS vehicle_category,
+             u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email, u.address AS customer_address
       FROM job_carts jc
       JOIN vehicles v ON jc.vehicle_id = v.id
       JOIN users u ON v.customer_id = u.id
@@ -137,17 +261,19 @@ async function generateInvoicePDF(jobCartId) {
 
     const [services] = await conn.query(`
       SELECT js.*, 
-        COALESCE(SUM(jp.quantity * jp.unit_cost), 0) AS products_cost
+        COALESCE(SUM(jp.quantity * jp.unit_cost), 0) AS products_cost,
+        MAX(pk.name) AS package_name
       FROM job_services js
       LEFT JOIN job_products jp ON js.id = jp.job_service_id
+      LEFT JOIN user_packages upk ON upk.id = js.user_package_id
+      LEFT JOIN packages pk ON pk.id = upk.package_id
       WHERE js.job_cart_id = ?
       GROUP BY js.id
       ORDER BY js.id
     `, [jobCartId]);
 
-    const [settingsRows] = await conn.query('SELECT key_name, value FROM settings');
-    const settings = {};
-    settingsRows.forEach(r => { settings[r.key_name] = r.value; });
+    await loadStudio(1);
+    const settings = studioSettings();
 
     let invoiceNumber = cart.invoice_number;
     if (!invoiceNumber) {
@@ -163,7 +289,8 @@ async function generateInvoicePDF(jobCartId) {
       const amount = servicePrice + laborCharges + productsTotal;
       subtotal += amount;
 
-      const noteText = s.custom_notes ? ` [${s.custom_notes}]` : '';
+      const pn = packageNote(s, amount);
+      const noteText = [pn && /^from package$/i.test(s.custom_notes || '') ? '' : s.custom_notes, pn].filter(Boolean).map(x => ` [${x}]`).join('');
 
       return {
         name: `${(s.service_name || '').toUpperCase()}${noteText.toUpperCase()}`,
@@ -191,17 +318,17 @@ async function generateInvoicePDF(jobCartId) {
 
     const isJobPaid = cart.payment_status === 'paid';
     const advancePaid = parseFloat(cart.advance_paid) || 0;
-    const receivedStudio = isJobPaid ? Math.max(0, finalTotal - advancePaid) : 0;
+    // advance_paid = everything paid so far (booking advance + money taken at the studio)
+    const paidSoFar = isJobPaid ? finalTotal : Math.min(finalTotal, advancePaid);
+    const bookingAdvance = Math.min(paidSoFar, parseFloat(cart.advance_amount) || 0);
+    const receivedStudio = Math.max(0, paidSoFar - bookingAdvance);
     const balanceDue = isJobPaid ? 0 : Math.max(0, finalTotal - advancePaid);
-    const paymentStatusText = isJobPaid ? 'PAID' : 'PENDING';
+    const paymentStatusText = isJobPaid ? 'PAID' : paidSoFar > 0 ? 'PARTIALLY PAID' : 'PENDING';
 
-    const invoiceDate = cart.completed_at
-      ? new Date(cart.completed_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-      : cart.visit_date
-        ? new Date(cart.visit_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-        : new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    // the day the invoice was made (bill raised), never the visit date
+    const invoiceDate = istDate(cart.invoice_date || cart.completed_at || new Date());
 
-    const studioGst = settings.studio_gst || '24AAAFO3303J1Z2';
+    const studioGst = settings.studio_gst || '';
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
@@ -234,8 +361,17 @@ async function generateInvoicePDF(jobCartId) {
       logoHtml,
       partyName: cart.customer_name || 'Customer',
       partyMobile: cart.customer_mobile || '-',
+      billTo: { name: cart.customer_name || 'Customer', mobile: cart.customer_mobile, email: cart.customer_email, address: cart.customer_address },
+      vehicle: {
+        model: `${cart.brand || ''} ${cart.model || ''}`.trim(),
+        reg: cart.registration_no,
+        colour: cart.car_color,
+        km: cart.km_reading,
+        type: ({ hatchback: 'Hatchback', semi_sedan: 'Mini SUV', sedan: 'Sedan', premium_sedan: 'Luxury', suv: 'SUV', premium_suv: 'Luxury + SUV' })[cart.car_category || cart.vehicle_category] || '',
+      },
       rightLabel: 'Vehicle / Registration',
       rightValue: `${cart.brand || ''} ${cart.model || ''} [${cart.registration_no || '-'}]`.toUpperCase(),
+      extraCharges: Number(cart.pickup_charge) > 0 ? [{ label: 'Pickup / drop', amount: Number(cart.pickup_charge) }] : [],
       serviceRowsHtml,
       emptyRows,
       totalQty: serviceRows.length,
@@ -245,18 +381,20 @@ async function generateInvoicePDF(jobCartId) {
       discountValue: cart.discount_value,
       discountReason: cart.discount_reason,
       discountReference: cart.discount_reference,
+      discountBy: await discountApprover(cart),
       isWithGst,
       gstPct,
       gstAmt,
       studioGst,
       finalTotal,
+      advanceAmt: bookingAdvance,
       receivedAmt: receivedStudio,
       balanceDue,
       statusText: paymentStatusText,
       notes: cart.invoice_notes || '',
     });
 
-    const pdfBuffer = await htmlToPdfBuffer(html);
+    const pdfBuffer = await htmlToPdfBuffer(withQr(html, await paymentQrHtml(balanceDue, invoiceNumber)));
     return { pdfBuffer, invoiceNumber };
   } finally {
     conn.release();
@@ -294,9 +432,12 @@ async function generateJobCardPDF(jobCartId) {
 
     const [services] = await conn.query(`
       SELECT js.*, 
-        COALESCE(SUM(jp.quantity * jp.unit_cost), 0) AS products_cost
+        COALESCE(SUM(jp.quantity * jp.unit_cost), 0) AS products_cost,
+        MAX(pk.name) AS package_name
       FROM job_services js
       LEFT JOIN job_products jp ON js.id = jp.job_service_id
+      LEFT JOIN user_packages upk ON upk.id = js.user_package_id
+      LEFT JOIN packages pk ON pk.id = upk.package_id
       WHERE js.job_cart_id = ?
       GROUP BY js.id
       ORDER BY js.id
@@ -305,231 +446,68 @@ async function generateJobCardPDF(jobCartId) {
     const [belongings] = await conn.query(`
       SELECT description, image_url FROM job_cart_belongings WHERE job_cart_id = ? ORDER BY id ASC
     `, [jobCartId]);
+    const [jobPhotos] = await conn.query(
+      "SELECT type, url, uploaded_at FROM job_photos WHERE job_cart_id = ? AND type IN ('before', 'after') ORDER BY uploaded_at ASC", [jobCartId]);
 
-    let totalQty = 0;
-    let grandTotal = 0;
-    const serviceRows = services.map((s) => {
-      const servicePrice = parseFloat(s.service_price) || 0;
-      const laborCharges = parseFloat(s.labor_charges) || 0;
-      const productsTotal = parseFloat(s.products_cost) || 0;
-      const amount = servicePrice + laborCharges + productsTotal;
-      totalQty += 1;
-      grandTotal += amount;
-
-      const noteText = s.custom_notes ? ` [${s.custom_notes}]` : '';
-
-      return {
-        name: `${(s.service_name || '').toUpperCase()}${noteText.toUpperCase()}`,
-        qty: '1 PCS',
-        rate: `₹${formatINR(amount)}`,
-        amount: `₹${formatINR(amount)}`,
-      };
+    await loadStudio(cart.franchise_id || 1);
+    const rows = services.map((sv) => {
+      const amount = (parseFloat(sv.service_price) || 0) + (parseFloat(sv.labor_charges) || 0) + (parseFloat(sv.products_cost) || 0);
+      const pn = packageNote(sv, amount);
+      return { name: `${sv.service_name || ''}${sv.custom_notes ? ` — ${sv.custom_notes}` : ''}`, note: pn, amount };
+    });
+    const grandTotal = rows.reduce((t, r) => t + r.amount, 0);
+    let discountAmt = cart.discount_type === 'percentage'
+      ? grandTotal * (parseFloat(cart.discount_value || 0) / 100) : parseFloat(cart.discount_value || 0);
+    discountAmt = Math.min(grandTotal, Math.max(0, discountAmt || 0));
+    const pickup = Number(cart.pickup_charge) || 0;
+    const finalTotal = Math.max(0, grandTotal - discountAmt + pickup);
+    const advancePaid = parseFloat(cart.advance_paid) || 0;
+    const balanceDue = Math.max(0, finalTotal - advancePaid);
+    const td = 'padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;';
+    const serviceRowsHtml = rows.map((r, i) => `
+      <tr>
+        <td style="${td}">${String(r.name).replace(/</g, "&lt;")}${r.note ? `<div style="font-size:10px;color:#64748B">${r.note}</div>` : ''}</td>
+        <td style="${td}text-align:center;">1</td>
+        <td style="${td}text-align:right;">₹${formatINR(r.amount)}</td>
+        <td style="${td}text-align:right;">₹${formatINR(r.amount)}</td>
+      </tr>`).join('');
+    const emptyRows = Array(Math.max(0, 4 - rows.length)).fill(`<tr>${'<td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">&nbsp;</td>'.repeat(4)}</tr>`).join('');
+    const team = [cart.handler_name && `Manager: ${cart.handler_name}`, cart.technician_name && `Technician: ${cart.technician_name}`,
+      teamMemberNames.length && `Team: ${teamMemberNames.join(', ')}`, cart.pre_inspector_name && `Pre-inspected by: ${cart.pre_inspector_name}`].filter(Boolean);
+    const notes = [
+      team.join(' · '),
+      belongings.length && !jobPhotos.length && !belongings.some(b => b.image_url) ? `Belongings in car: ${belongings.map(b => b.description).join(', ')}` : '',
+      cart.personal_items_notes ? `Notes: ${cart.personal_items_notes}` : '',
+      cart.notes ? `Job notes: ${cart.notes}` : '',
+      'Customer authorises the studio to carry out the services above. Please check your car and belongings at delivery.',
+    ].filter(Boolean).join('\n');
+    const created = cart.created_at || cart.visit_date || new Date();
+    const invoiceNumber = `JC-${String(jobCartId).padStart(5, '0')}`;
+    const html = buildInvoiceHTML({
+      title: 'JOB CARD',
+      invoiceNumber,
+      invoiceDate: new Date(created).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+      numberLabel: 'Job card no.', dateLabel: 'Created', dueLabel: 'Visit', dueDateOverride: cart.visit_date ? new Date(cart.visit_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '',
+      partyName: cart.customer_name || 'Customer',
+      partyMobile: cart.customer_mobile || '-',
+      billTo: { name: cart.customer_name || 'Customer', mobile: cart.customer_mobile, email: cart.customer_email },
+      billToLabel: 'Customer',
+      vehicle: {
+        model: `${cart.brand || ''} ${cart.model || ''}`.trim(), reg: cart.registration_no, colour: cart.car_color, km: cart.km_reading,
+        type: ({ hatchback: 'Hatchback', semi_sedan: 'Mini SUV', sedan: 'Sedan', premium_sedan: 'Luxury', suv: 'SUV', premium_suv: 'Luxury + SUV' })[cart.car_category] || '',
+      },
+      rightLabel: 'Vehicle / Registration',
+      rightValue: `${cart.brand || ''} ${cart.model || ''} [${cart.registration_no || '-'}]`.toUpperCase(),
+      extraCharges: pickup > 0 ? [{ label: 'Pickup / drop', amount: pickup }] : [],
+      serviceRowsHtml, emptyRows, totalQty: rows.length,
+      grandTotal, discountAmt, discountType: 'fixed', discountValue: discountAmt, discountReason: cart.discount_reason || '', discountBy: await discountApprover(cart),
+      finalTotal, receivedAmt: advancePaid || null, balanceDue,
+      statusText: String(cart.status || 'draft').replace('complete', 'completed').toUpperCase(),
+      notes,
+      photosHtml: jobPhotosHtml(jobPhotos, belongings),
     });
 
-    let discountAmt = 0;
-    if (cart.discount_type === 'percentage') {
-      discountAmt = grandTotal * (parseFloat(cart.discount_value || 0) / 100);
-    } else if (cart.discount_type === 'fixed') {
-      discountAmt = parseFloat(cart.discount_value || 0);
-    }
-    discountAmt = Math.min(grandTotal, Math.max(0, discountAmt));
-
-    const advancePaid = parseFloat(cart.advance_paid) || 0;
-    const balanceDue = (cart.balance_due !== undefined && cart.balance_due !== null)
-      ? parseFloat(cart.balance_due)
-      : Math.max(0, grandTotal - discountAmt - advancePaid);
-
-    const createdAtStr = cart.created_at
-      ? new Date(cart.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : (cart.visit_date ? new Date(cart.visit_date).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN'));
-    const isEdited = cart.updated_at && cart.created_at && (new Date(cart.updated_at).getTime() - new Date(cart.created_at).getTime() > 1000);
-    const editedAtStr = isEdited
-      ? new Date(cart.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : null;
-
-    const invoiceNumber = `JC-${cart.id}`;
-
-    const logoBase64 = getLogoBase64();
-    const logoHtml = logoBase64
-      ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:75px;height:75px;object-fit:contain;" />`
-      : `<div style="width:75px;height:75px;background:#2563EB;border-radius:10px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:18px;">O3</div>`;
-
-    const serviceRowsHtml = serviceRows.length > 0 ? serviceRows.map((s) => `
-      <tr>
-        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:11px;font-weight:700;text-transform:uppercase;color:#0f172a;">${s.name}</td>
-        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:11px;text-align:center;color:#475569;">${s.qty}</td>
-        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:11px;text-align:right;color:#475569;">${s.rate}</td>
-        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:11px;text-align:right;font-weight:800;color:#0f172a;">${s.amount}</td>
-      </tr>
-    `).join('') : `
-      <tr>
-        <td colspan="4" style="padding:12px;text-align:center;font-size:11px;color:#64748b;font-style:italic;">General Detailing Inspection & Service</td>
-      </tr>
-    `;
-
-    const belongingsHtml = belongings.length > 0
-      ? `<div style="display:flex;flex-direction:column;gap:8px;">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-            ${belongings.map(b => `<div style="font-size:10px;font-weight:700;background:#f8fafc;padding:5px 10px;border-radius:6px;border:1px solid #cbd5e1;color:#0f172a;">✓ ${b.description}</div>`).join('')}
-          </div>
-          ${belongings.some(b => b.image_url) ? `
-            <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #cbd5e1;">
-              <div style="font-size:10px;font-weight:800;color:#1e293b;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">📸 Customer Personal Item Photos:</div>
-              <div style="display:flex;flex-wrap:wrap;gap:10px;">
-                ${belongings.filter(b => b.image_url).map(b => `
-                  <div style="text-align:center;background:#f1f5f9;padding:4px;border-radius:8px;border:1px solid #e2e8f0;">
-                    <img src="${b.image_url}" style="width:90px;height:90px;object-fit:cover;border-radius:6px;" />
-                    <div style="font-size:8px;font-weight:700;color:#475569;margin-top:4px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.description}</div>
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-          ` : ''}
-        </div>`
-      : `<div style="font-size:10px;color:#64748b;font-style:italic;">No customer belongings declared at entry.</div>`;
-
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <title>Job Card #${cart.id}</title>
-      <style>
-        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 20px; background: #ffffff; }
-        .header-box { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #2563eb; padding-bottom: 16px; margin-bottom: 20px; }
-        .company-name { font-size: 22px; font-weight: 900; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px; }
-        .company-sub { font-size: 11px; color: #2563eb; font-weight: 700; margin-top: 2px; }
-        .jc-title { font-size: 18px; font-weight: 900; color: #2563eb; text-transform: uppercase; text-align: right; }
-        .jc-number { font-size: 12px; font-weight: 700; color: #475569; text-align: right; margin-top: 2px; }
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
-        .info-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; }
-        .info-title { font-size: 10px; font-weight: 900; text-transform: uppercase; color: #64748b; tracking: 1px; margin-bottom: 6px; }
-        .info-row { font-size: 11px; line-height: 1.6; color: #1e293b; }
-        .inspector-pill { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 800; display: inline-block; margin-top: 6px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        th { background: #f1f5f9; color: #334155; font-size: 10px; font-weight: 900; text-transform: uppercase; padding: 10px 14px; border-bottom: 2px solid #cbd5e1; }
-        .totals-box { margin-left: auto; width: 280px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; font-size: 11px; margin-bottom: 20px; }
-        .totals-row { display: flex; justify-content: space-between; padding: 3px 0; font-weight: 700; }
-        .belongings-box { background: #fffbebfb; border: 1px solid #fde68a; border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
-        .signature-box { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 30px; pt: 20px; border-top: 1px solid #e2e8f0; }
-        .sig-line { border-top: 1px solid #94a3b8; margin-top: 40px; font-size: 10px; font-weight: 800; color: #475569; text-align: center; text-transform: uppercase; }
-      </style>
-    </head>
-    <body>
-      <div class="header-box">
-        <div style="display:flex;align-items:center;gap:12px;">
-          ${logoHtml}
-          <div>
-            <div class="company-name">O3 Car Spaa</div>
-            <div class="company-sub">Official Job Card & Vehicle Intake Inspection</div>
-            <div style="font-size:10px;color:#64748b;margin-top:2px;">Anand Branch • Premier Detailing Studio</div>
-          </div>
-        </div>
-        <div>
-          <div class="jc-title">JOB CARD</div>
-          <div class="jc-number">JC #${cart.id}</div>
-          <div style="font-size:10px;color:#0f172a;text-align:right;margin-top:4px;font-weight:700;">Created on: ${createdAtStr}</div>
-          ${editedAtStr ? `<div style="font-size:10px;color:#dc2626;text-align:right;margin-top:2px;font-weight:700;">Edited on: ${editedAtStr}</div>` : ''}
-        </div>
-      </div>
-
-      <div class="info-grid">
-        <div class="info-card">
-          <div class="info-title">Vehicle & Pre-Inspection Details</div>
-          <div class="info-row"><strong>Registration No:</strong> <span style="font-size:13px;font-weight:900;color:#2563eb;">${cart.registration_no || 'GJ06AB1234'}</span></div>
-          <div class="info-row"><strong>Car Model:</strong> ${cart.brand || ''} ${cart.model || ''}</div>
-          <div class="info-row"><strong>Visit Count:</strong> Visit #${cart.visit_number || 1}</div>
-          <div class="inspector-pill">🔍 Pre-Inspected By: ${cart.pre_inspector_name || 'Sunil Patel (Quality Inspector)'}</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">Customer Information</div>
-          <div class="info-row"><strong>Customer Name:</strong> ${cart.customer_name || 'Walk-in Customer'}</div>
-          <div class="info-row"><strong>Mobile:</strong> ${cart.customer_mobile || 'N/A'}</div>
-          <div class="info-row"><strong>Email:</strong> ${cart.customer_email || 'N/A'}</div>
-          <div class="info-row"><strong>Status:</strong> <span style="text-transform:uppercase;font-weight:800;color:#10b981;">${cart.status || 'open'}</span></div>
-        </div>
-
-        <!-- Arrival Capture & Staff Assignment Details -->
-        <div class="info-card" style="grid-column: span 2;">
-          <div class="info-title">Vehicle Arrival Capture & Staff Assignment</div>
-          <div style="display:grid;grid-template-columns: repeat(4, 1fr);gap:12px;margin-top:4px;">
-            <div class="info-row"><strong>Referral:</strong><br><span style="color:#0284c7;font-weight:700;">${cart.referral_person || 'Direct / Walk-in'}</span></div>
-            <div class="info-row"><strong>Handling Manager:</strong><br><span style="font-weight:700;">${cart.handler_name || 'Store Manager'}</span></div>
-            <div class="info-row"><strong>Lead Technician:</strong><br><span style="font-weight:700;">${cart.technician_name || 'Assigned Staff'}</span></div>
-            <div class="info-row"><strong>Team Incentive:</strong><br><span style="color:#475569;">${teamMemberNames.length > 0 ? teamMemberNames.join(', ') : 'None'}</span></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Services Table -->
-      <div style="font-size:11px;font-weight:900;text-transform:uppercase;color:#1e293b;margin-bottom:8px;">Requested Services & Detailing Tasks</div>
-      <table>
-        <thead>
-          <tr>
-            <th style="text-align:left;">Service / Package Name</th>
-            <th style="text-align:center;width:80px;">Qty</th>
-            <th style="text-align:right;width:100px;">Rate</th>
-            <th style="text-align:right;width:100px;">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${serviceRowsHtml}
-        </tbody>
-      </table>
-
-      <div class="totals-box">
-        <div class="totals-row"><span>Estimated Total:</span> <span>₹${formatINR(grandTotal)}</span></div>
-        ${discountAmt > 0 ? `
-        <div class="totals-row" style="color:#0284c7;">
-          <span>Discount (${cart.discount_type === 'percentage' ? cart.discount_value + '%' : 'Fixed'}):</span>
-          <span>- ₹${formatINR(discountAmt)}</span>
-        </div>
-        ${cart.discount_reason ? `
-        <div style="font-size:9px;color:#64748b;margin:2px 0 4px;line-height:1.3;">
-          Reason: <strong>${cart.discount_reason}</strong>${cart.discount_reference ? ` (Ref: ${cart.discount_reference})` : ''}
-        </div>` : ''}
-        ` : ''}
-        <div class="totals-row"><span>Advance Amount:</span> <span>₹${formatINR(advancePaid)}</span></div>
-        <div class="totals-row" style="color:#2563eb;font-size:12px;font-weight:900;border-top:1px solid #e2e8f0;padding-top:4px;margin-top:4px;">
-          <span>Balance Due:</span> <span>₹${formatINR(balanceDue)}</span>
-        </div>
-      </div>
-
-      <!-- Customer Belongings & Personal Items Photos Section -->
-      <div class="belongings-box">
-        <div style="font-size:11px;font-weight:900;text-transform:uppercase;color:#92400e;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-          💼 Declared Customer Personal Items & Inspection Photos
-        </div>
-        ${belongingsHtml}
-      </div>
-
-      <!-- Terms & Customer Declaration Signature -->
-      <div class="signature-box">
-        <div>
-          <div style="font-size:9px;color:#64748b;line-height:1.4;">
-            <strong>Declaration & Pre-Inspection Agreement:</strong><br/>
-            1. All listed personal belongings have been verified by the inspector.<br/>
-            2. Workshop is not liable for items not declared above.<br/>
-            3. Customer authorizes O3 Car Spaa to perform the above detailing tasks.
-          </div>
-          <div class="sig-line">Customer Signature</div>
-        </div>
-
-        <div>
-          <div style="font-size:9px;color:#64748b;line-height:1.4;text-align:right;">
-            <strong>Verified & Authorized By:</strong><br/>
-            Inspector: ${cart.pre_inspector_name || 'Quality Inspector'}<br/>
-            Studio Location: O3 Car Spaa Anand Premises
-          </div>
-          <div class="sig-line">Inspector / Manager Signature</div>
-        </div>
-      </div>
-    </body>
-    </html>
-    `;
-
-    const pdfBuffer = await htmlToPdfBuffer(html);
+    const pdfBuffer = await htmlToPdfBuffer(withQr(html, await paymentQrHtml(balanceDue, `Job card ${jobCartId}`)), { fitOnePage: true });
 
     return { pdfBuffer, invoiceNumber };
   } finally {
@@ -543,9 +521,11 @@ async function generateJobCardPDF(jobCartId) {
 async function generateBuySellInvoicePDF(buySellId) {
   const conn = await pool.getConnection();
   try {
-    const [settingsRows] = await conn.query('SELECT key_name, value FROM settings');
-    const settings = {};
-    settingsRows.forEach(r => { settings[r.key_name] = r.value; });
+    const [recRows] = await conn.query('SELECT * FROM buy_sell WHERE id = ?', [buySellId]);
+    if (!recRows.length) throw new Error('Record not found');
+    const record = recRows[0];
+    await loadStudio(record.franchise_id || 1);
+    const settings = studioSettings();
 
     const invoiceTitle = record.type === 'buy' ? 'Purchase Invoice' : 'Sales Invoice';
     const invoiceNumber = `${record.type === 'buy' ? 'PUR' : 'SAL'}-${record.id}`;
@@ -559,99 +539,24 @@ async function generateBuySellInvoicePDF(buySellId) {
 
     const grandTotal = parseFloat(record.total_amount) || 0;
     
-    const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap');
-        body { font-family: 'Montserrat', sans-serif; color: #333; line-height: 1.4; padding: 40px; margin: 0; }
-        .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 30px; }
-        .company-details { text-align: right; font-size: 11px; }
-        .title { color: #5f5e5e; font-size: 20px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; border-bottom: 2px solid #0284C7; padding-bottom: 5px; margin-bottom: 20px; text-align: center; }
-        .info-section { display: flex; justify-content: space-between; margin-bottom: 30px; font-size: 12px; }
-        .info-box { width: 48%; }
-        .info-box strong { color: #0284C7; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 11px; }
-        th { background-color: #1c1b1b; color: white; padding: 10px; text-align: left; text-transform: uppercase; letter-spacing: 1px; }
-        td { padding: 10px; border-bottom: 1px solid #eee; }
-        .totals { margin-left: auto; width: 40%; font-size: 12px; }
-        .totals-row { display: flex; justify-content: space-between; padding: 5px 0; }
-        .totals-row.grand { font-weight: 700; font-size: 14px; border-top: 2px solid #1c1b1b; padding-top: 10px; margin-top: 5px; }
-        .amount-words { margin-top: 30px; font-size: 11px; color: #5f5e5e; }
-        .footer { margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; font-size: 10px; color: #777; text-align: center; }
-        .notes-section { margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 3px solid #0284C7; font-size: 11px; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <div>${logoHtml}</div>
-        <div class="company-details">
-          <strong style="font-size: 14px;">${settings.studio_name || 'O3 Car Spaa'}</strong><br>
-          ${settings.studio_address || 'Address line 1'}<br>
-          Mobile: ${settings.studio_mobile || 'N/A'} | Email: ${settings.studio_email || 'N/A'}<br>
-          ${settings.studio_gst ? `GSTIN: ${settings.studio_gst}` : ''}
-        </div>
-      </div>
-
-      <div class="title">Bill of Supply - ${invoiceTitle}</div>
-
-      <div class="info-section">
-        <div class="info-box">
-          <p><strong>Billed To:</strong><br>
-          ${record.party_name}<br>
-          ${record.party_mobile ? 'Mob: ' + record.party_mobile : ''}</p>
-        </div>
-        <div class="info-box" style="text-align: right;">
-          <p><strong>Invoice No:</strong> ${invoiceNumber}<br>
-          <strong>Date:</strong> ${invoiceDate}</p>
-        </div>
-      </div>
-
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 50%">Item / Product</th>
-            <th style="width: 15%">Qty</th>
-            <th style="width: 15%">Rate</th>
-            <th style="width: 20%; text-align: right;">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>${record.product_name}</strong></td>
-            <td>${parseFloat(record.quantity)}</td>
-            <td>₹${formatINR(record.unit_price)}</td>
-            <td style="text-align: right;">₹${formatINR(record.total_amount)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div class="totals">
-        <div class="totals-row grand">
-          <span>Net Amount:</span>
-          <span>₹${formatINR(grandTotal)}</span>
-        </div>
-      </div>
-
-      <div class="amount-words">
-        <strong>Amount in words:</strong> ${amountInWords(grandTotal)}
-      </div>
-
-      ${record.note ? `
-      <div class="notes-section">
-        <strong>Notes:</strong><br>
-        ${record.note}
-      </div>` : ''}
-
-      <div class="footer">
-        <p>This is a computer-generated document. No signature is required.</p>
-        <p>Thank you for your business!</p>
-      </div>
-    </body>
-    </html>
-    `;
+    const isBuy = record.type === 'buy';
+    const qty = parseFloat(record.quantity) || 1;
+    const htmlContent = buildInvoiceHTML({
+      title: isBuy ? 'PURCHASE BILL' : 'SALES INVOICE',
+      invoiceNumber,
+      invoiceDate,
+      billToLabel: isBuy ? 'Supplier' : 'Bill To',
+      partyName: record.party_name || (isBuy ? 'Supplier' : 'Customer'),
+      partyMobile: record.party_mobile || '-',
+      items: [{ name: record.product_name || 'Product', qty, rate: parseFloat(record.unit_price) || (grandTotal / qty), amount: grandTotal }],
+      itemsLabel: 'Products',
+      grandTotal,
+      finalTotal: grandTotal,
+      receivedAmt: record.status === 'completed' ? grandTotal : null,
+      balanceDue: record.status === 'completed' ? 0 : grandTotal,
+      statusText: record.status === 'completed' ? (isBuy ? 'SETTLED' : 'PAID') : 'PENDING',
+      notes: record.note || '',
+    });
 
     const pdfBuffer = await htmlToPdfBuffer(htmlContent);
     return pdfBuffer;
@@ -676,9 +581,8 @@ async function generateManualBillPDF(billId) {
     if (!rows.length) throw new Error('Manual bill not found');
     const bill = rows[0];
 
-    const [settingsRows] = await conn.query('SELECT key_name, value FROM settings');
-    const settings = {};
-    settingsRows.forEach(r => { settings[r.key_name] = r.value; });
+    await loadStudio(1);
+    const settings = studioSettings();
 
     const invoiceNumber = `MB-${bill.id}`;
     const invoiceDate = new Date(bill.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -755,6 +659,7 @@ async function generateManualBillPDF(billId) {
       discountValue: bill.discount_value || 0,
       discountReason: bill.discount_reason || '',
       discountReference: bill.discount_reference || '',
+      discountBy: bill.discount_reference || '',
       finalTotal,
       notes: bill.description || '',
     });
@@ -772,7 +677,7 @@ async function generateSalarySlipPDF(salaryId) {
   const conn = await pool.getConnection();
   try {
     const [rows] = await conn.query(`
-      SELECT ss.*, u.name AS staff_name, u.mobile AS staff_mobile
+      SELECT ss.*, u.name AS staff_name, u.mobile AS staff_mobile, COALESCE(u.working_days_per_month, 26) AS working_days
       FROM staff_salary ss
       JOIN users u ON ss.staff_id = u.id
       WHERE ss.id = ?
@@ -787,35 +692,65 @@ async function generateSalarySlipPDF(salaryId) {
       ? `<img src="${logoBase64}" alt="O3 Car Spaa" style="width:80px;height:80px;object-fit:contain;" />`
       : `<div style="width:80px;height:80px;background:#0284C7;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px;text-align:center;">O3<br>Spaa</div>`;
 
-    const base = parseFloat(rec.base_salary || 0);
-    const bonus = parseFloat(rec.bonus || 0);
-    const deductions = parseFloat(rec.deductions || 0);
-    const finalTotal = parseFloat(rec.final_salary || 0);
-    const grandTotal = base + bonus;
-
-    const serviceRowsHtml = `
-      <tr><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;">BASE SALARY - ${rec.month_year}</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:center;">1</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(base)}</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(base)}</td></tr>
-      ${bonus > 0 ? `<tr><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;">BONUS</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:center;">1</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(bonus)}</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(bonus)}</td></tr>` : ''}
-    `;
-    const emptyCount = Math.max(0, 6 - (bonus > 0 ? 2 : 1));
-    const emptyRows = Array(emptyCount).fill(`<tr><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">&nbsp;</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">&nbsp;</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">&nbsp;</td><td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">&nbsp;</td></tr>`).join('');
+    // Every part of the pay is its own line, so Subtotal = sum of lines and Total = Subtotal - deductions
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    const [yy, mm] = String(rec.month_year).split('-').map(Number);
+    const monthName = new Date(yy, (mm || 1) - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    const type = rec.salary_type || 'monthly';
+    const unit = type === 'hourly' ? 'hour' : type === 'daily' ? 'day' : 'month';
+    const payable = r2(Number(rec.days_present) + Number(rec.half_days) * 0.5 + Number(rec.paid_leave_days));
+    const manual = Number(rec.manual_base) === 1;
+    // [label, qty, rate, amount]
+    const baseLine = !manual && type === 'hourly' ? [`Base pay - ${monthName} (hours worked)`, r2(rec.hours_worked), r2(rec.salary_rate), r2(rec.base_salary)]
+      : !manual && type === 'daily' ? [`Base pay - ${monthName} (payable days)`, payable, r2(rec.salary_rate), r2(rec.base_salary)]
+      : [`Base pay - ${monthName} (${manual ? 'set by admin' : `${payable} of ${rec.working_days} working days`})`, 1, r2(rec.base_salary), r2(rec.base_salary)];
+    const lines = [
+      baseLine,
+      ...(Number(rec.include_incentive) !== 0 && Number(rec.incentive_amount) > 0 ? [['Incentives (job cards)', 1, r2(rec.incentive_amount), r2(rec.incentive_amount)]] : []),
+      ...(Number(rec.include_referral) && Number(rec.referral_amount) > 0 ? [['Referral earnings', 1, r2(rec.referral_amount), r2(rec.referral_amount)]] : []),
+      ...(Number(rec.bonus) > 0 ? [['Bonus', 1, r2(rec.bonus), r2(rec.bonus)]] : []),
+    ];
+    const grandTotal = r2(lines.reduce((a, l) => a + l[3], 0));
+    const deductions = r2(Number(rec.deductions || 0) + Number(rec.complaint_deduction || 0));
+    const finalTotal = r2(rec.final_salary);
+    const td = 'padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;';
+    const serviceRowsHtml = lines.map(([k, q, rt, v]) =>
+      `<tr><td style="${td}">${k}</td><td style="${td}text-align:center;">${q}</td><td style="${td}text-align:right;">₹${formatINR(rt)}</td><td style="${td}text-align:right;">₹${formatINR(v)}</td></tr>`).join('');
+    const paidOn = rec.paid_at ? new Date(rec.paid_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+    const detailsRows = [
+      ['Month', monthName],
+      ['Pay method', `${type[0].toUpperCase() + type.slice(1)} @ ₹${formatINR(rec.salary_rate)} / ${unit}`],
+      ['Present', `${Number(rec.days_present)} day(s)`],
+      ['Half day', Number(rec.half_days) ? `${Number(rec.half_days)} day(s)` : ''],
+      ['Paid leave', Number(rec.paid_leave_days) ? `${Number(rec.paid_leave_days)} day(s)` : ''],
+      ['Unpaid leave', Number(rec.unpaid_leave_days) ? `${Number(rec.unpaid_leave_days)} day(s)` : ''],
+      ['Absent', `${Number(rec.absent_days || 0)} day(s)`],
+      ['Hours worked', type === 'hourly' ? `${Number(rec.hours_worked)} h` : ''],
+      ['Paid on', paidOn ? `${paidOn}${rec.payment_mode ? ' · ' + String(rec.payment_mode).toUpperCase() : ''}` : ''],
+    ];
+    const emptyRows = '';
 
     const html = buildInvoiceHTML({
       title: 'SALARY SLIP',
+      numberLabel: 'Slip No.',
+      dateLabel: 'Date',
       invoiceNumber,
       invoiceDate,
       logoHtml,
       partyName: rec.staff_name,
       partyMobile: rec.staff_mobile || '-',
       rightLabel: 'Month',
-      rightValue: rec.month_year,
+      rightValue: monthName,
+      detailsRows,
       serviceRowsHtml,
       emptyRows,
-      totalQty: bonus > 0 ? 2 : 1,
+      totalQty: lines.length,
       grandTotal,
       discountAmt: deductions,
+      discountReason: deductions > 0 ? 'Deductions' : '',
       finalTotal,
-      notes: rec.notes || '',
+      statusText: rec.status === 'paid' ? 'PAID' : 'PENDING',
+      notes: manual ? (rec.notes || '') : '', // attendance is shown in Details; keep only an admin's own note
     });
 
     return renderPDF(html, invoiceNumber);
@@ -843,203 +778,113 @@ function buildInvoiceHTML({
   discountValue = 0,
   discountReason = '',
   discountReference = '',
+  discountBy = '',
   isWithGst = false,
   gstPct = 18,
   gstAmt = 0,
-  studioGst = '24AAAFO3303J1Z2',
+  studioGst = '',
   finalTotal,
   receivedAmt = null,
+  advanceAmt = 0,
   balanceDue = 0,
   statusText = 'PAID',
-  notes = ''
+  notes = '',
+  // new, optional
+  billTo = null,
+  vehicle = null,
+  items = null,
+  extraCharges = [],
+  itemsLabel,
+  numberLabel,
+  dateLabel,
+  dueLabel,
+  dueDateOverride,
+  billToLabel,
+  photosHtml = '',
+  detailsRows = null,
 }) {
+  const { renderInvoice } = require('./invoiceTemplate');
   const isTaxInvoice = isWithGst || gstAmt > 0;
-  const headerTitle = isTaxInvoice ? 'TAX INVOICE' : title;
-  const headerBadge = isTaxInvoice ? 'ORIGINAL FOR RECIPIENT' : 'BILL OF SUPPLY (NON-GST)';
-  const gstRowHtml = isTaxInvoice
-    ? `<span>GSTIN: ${studioGst}</span>&nbsp;&nbsp;&nbsp;<span>PAN Number: [PAN Number]</span>`
-    : `<span>Non-GST Bill of Supply</span>&nbsp;&nbsp;&nbsp;<span>PAN Number: [PAN Number]</span>`;
+  const upper = String(title || '').toUpperCase();
+  const minimal = /SALARY/.test(upper);
+  const isBill = !upper || /^(BILL OF SUPPLY|TAX INVOICE|INVOICE)$/.test(upper);
+  const docTitle = isBill ? (isTaxInvoice ? 'TAX INVOICE' : 'INVOICE') : upper;
+  const docSubtitle = isBill ? (isTaxInvoice ? 'Original for recipient' : 'Bill of supply') : '';
+  const s = (STUDIO && STUDIO.settings) || {};
 
-  const paidVal = receivedAmt !== null ? receivedAmt : finalTotal;
-  const cgstAmt = gstAmt / 2;
-  const sgstAmt = gstAmt / 2;
+  // Due date = invoice date + "invoice_due_days" (Settings → Invoice); same day by default
+  let dueDate = '';
+  const dmy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(invoiceDate || '').trim());
+  const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(invoiceDate);
+  if (!isNaN(d)) {
+    d.setDate(d.getDate() + (parseInt(s.invoice_due_days, 10) || 0));
+    dueDate = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  const discountLabel = Number(discountAmt) > 0
+    ? [discountType === 'percentage' ? `${Number(discountValue)}%` : '', discountReason, discountBy ? `Approved by ${discountBy}` : ''].filter(Boolean).join(' · ')
+    : '';
 
-  return `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      @page { size: A4; margin: 0; }
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: #1a1a1a; padding: 30px 35px; font-size: 12px; line-height: 1.4; }
-      .bill-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-      .bill-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-      .original-badge { display: inline-block; border: 1px solid #999; padding: 2px 8px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-left: 8px; color: #666; }
-      .company-header { display: flex; align-items: center; gap: 15px; background: #0284C7; padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; margin-top: 8px; }
-      .company-logo { flex-shrink: 0; background: white; padding: 4px; border-radius: 4px; }
-      .company-info { color: white; }
-      .company-info h1 { font-size: 22px; font-weight: 800; margin-bottom: 3px; }
-      .company-info p { font-size: 10px; line-height: 1.5; opacity: 0.95; }
-      .company-info .gst-row { margin-top: 4px; font-size: 10px; font-weight: 600; }
-      .invoice-meta { display: flex; border: 1px solid #0284C7; margin-bottom: 12px; }
-      .invoice-meta-left, .invoice-meta-right { flex: 1; padding: 8px 12px; }
-      .invoice-meta-right { text-align: right; border-left: 1px solid #0284C7; }
-      .meta-label { font-size: 10px; color: #0284C7; font-weight: 700; }
-      .meta-value { font-size: 13px; font-weight: 700; }
-      .bill-details { display: flex; border: 1px solid #0284C7; border-top: none; margin-top: -12px; margin-bottom: 15px; }
-      .bill-to-section { flex: 1; padding: 10px 12px; }
-      .vehicle-section { flex: 0 0 220px; padding: 10px 12px; border-left: 1px solid #0284C7; text-align: right; }
-      .bill-to-label, .vehicle-label { font-size: 10px; font-weight: 700; color: #0284C7; text-transform: uppercase; }
-      .bill-to-name { font-size: 13px; font-weight: 700; margin-top: 3px; }
-      .bill-to-detail { font-size: 11px; color: #444; margin-top: 1px; }
-      .vehicle-value { font-size: 12px; font-weight: 600; margin-top: 2px; }
-      .services-table { width: 100%; border-collapse: collapse; margin-bottom: 0; }
-      .services-table thead th { background: #0284C7; color: white; padding: 8px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; }
-      .subtotal-row { display: flex; justify-content: space-between; padding: 10px 12px; border: 1px solid #0284C7; font-weight: 700; font-size: 13px; margin-top: 20px; }
-      .bottom-grid { display: flex; gap: 0; border: 1px solid #0284C7; border-top: none; }
-      .bank-section { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-      .amounts-section { flex: 0 0 260px; padding: 0; }
-      .bank-title { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-      .bank-row { display: flex; font-size: 10px; margin-bottom: 2px; }
-      .bank-label { width: 85px; font-weight: 600; }
-      .bank-value { flex: 1; }
-      .amount-row { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid #eee; }
-      .amount-row.total { background: #0284C7; color: white; font-weight: 700; font-size: 13px; }
-      .terms-section { border: 1px solid #0284C7; border-top: none; display: flex; }
-      .terms-left { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-      .terms-right { flex: 0 0 260px; padding: 12px; }
-      .terms-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-      .terms-text { font-size: 9px; color: #444; line-height: 1.5; }
-      .words-label { font-size: 10px; font-weight: 700; margin-bottom: 4px; }
-      .words-value { font-size: 11px; font-style: italic; color: #333; }
-      .signatory { border: 1px solid #0284C7; border-top: none; padding: 20px 12px 12px; text-align: right; }
-      .signatory-line { width: 200px; margin-left: auto; text-align: center; }
-      .signatory-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #0284C7; }
-      .signatory-name { font-size: 11px; font-weight: 600; margin-top: 2px; }
-    </style>
-  </head>
-  <body>
-    <div class="bill-header">
-      <div>
-        <span class="bill-title">${headerTitle}</span>
-        <span class="original-badge">${headerBadge}</span>
-      </div>
-    </div>
-    <div class="company-header">
-      <div class="company-logo">${logoHtml}</div>
-      <div class="company-info">
-        <h1>O3 Car Spaa</h1>
-        <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
-        <div class="gst-row">
-          <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
-          ${gstRowHtml}
-        </div>
-        <p>Email: o3carspavvn@gmail.com</p>
-      </div>
-    </div>
-    <div class="invoice-meta">
-      <div class="invoice-meta-left">
-        <span class="meta-label">Invoice No.: </span>
-        <span class="meta-value">${invoiceNumber}</span>
-      </div>
-      <div class="invoice-meta-right">
-        <span class="meta-label">Invoice Date: </span>
-        <span class="meta-value">${invoiceDate}</span>
-      </div>
-    </div>
-    <div class="bill-details">
-      <div class="bill-to-section">
-        <div class="bill-to-label">BILL TO</div>
-        <div class="bill-to-name">${partyName}</div>
-        <div class="bill-to-detail">Mobile: ${partyMobile}</div>
-        <div class="bill-to-detail">Place of Supply: Gujarat</div>
-      </div>
-      <div class="vehicle-section">
-        <div>
-          <span class="vehicle-label">${rightLabel}</span>
-          <div class="vehicle-value">${rightValue}</div>
-        </div>
-      </div>
-    </div>
-    <table class="services-table">
-      <thead>
-        <tr>
-          <th style="width:50%;">DESCRIPTION</th>
-          <th style="width:15%;text-align:center;">QTY.</th>
-          <th style="width:17%;text-align:right;">RATE</th>
-          <th style="width:18%;text-align:right;">AMOUNT</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${serviceRowsHtml}
-        ${emptyRows}
-      </tbody>
-    </table>
-    <div class="subtotal-row">
-      <div><span style="font-size:11px;font-weight:700;">SUBTOTAL</span></div>
-      <div style="display:flex;gap:40px;">
-        <span>${totalQty}</span>
-        <span>₹ ${formatINR(grandTotal)}</span>
-      </div>
-    </div>
-    <div class="bottom-grid">
-      <div class="bank-section">
-        <div class="bank-title">BANK DETAILS</div>
-        <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
-        <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
-        <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
-        <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
-      </div>
-      <div class="amounts-section">
-        <div class="amount-row"><span>Subtotal</span><span>₹ ${formatINR(grandTotal)}</span></div>
-        ${discountAmt > 0 ? `
-        <div class="amount-row" style="color:#0284C7;">
-          <div>
-            <span>Discount (${discountType === 'percentage' ? discountValue + '%' : 'Fixed'})</span>
-            ${discountReason ? `<div style="font-size:9px;color:#64748b;font-weight:normal;margin-top:2px;">Reason: ${discountReason}${discountReference ? ` (Ref: ${discountReference})` : ''}</div>` : ''}
-          </div>
-          <span>- ₹ ${formatINR(discountAmt)}</span>
-        </div>` : ''}
-        ${isTaxInvoice ? `
-        <div class="amount-row"><span>CGST (${gstPct / 2}%)</span><span>+ ₹ ${formatINR(cgstAmt)}</span></div>
-        <div class="amount-row"><span>SGST (${gstPct / 2}%)</span><span>+ ₹ ${formatINR(sgstAmt)}</span></div>
-        ` : ''}
-        <div class="amount-row total"><span>Total Payable</span><span>₹ ${formatINR(finalTotal)}</span></div>
-        <div class="amount-row"><span>Received Amount</span><span>₹ ${formatINR(paidVal)}</span></div>
-        <div class="amount-row"><span>Balance</span><span>₹ ${formatINR(balanceDue)}</span></div>
-        ${statusText ? `<div class="amount-row"><span>Status</span><span style="color:${statusText === 'PAID' ? '#2e7d32' : '#0369A1'}; font-weight:bold;">${statusText}</span></div>` : ''}
-      </div>
-    </div>
-    <div class="terms-section">
-      <div class="terms-left">
-        ${notes ? `<div class="terms-title">NOTES</div><div class="terms-text" style="margin-bottom:8px;">${notes}</div>` : ''}
-        <div class="terms-title">TERMS AND CONDITIONS</div>
-        <div class="terms-text">
-          1. Your car belongings are not our responsibility and make sure you check your belongings before dropping your car at our workshop.<br>
-          2. Please check if any cash or others important documents are there.<br>
-          3. All disputes are subject to Anand jurisdiction only.
-        </div>
-      </div>
-      <div class="terms-right">
-        <div class="words-label">Total Amount (in words)</div>
-        <div class="words-value">${amountInWords(finalTotal)}</div>
-      </div>
-    </div>
-    <div class="signatory">
-      <div class="signatory-line">
-        <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
-          <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-          <div class="signatory-name">O3 Car Spaa</div>
-        </div>
-      </div>
-    </div>
-  </body>
-  </html>
-  `;
+  return renderInvoice({
+    studio: { ...STUDIO, gstin: STUDIO.gstin || studioGst || '' },
+    logoUri: getLogoBase64(),
+    heroUri: invoiceHeroDataUri(),
+    docTitle, docSubtitle, minimal, photosHtml, detailsRows,
+    invoiceNumber, invoiceDate, dueDate: dueDateOverride !== undefined ? dueDateOverride : (minimal || !isBill ? '' : dueDate),
+    numberLabel, dateLabel, dueLabel,
+    showGstin: isTaxInvoice || !!(STUDIO.gstin),
+    billTo: billTo || { name: partyName, mobile: partyMobile },
+    billToLabel: billToLabel || (minimal ? 'Employee' : 'Bill To'),
+    vehicle,
+    rightLabel, rightValue,
+    items, serviceRowsHtml, itemsLabel: itemsLabel || (minimal ? 'Earnings' : 'Services'),
+    totals: {
+      subtotal: grandTotal, discountAmt, discountLabel, gstPct, gstAmt, extra: extraCharges,
+      finalTotal, advance: advanceAmt, paid: receivedAmt, balance: balanceDue,
+    },
+    amountWords: amountInWords(finalTotal),
+    statusText,
+    notes,
+  });
+}
+
+/** Optional invoice header picture uploaded in Settings → Invoice (embedded so the PDF needs no network). */
+const _heroCache = {};
+function invoiceHeroDataUri() {
+  try {
+    const rel = STUDIO.settings && STUDIO.settings.invoice_hero_url;
+    let file = rel && rel.startsWith('/uploads/') ? path.join(__dirname, '..', '..', rel.replace(/^\//, '')) : null;
+    // no photo uploaded in Settings → the studio's blue-car showroom photo
+    if (!file || !fs.existsSync(file)) file = path.join(__dirname, '..', 'assets', 'invoice-hero.jpg');
+    if (!fs.existsSync(file)) return null;
+    const mtime = fs.statSync(file).mtimeMs;
+    if (_heroCache[file] && _heroCache[file].mtime === mtime) return _heroCache[file].uri;
+    const ext = path.extname(file).toLowerCase();
+    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    const uri = `data:${mime};base64,${fs.readFileSync(file).toString('base64')}`;
+    _heroCache[file] = { mtime, uri };
+    return uri;
+  } catch { return null; }
+}
+
+/** Put the "scan & pay" block next to the totals when the template has a slot, else at the end. */
+function withQr(html, qrHtml) {
+  if (!qrHtml) return html;
+  return html.includes('<!--PAY_QR-->') ? html.replace('<!--PAY_QR-->', qrHtml) : html.replace('</body>', qrHtml + '</body>');
 }
 
 // â”€â”€â”€ Shared PDF renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/** A statement (package history etc.) in the same design as the invoice / job card: header, title, two cards, body, footer. */
+async function renderStatementPDF({ franchiseId, title, number, numberLabel, date, billTo, billToLabel, detailsLabel, detailsRows, bodyHtml, statusText = '' }) {
+  await loadStudio(franchiseId);
+  const { renderInvoice } = require('./invoiceTemplate');
+  const html = renderInvoice({
+    studio: STUDIO, logoUri: getLogoBase64(), heroUri: invoiceHeroDataUri(), minimal: true,
+    docTitle: title, invoiceNumber: number, numberLabel, invoiceDate: date, dateLabel: 'Date', showGstin: false,
+    billTo, billToLabel, detailsLabel, detailsRows, bodyHtml, statusText,
+  });
+  return htmlToPdfBuffer(html);
+}
+
 async function renderPDF(html, invoiceNumber) {
   const pdfBuffer = await htmlToPdfBuffer(html);
   return { pdfBuffer, invoiceNumber };
@@ -1062,7 +907,7 @@ async function generatePackageInvoicePDF(requestId) {
       JOIN packages p ON pr.package_id = p.id
       LEFT JOIN v2_payments pay ON (
         pay.booking_id IS NULL AND
-        JSON_UNQUOTE(JSON_EXTRACT(pay.notes, '$.package_request_id')) = pr.id
+        (CASE WHEN JSON_VALID(pay.notes) THEN JSON_UNQUOTE(JSON_EXTRACT(pay.notes, '$.package_request_id')) END) = pr.id
       )
       WHERE pr.id = ?
     `, [requestId]);
@@ -1076,9 +921,8 @@ async function generatePackageInvoicePDF(requestId) {
     const paymentStatusText = isPaid ? 'PAID' : 'PENDING';
 
     // Fetch settings
-    const [settingsRows] = await conn.query('SELECT key_name, value FROM settings');
-    const settings = {};
-    settingsRows.forEach(r => { settings[r.key_name] = r.value; });
+    await loadStudio(1);
+    const settings = studioSettings();
 
     const invoiceNumber = `PKG-${record.id}`;
     const invoiceDate = new Date(record.approved_at || record.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -1090,160 +934,21 @@ async function generatePackageInvoicePDF(requestId) {
 
     const grandTotal = parseFloat(record.price) || 0;
     
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <style>
-        @page { size: A4; margin: 0; }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: #1a1a1a; padding: 30px 35px; font-size: 12px; line-height: 1.4; }
-        .bill-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-        .bill-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-        .company-header { display: flex; align-items: center; gap: 15px; background: #0284C7; padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; margin-top: 8px; }
-        .company-logo { flex-shrink: 0; background: white; padding: 4px; border-radius: 4px; }
-        .company-info { color: white; }
-        .company-info h1 { font-size: 22px; font-weight: 800; margin-bottom: 3px; }
-        .company-info p { font-size: 10px; line-height: 1.5; opacity: 0.95; }
-        .company-info .gst-row { margin-top: 4px; font-size: 10px; font-weight: 600; }
-        .invoice-meta { display: flex; border: 1px solid #0284C7; margin-bottom: 12px; }
-        .invoice-meta-left, .invoice-meta-right { flex: 1; padding: 8px 12px; }
-        .invoice-meta-right { text-align: right; border-left: 1px solid #0284C7; }
-        .meta-label { font-size: 10px; color: #0284C7; font-weight: 700; }
-        .meta-value { font-size: 13px; font-weight: 700; }
-        .bill-details { display: flex; border: 1px solid #0284C7; border-top: none; margin-top: -12px; margin-bottom: 15px; }
-        .bill-to-section { flex: 1; padding: 10px 12px; }
-        .vehicle-section { flex: 0 0 220px; padding: 10px 12px; border-left: 1px solid #0284C7; text-align: right; }
-        .bill-to-label, .vehicle-label { font-size: 10px; font-weight: 700; color: #0284C7; text-transform: uppercase; }
-        .bill-to-name { font-size: 13px; font-weight: 700; margin-top: 3px; }
-        .bill-to-detail { font-size: 11px; color: #444; margin-top: 1px; }
-        .vehicle-value { font-size: 12px; font-weight: 600; margin-top: 2px; }
-        .services-table { width: 100%; border-collapse: collapse; margin-bottom: 0; }
-        .services-table thead th { background: #0284C7; color: white; padding: 8px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; }
-        .services-table thead th:nth-child(2), .services-table thead th:nth-child(3), .services-table thead th:nth-child(4) { text-align: center; }
-        .services-table thead th:last-child { text-align: right; }
-        .subtotal-row { display: flex; justify-content: space-between; padding: 10px 12px; border: 1px solid #0284C7; font-weight: 700; font-size: 13px; margin-top: 20px; margin-bottom: 0; }
-        .bottom-grid { display: flex; gap: 0; border: 1px solid #0284C7; border-top: none; }
-        .bank-section { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .amounts-section { flex: 0 0 260px; padding: 0; }
-        .bank-title { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .bank-row { display: flex; font-size: 10px; margin-bottom: 2px; }
-        .bank-label { width: 85px; font-weight: 600; }
-        .bank-value { flex: 1; }
-        .amount-row { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid #eee; }
-        .amount-row.total { background: #0284C7; color: white; font-weight: 700; font-size: 13px; }
-        .amount-label { font-weight: 600; }
-        .amount-value { font-weight: 700; }
-        .terms-section { border: 1px solid #0284C7; border-top: none; display: flex; }
-        .terms-left { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .terms-right { flex: 0 0 260px; padding: 12px; }
-        .terms-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .terms-text { font-size: 9px; color: #444; line-height: 1.5; }
-        .words-label { font-size: 10px; font-weight: 700; margin-bottom: 4px; }
-        .words-value { font-size: 11px; font-style: italic; color: #333; }
-        .signatory { border: 1px solid #0284C7; border-top: none; padding: 20px 12px 12px; text-align: right; }
-        .signatory-line { width: 200px; margin-left: auto; text-align: center; }
-        .signatory-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #0284C7; }
-        .signatory-name { font-size: 11px; font-weight: 600; margin-top: 2px; }
-      </style>
-    </head>
-    <body>
-      <div class="bill-header">
-        <div><span class="bill-title">BILL OF SUPPLY</span></div>
-      </div>
-      <div class="company-header">
-        <div class="company-logo">${logoHtml}</div>
-        <div class="company-info">
-          <h1>O3 Car Spaa</h1>
-          <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
-          <div class="gst-row">
-            <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
-            <span>GSTIN: [GSTIN]</span>&nbsp;&nbsp;&nbsp;
-            <span>PAN Number: [PAN Number]</span>
-          </div>
-          <p>Email: o3carspavvn@gmail.com</p>
-        </div>
-      </div>
-      <div class="invoice-meta">
-        <div class="invoice-meta-left">
-          <span class="meta-label">Invoice No.: </span><span class="meta-value">${invoiceNumber}</span>
-        </div>
-        <div class="invoice-meta-right">
-          <span class="meta-label">Invoice Date: </span><span class="meta-value">${invoiceDate}</span>
-        </div>
-      </div>
-      <div class="bill-details">
-        <div class="bill-to-section">
-          <div class="bill-to-label">BILL TO</div>
-          <div class="bill-to-name">${record.customer_name || '-'}</div>
-          <div class="bill-to-detail">Mobile: ${record.customer_mobile || '-'}</div>
-          <div class="bill-to-detail">Place of Supply: Gujarat</div>
-        </div>
-        <div class="vehicle-section">
-          <div><span class="vehicle-label">Vehicle Name</span><div class="vehicle-value">${(record.brand || '')} ${(record.model || '').toUpperCase()}</div></div>
-          <div style="margin-top:8px;"><span class="vehicle-label">Vehicle No.</span><div class="vehicle-value">${record.registration_no || '-'}</div></div>
-        </div>
-      </div>
-      <table class="services-table">
-        <thead>
-          <tr>
-            <th style="width:50%;">PACKAGE</th>
-            <th style="width:15%;text-align:center;">QTY.</th>
-            <th style="width:17%;text-align:right;">RATE</th>
-            <th style="width:18%;text-align:right;">AMOUNT</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-transform:uppercase;">${record.package_name}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:center;">1</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(grandTotal)}</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:12px;text-align:right;">₹${formatINR(grandTotal)}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="subtotal-row">
-        <div><span style="font-size:11px;font-weight:700;">SUBTOTAL</span></div>
-        <div style="display:flex;gap:40px;"><span>1</span><span>₹ ${formatINR(grandTotal)}</span></div>
-      </div>
-      <div class="bottom-grid">
-        <div class="bank-section">
-          <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
-          <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
-          <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
-          <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
-        </div>
-        <div class="amounts-section">
-          <div class="amount-row"><span class="amount-label">Subtotal</span><span class="amount-value">₹ ${formatINR(grandTotal)}</span></div>
-          <div class="amount-row total"><span class="amount-label">Total Payable</span><span class="amount-value">₹ ${formatINR(grandTotal)}</span></div>
-          <div class="amount-row"><span class="amount-label">Received Amount</span><span class="amount-value">₹ ${formatINR(receivedAmount)}</span></div>
-          <div class="amount-row"><span class="amount-label">Balance Due</span><span class="amount-value">₹ ${formatINR(balanceDue)}</span></div>
-          <div class="amount-row"><span class="amount-label">Status</span><span class="amount-value" style="color: ${isPaid ? '#2e7d32' : '#0369A1'}; font-weight: bold;">${paymentStatusText}</span></div>
-        </div>
-      </div>
-      <div class="terms-section">
-        <div class="terms-left">
-          <div class="terms-title">TERMS AND CONDITIONS</div>
-          <div class="terms-text">1. Your car belongings are not our responsibility and make sure you check your belongings before dropping your car at our workshop.<br>2. Please check if any cash or others important documents are there.<br>3. All disputes are subject to Anand jurisdiction only.</div>
-        </div>
-        <div class="terms-right">
-          <div class="words-label">Total Amount (in words)</div>
-          <div class="words-value">${amountInWords(grandTotal)}</div>
-        </div>
-      </div>
-      <div class="signatory">
-        <div class="signatory-line">
-          <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
-            <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-            <div class="signatory-name">O3 Car Spaa</div>
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-    `;
+    const html = buildInvoiceHTML({
+      title: 'INVOICE',
+      invoiceNumber,
+      invoiceDate,
+      partyName: record.customer_name || 'Customer',
+      partyMobile: record.customer_mobile || '-',
+      vehicle: { model: `${record.brand || ''} ${record.model || ''}`.trim(), reg: record.registration_no },
+      items: [{ name: record.package_name || 'Package', note: 'Package / membership', qty: 1, rate: grandTotal, amount: grandTotal }],
+      itemsLabel: 'Package',
+      grandTotal,
+      finalTotal: grandTotal,
+      receivedAmt: receivedAmount,
+      balanceDue,
+      statusText: paymentStatusText,
+    });
 
     return await renderPDF(html, invoiceNumber);
   } finally {
@@ -1268,7 +973,7 @@ async function generateQuickWashInvoicePDF(bookingId) {
              svc.name AS service_name, 
              CASE b.vehicle_category
                 WHEN 'hatchback' THEN svc.price_hatchback
-                WHEN 'medium_hatchback' THEN svc.price_medium_hatchback
+                WHEN 'semi_sedan' THEN svc.price_semi_sedan
                 WHEN 'sedan' THEN svc.price_sedan
                 WHEN 'premium_sedan' THEN svc.price_premium_sedan
                 WHEN 'suv' THEN svc.price_suv
@@ -1282,7 +987,7 @@ async function generateQuickWashInvoicePDF(bookingId) {
       LEFT JOIN vehicles v ON b.vehicle_id = v.id
       LEFT JOIN user_packages up ON b.package_id = up.id
       LEFT JOIN packages pkg ON up.package_id = pkg.id
-      WHERE b.id = ? AND b.job_type = 'quick_wash'
+      WHERE b.id = ? AND (b.job_type = 'quick_wash' OR b.job_type IS NULL OR b.job_type = 'standard' OR b.job_type = 'wash')
     `, [bookingId]);
 
     if (!bookings.length) throw new Error('Quick Wash booking not found');
@@ -1298,11 +1003,14 @@ async function generateQuickWashInvoicePDF(bookingId) {
     // Service calculation
     const serviceName = record.service_name || 'Quick Wash Service';
     const hasPackage = !!record.package_id;
-    const servicePrice = hasPackage ? 0 : (parseFloat(record.service_price) || 0);
+    const charged = parseFloat(record.total_amount) || 0;
+    const qwDiscount = parseFloat(record.discount_amount) || 0;
+    // price before the first-wash discount (what the studio set on the quick wash form)
+    const servicePrice = hasPackage ? 0 : (charged + qwDiscount || parseFloat(record.service_price) || 0);
     const grandTotal = servicePrice;
     
     const invoiceNumber = `QW-${record.id}`;
-    const invoiceDate = new Date(record.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const invoiceDate = istDate(record.completed_at || new Date());
 
     // Logo
     const logoBase64 = getLogoBase64();
@@ -1331,20 +1039,23 @@ async function generateQuickWashInvoicePDF(bookingId) {
     const rightValue = `${brand} ${model.toUpperCase()}` + (regNo !== '-' ? ` (${regNo})` : '');
 
     const html = buildInvoiceHTML({
-      title: 'BILL OF SUPPLY - QUICK WASH',
+      title: 'INVOICE',
       invoiceNumber,
       invoiceDate,
       logoHtml,
       partyName: customerName,
       partyMobile: customerMobile,
+      vehicle: { model: `${brand} ${model}`.trim(), reg: regNo !== '-' ? regNo : '' },
       rightLabel: 'Vehicle',
       rightValue,
       serviceRowsHtml,
       emptyRows,
       totalQty: 1,
       grandTotal,
-      discountAmt: 0,
-      finalTotal: grandTotal,
+      discountAmt: hasPackage ? 0 : qwDiscount,
+      discountType: 'fixed',
+      discountReason: qwDiscount > 0 ? `First wash ${Number(record.discount_percent) || 50}% off` : '',
+      finalTotal: hasPackage ? 0 : Math.max(0, servicePrice - qwDiscount),
       notes: record.notes || '',
     });
 
@@ -1475,176 +1186,30 @@ async function generateQuotationPDF(quotationId) {
     const taxAmt = parseFloat(q.tax_amount) || 0;
     const grandTotal = parseFloat(q.grand_total) || 0;
 
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <style>
-        @page { size: A4; margin: 0; }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: #1a1a1a; padding: 30px 35px; font-size: 12px; line-height: 1.4; }
-        .bill-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-        .bill-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-        .original-badge { display: inline-block; border: 1px solid #999; padding: 2px 8px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-left: 8px; color: #666; }
-        .company-header { display: flex; align-items: center; gap: 15px; background: #0284C7; padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; margin-top: 8px; }
-        .company-logo { flex-shrink: 0; background: white; padding: 4px; border-radius: 4px; }
-        .company-info { color: white; }
-        .company-info h1 { font-size: 22px; font-weight: 800; margin-bottom: 3px; }
-        .company-info p { font-size: 10px; line-height: 1.5; opacity: 0.95; }
-        .company-info .gst-row { margin-top: 4px; font-size: 10px; font-weight: 600; }
-        .invoice-meta { display: flex; border: 1px solid #0284C7; margin-bottom: 12px; }
-        .invoice-meta-left, .invoice-meta-right { flex: 1; padding: 8px 12px; }
-        .invoice-meta-right { text-align: right; border-left: 1px solid #0284C7; }
-        .meta-label { font-size: 10px; color: #0284C7; font-weight: 700; }
-        .meta-value { font-size: 13px; font-weight: 700; }
-        .bill-details { display: flex; border: 1px solid #0284C7; border-top: none; margin-top: -12px; margin-bottom: 15px; }
-        .bill-to-section { flex: 1; padding: 10px 12px; }
-        .vehicle-section { flex: 0 0 220px; padding: 10px 12px; border-left: 1px solid #0284C7; text-align: right; }
-        .bill-to-label, .vehicle-label { font-size: 10px; font-weight: 700; color: #0284C7; text-transform: uppercase; }
-        .bill-to-name { font-size: 13px; font-weight: 700; margin-top: 3px; }
-        .bill-to-detail { font-size: 11px; color: #444; margin-top: 1px; }
-        .vehicle-value { font-size: 12px; font-weight: 600; margin-top: 2px; }
-        .services-table { width: 100%; border-collapse: collapse; margin-bottom: 0; }
-        .services-table thead th { background: #0284C7; color: white; padding: 8px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; }
-        .subtotal-row { display: flex; justify-content: space-between; padding: 10px 12px; border: 1px solid #0284C7; font-weight: 700; font-size: 13px; margin-top: 20px; }
-        .bottom-grid { display: flex; gap: 0; border: 1px solid #0284C7; border-top: none; }
-        .bank-section { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .amounts-section { flex: 0 0 260px; padding: 0; }
-        .bank-title { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .bank-row { display: flex; font-size: 10px; margin-bottom: 2px; }
-        .bank-label { width: 85px; font-weight: 600; }
-        .bank-value { flex: 1; }
-        .amount-row { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid #eee; }
-        .amount-row.total { background: #0284C7; color: white; font-weight: 700; font-size: 13px; }
-        .terms-section { border: 1px solid #0284C7; border-top: none; display: flex; }
-        .terms-left { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .terms-right { flex: 0 0 260px; padding: 12px; }
-        .terms-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .terms-text { font-size: 9px; color: #444; line-height: 1.5; }
-        .words-label { font-size: 10px; font-weight: 700; margin-bottom: 4px; }
-        .words-value { font-size: 11px; font-style: italic; color: #333; }
-        .signatory { border: 1px solid #0284C7; border-top: none; padding: 20px 12px 12px; text-align: right; }
-        .signatory-line { width: 200px; margin-left: auto; text-align: center; }
-        .signatory-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #0284C7; }
-        .signatory-name { font-size: 11px; font-weight: 600; margin-top: 2px; }
-      </style>
-    </head>
-    <body>
-      <div class="bill-header">
-        <div>
-          <span class="bill-title">VEHICLE SERVICE QUOTATION</span>
-          <span class="original-badge">ESTIMATE ONLY</span>
-        </div>
-      </div>
-      <div class="company-header">
-        <div class="company-logo">${logoHtml}</div>
-        <div class="company-info">
-          <h1>O3 Car Spaa</h1>
-          <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
-          <div class="gst-row">
-            <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
-            <span>GSTIN: [GSTIN]</span>&nbsp;&nbsp;&nbsp;
-            <span>PAN Number: [PAN Number]</span>
-          </div>
-          <p>Email: o3carspavvn@gmail.com</p>
-        </div>
-      </div>
-      <div class="invoice-meta">
-        <div class="invoice-meta-left">
-          <span class="meta-label">Quotation No.: </span>
-          <span class="meta-value">${quotationNumber}</span>
-        </div>
-        <div class="invoice-meta-right">
-          <span class="meta-label">Quotation Date: </span>
-          <span class="meta-value">${quotationDate}</span>
-          &nbsp;&nbsp;&nbsp;&nbsp;
-          <span class="meta-label">Valid Until: </span>
-          <span class="meta-value">${validUntil}</span>
-        </div>
-      </div>
-      <div class="bill-details">
-        <div class="bill-to-section">
-          <div class="bill-to-label">QUOTATION TO</div>
-          <div class="bill-to-name">${q.customer_name || '-'}</div>
-          <div class="bill-to-detail">Mobile: ${q.customer_mobile || '-'}</div>
-          ${q.customer_email ? `<div class="bill-to-detail">Email: ${q.customer_email}</div>` : ''}
-          <div class="bill-to-detail">Place of Supply: Gujarat</div>
-        </div>
-        <div class="vehicle-section">
-          <div>
-            <span class="vehicle-label">Vehicle Details</span>
-            <div class="vehicle-value">${(q.car_brand || '')} ${(q.car_model || '').toUpperCase()}</div>
-            ${q.car_segment ? `<div style="font-size:10px;color:#0284C7;font-weight:700;margin-top:2px;">Segment: ${q.car_segment.toUpperCase()}</div>` : ''}
-          </div>
-          <div style="margin-top:8px;">
-            <span class="vehicle-label">Vehicle No.</span>
-            <div class="vehicle-value">${q.vehicle_no || '-'}</div>
-          </div>
-        </div>
-      </div>
-      <table class="services-table">
-        <thead>
-          <tr>
-            <th style="width:50%;">DESCRIPTION</th>
-            <th style="width:15%;text-align:center;">QTY.</th>
-            <th style="width:17%;text-align:right;">RATE</th>
-            <th style="width:18%;text-align:right;">AMOUNT</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${itemRowsHtml}
-          ${emptyRows}
-        </tbody>
-      </table>
-      <div class="subtotal-row">
-        <div><span style="font-size:11px;font-weight:700;">SUBTOTAL</span></div>
-        <div style="display:flex;gap:40px;">
-          <span>${items.length} items</span>
-          <span>₹ ${formatINR(subtotal)}</span>
-        </div>
-      </div>
-      <div class="bottom-grid">
-        <div class="bank-section">
-          <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
-          <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
-          <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
-          <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
-        </div>
-        <div class="amounts-section">
-          <div class="amount-row"><span>Subtotal</span><span>₹ ${formatINR(subtotal)}</span></div>
-          ${discountAmt > 0 ? `<div class="amount-row" style="color:#0284C7;"><span>Discount (${q.discount_type === 'percentage' ? q.discount_value + '%' : 'Fixed'})</span><span>- ₹ ${formatINR(discountAmt)}</span></div>` : ''}
-          ${taxAmt > 0 ? `<div class="amount-row"><span>GST (${q.tax_percentage}%)</span><span>₹ ${formatINR(taxAmt)}</span></div>` : ''}
-          <div class="amount-row total"><span>Grand Total</span><span>₹ ${formatINR(grandTotal)}</span></div>
-        </div>
-      </div>
-      <div class="terms-section">
-        <div class="terms-left">
-          ${q.notes ? `<div class="terms-title">NOTES / ESTIMATE DETAILS</div><div class="terms-text" style="margin-bottom:8px;">${q.notes}</div>` : ''}
-          <div class="terms-title">TERMS AND CONDITIONS</div>
-          <div class="terms-text">
-            1. This is a price estimate / quotation only. Prices are subject to vehicle inspection.<br>
-            2. The estimate is valid until the date shown above.<br>
-            3. All disputes are subject to Anand jurisdiction only.
-          </div>
-        </div>
-        <div class="terms-right">
-          <div class="words-label">Total Amount (in words)</div>
-          <div class="words-value">${amountInWords(grandTotal)}</div>
-        </div>
-      </div>
-      <div class="signatory">
-        <div class="signatory-line">
-          <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
-            <div class="signatory-label">ESTIMATE PREPARED BY</div>
-            <div class="signatory-name">O3 Car Spaa</div>
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-    `;
+    const html = buildInvoiceHTML({
+      title: 'QUOTATION',
+      numberLabel: 'Quotation No.',
+      dateLabel: 'Date',
+      dueLabel: 'Valid Till',
+      dueDateOverride: validUntil !== '-' ? validUntil : '',
+      invoiceNumber: quotationNumber,
+      invoiceDate: quotationDate,
+      partyName: q.customer_name || 'Customer',
+      partyMobile: q.customer_mobile || '-',
+      billTo: { name: q.customer_name || 'Customer', mobile: q.customer_mobile, email: q.customer_email },
+      vehicle: (q.car_brand || q.car_model || q.vehicle_no) ? { model: `${q.car_brand || ''} ${q.car_model || ''}`.trim(), reg: q.vehicle_no } : null,
+      items: items.map(it => ({ name: it.name, note: it.item_type && it.item_type !== 'service' ? it.item_type : '', qty: it.quantity, rate: it.price, amount: it.total })),
+      grandTotal: subtotal,
+      discountAmt,
+      isWithGst: taxAmt > 0,
+      gstPct: parseFloat(q.tax_percentage) || 18,
+      gstAmt: taxAmt,
+      finalTotal: grandTotal,
+      receivedAmt: null,
+      balanceDue: 0,
+      statusText: 'ESTIMATE',
+      notes: [q.notes, 'This is an estimate, not a bill. Prices may change after inspection.'].filter(Boolean).join(' '),
+    });
 
     const pdfBuffer = await htmlToPdfBuffer(html);
     return { pdfBuffer, quotationNumber };
@@ -1655,11 +1220,12 @@ async function generateQuotationPDF(quotationId) {
 
 async function generateBookingInvoicePDF(bookingId) {
   const conn = await pool.getConnection();
+  let released = false;
   try {
     const [bookings] = await conn.query(`
       SELECT b.*, u.name AS customer_name, u.mobile AS customer_mobile, u.email AS customer_email,
              v.registration_no, v.brand, v.model,
-             s.name AS service_name, s.price_hatchback, s.price_medium_hatchback, s.price_sedan, s.price_premium_sedan, s.price_suv
+             s.name AS service_name, s.price_hatchback, s.price_semi_sedan, s.price_sedan, s.price_premium_sedan, s.price_suv, s.price_premium_suv
       FROM bookings b
       LEFT JOIN users u ON b.customer_id = u.id
       LEFT JOIN vehicles v ON b.vehicle_id = v.id
@@ -1670,12 +1236,16 @@ async function generateBookingInvoicePDF(bookingId) {
     if (!bookings.length) throw new Error('Booking not found');
     const booking = bookings[0];
 
-    const [settingsRows] = await conn.query('SELECT key_name, value FROM settings');
-    const settings = {};
-    settingsRows.forEach(r => { settings[r.key_name] = r.value; });
+    // Job card made for this booking: that is the real bill (services done, discount, payment)
+    const [[jc]] = await conn.query('SELECT id FROM job_carts WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [booking.id]);
+    if (jc) { conn.release(); released = true; return await generateInvoicePDF(jc.id); }
+
+    await loadStudio(1);
+    const settings = studioSettings();
 
     const invoiceNumber = `BKG-${booking.id}`;
-    const invoiceDate = new Date(booking.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    // the day the invoice is made
+    const invoiceDate = istDate(booking.completed_at || new Date());
 
     const logoBase64 = getLogoBase64();
     const logoHtml = logoBase64
@@ -1709,171 +1279,75 @@ async function generateBookingInvoicePDF(bookingId) {
       </tr>
     `).join('');
 
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <style>
-        @page { size: A4; margin: 0; }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: #1a1a1a; padding: 30px 35px; font-size: 12px; line-height: 1.4; }
-        .bill-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-        .bill-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-        .company-header { display: flex; align-items: center; gap: 15px; background: #0284C7; padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; margin-top: 8px; }
-        .company-logo { flex-shrink: 0; background: white; padding: 4px; border-radius: 4px; }
-        .company-info { color: white; }
-        .company-info h1 { font-size: 22px; font-weight: 800; margin-bottom: 3px; }
-        .company-info p { font-size: 10px; line-height: 1.5; opacity: 0.95; }
-        .company-info .gst-row { margin-top: 4px; font-size: 10px; font-weight: 600; }
-        .invoice-meta { display: flex; border: 1px solid #0284C7; margin-bottom: 12px; }
-        .invoice-meta-left, .invoice-meta-right { flex: 1; padding: 8px 12px; }
-        .invoice-meta-right { text-align: right; border-left: 1px solid #0284C7; }
-        .meta-label { font-size: 10px; color: #0284C7; font-weight: 700; }
-        .meta-value { font-size: 13px; font-weight: 700; }
-        .bill-details { display: flex; border: 1px solid #0284C7; border-top: none; margin-top: -12px; margin-bottom: 15px; }
-        .bill-to-section { flex: 1; padding: 10px 12px; }
-        .vehicle-section { flex: 0 0 220px; padding: 10px 12px; border-left: 1px solid #0284C7; text-align: right; }
-        .bill-to-label, .vehicle-label { font-size: 10px; font-weight: 700; color: #0284C7; text-transform: uppercase; }
-        .bill-to-name { font-size: 13px; font-weight: 700; margin-top: 3px; }
-        .bill-to-detail { font-size: 11px; color: #444; margin-top: 1px; }
-        .vehicle-value { font-size: 12px; font-weight: 600; margin-top: 2px; }
-        .services-table { width: 100%; border-collapse: collapse; margin-bottom: 0; }
-        .services-table thead th { background: #0284C7; color: white; padding: 8px 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; }
-        .services-table thead th:nth-child(2), .services-table thead th:nth-child(3), .services-table thead th:nth-child(4) { text-align: center; }
-        .services-table thead th:last-child { text-align: right; }
-        .subtotal-row { display: flex; justify-content: space-between; padding: 10px 12px; border: 1px solid #0284C7; font-weight: 700; font-size: 13px; margin-top: 20px; margin-bottom: 0; }
-        .bottom-grid { display: flex; gap: 0; border: 1px solid #0284C7; border-top: none; }
-        .bank-section { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .amounts-section { flex: 0 0 260px; padding: 0; }
-        .bank-title { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .bank-row { display: flex; font-size: 10px; margin-bottom: 2px; }
-        .bank-label { width: 85px; font-weight: 600; }
-        .bank-value { flex: 1; }
-        .amount-row { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid #eee; }
-        .amount-row.total { background: #0284C7; color: white; font-weight: 700; font-size: 13px; }
-        .amount-label { font-weight: 600; }
-        .amount-value { font-weight: 700; }
-        .terms-section { border: 1px solid #0284C7; border-top: none; display: flex; }
-        .terms-left { flex: 1; padding: 12px; border-right: 1px solid #0284C7; }
-        .terms-right { flex: 0 0 260px; padding: 12px; }
-        .terms-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
-        .terms-text { font-size: 9px; color: #444; line-height: 1.5; }
-        .words-label { font-size: 10px; font-weight: 700; margin-bottom: 4px; }
-        .words-value { font-size: 11px; font-style: italic; color: #333; }
-        .signatory { border: 1px solid #0284C7; border-top: none; padding: 20px 12px 12px; text-align: right; }
-        .signatory-line { width: 200px; margin-left: auto; text-align: center; }
-        .signatory-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #0284C7; }
-        .signatory-name { font-size: 11px; font-weight: 600; margin-top: 2px; }
-      </style>
-    </head>
-    <body>
-      <div class="bill-header">
-        <div><span class="bill-title">BILL OF SUPPLY</span></div>
-      </div>
-      <div class="company-header">
-        <div class="company-logo">${logoHtml}</div>
-        <div class="company-info">
-          <h1>O3 Car Spaa</h1>
-          <p>Plot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC,<br>Vitthal Udyognagar, Anand, Gujarat - 388121</p>
-          <div class="gst-row">
-            <span>Mobile: 7225030303</span>&nbsp;&nbsp;&nbsp;
-            <span>GSTIN: [GSTIN]</span>&nbsp;&nbsp;&nbsp;
-            <span>PAN Number: [PAN Number]</span>
-          </div>
-          <p>Email: o3carspavvn@gmail.com</p>
-        </div>
-      </div>
-      <div class="invoice-meta">
-        <div class="invoice-meta-left">
-          <span class="meta-label">Invoice No.: </span><span class="meta-value">${invoiceNumber}</span>
-        </div>
-        <div class="invoice-meta-right">
-          <span class="meta-label">Invoice Date: </span><span class="meta-value">${invoiceDate}</span>
-        </div>
-      </div>
-      <div class="bill-details">
-        <div class="bill-to-section">
-          <div class="bill-to-label">BILL TO</div>
-          <div class="bill-to-name">${booking.customer_name || '-'}</div>
-          <div class="bill-to-detail">Mobile: ${booking.customer_mobile || '-'}</div>
-          <div class="bill-to-detail">Place of Supply: Gujarat</div>
-        </div>
-        <div class="vehicle-section">
-          <div><span class="vehicle-label">Vehicle Name</span><div class="vehicle-value">${(booking.brand || '')} ${(booking.model || '').toUpperCase()}</div></div>
-          <div style="margin-top:8px;"><span class="vehicle-label">Vehicle No.</span><div class="vehicle-value">${booking.registration_no || '-'}</div></div>
-        </div>
-      </div>
-      <table class="services-table">
-        <thead>
-          <tr>
-            <th style="width:50%;">SERVICE</th>
-            <th style="width:15%;text-align:center;">QTY.</th>
-            <th style="width:17%;text-align:right;">RATE</th>
-            <th style="width:18%;text-align:right;">AMOUNT</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${serviceRowsHtml}
-          ${emptyRows}
-        </tbody>
-      </table>
-      <div class="subtotal-row">
-        <div><span style="font-size:11px;font-weight:700;">SUBTOTAL</span></div>
-        <div style="display:flex;gap:40px;"><span>1</span><span>₹ ${formatINR(finalTotal)}</span></div>
-      </div>
-      <div class="bottom-grid">
-        <div class="bank-section">
-          <div class="bank-title">BANK DETAILS</div>
-          <div class="bank-row"><span class="bank-label">Name:</span><span class="bank-value">O3 Car Spaa</span></div>
-          <div class="bank-row"><span class="bank-label">IFSC Code:</span><span class="bank-value">[IFSC Code]</span></div>
-          <div class="bank-row"><span class="bank-label">Account No:</span><span class="bank-value">[Account No]</span></div>
-          <div class="bank-row"><span class="bank-label">Bank:</span><span class="bank-value">[Bank Name & Branch]</span></div>
-        </div>
-        <div class="amounts-section">
-          <div class="amount-row"><span class="amount-label">Subtotal</span><span class="amount-value">₹ ${formatINR(finalTotal)}</span></div>
-          ${parseFloat(booking.pickup_charge || 0) > 0 ? `
-          <div class="amount-row">
-            <span class="amount-label">Pickup & Drop (${(booking.pickup_type || 'both').toUpperCase()})</span>
-            <span class="amount-value">₹ ${formatINR(booking.pickup_charge)}</span>
-          </div>
-          ` : ''}
-          <div class="amount-row total"><span class="amount-label">Total Payable</span><span class="amount-value">₹ ${formatINR(finalTotal)}</span></div>
-          <div class="amount-row"><span class="amount-label">Received Amount</span><span class="amount-value">₹ ${formatINR(advancePaid)}</span></div>
-          <div class="amount-row"><span class="amount-label">Balance Due</span><span class="amount-value">₹ ${formatINR(balanceDue)}</span></div>
-          <div class="amount-row"><span class="amount-label">Status</span><span class="amount-value" style="color: ${isPaid ? '#2e7d32' : '#0369A1'}; font-weight: bold;">${paymentStatusText}</span></div>
-        </div>
-      </div>
-      <div class="terms-section">
-        <div class="terms-left">
-          <div class="terms-title">TERMS AND CONDITIONS</div>
-          <div class="terms-text">1. Your car belongings are not our responsibility and make sure you check your belongings before dropping your car at our workshop.<br>2. Please check if any cash or others important documents are there.<br>3. All disputes are subject to Anand jurisdiction only.</div>
-        </div>
-        <div class="terms-right">
-          <div class="words-label">Total Amount (in words)</div>
-          <div class="words-value">${amountInWords(finalTotal)}</div>
-        </div>
-      </div>
-      <div class="signatory">
-        <div class="signatory-line">
-          <div style="border-top:1px solid #999;padding-top:6px;margin-top:30px;">
-            <div class="signatory-label">AUTHORISED SIGNATORY FOR</div>
-            <div class="signatory-name">O3 Car Spaa</div>
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-    `;
+    const pickup = parseFloat(booking.pickup_charge || 0);
+    const bkDiscount = parseFloat(booking.discount_amount || 0);
+    // every booked service on its own line
+    let cartItems = [];
+    try { cartItems = JSON.parse(booking.cart_items_json || '[]') || []; } catch { cartItems = []; }
+    const items = cartItems.length
+      ? cartItems.map(c => ({ name: c.name, note: !Number(c.price) && booking.package_id ? `₹0 — included in your package${booking.package_name ? ` (${booking.package_name})` : ''}` : '', qty: 1, rate: Number(c.price) || 0, amount: Number(c.price) || 0 }))
+      : [{ name: booking.service_name || booking.package_service_name || 'Car wash service', qty: 1, rate: finalTotal - pickup + bkDiscount, amount: finalTotal - pickup + bkDiscount }];
+    const itemsTotal = items.reduce((a, i) => a + i.amount, 0);
+    const html = buildInvoiceHTML({
+      title: 'INVOICE',
+      invoiceNumber,
+      invoiceDate,
+      partyName: booking.customer_name || 'Customer',
+      partyMobile: booking.customer_mobile || '-',
+      billTo: { name: booking.customer_name || 'Customer', mobile: booking.customer_mobile, email: booking.customer_email },
+      vehicle: { model: `${booking.brand || ''} ${booking.model || ''}`.trim(), reg: booking.registration_no },
+      items,
+      extraCharges: pickup > 0 ? [{ label: 'Pickup / drop', amount: pickup }] : [],
+      grandTotal: itemsTotal,
+      discountAmt: bkDiscount,
+      discountType: 'fixed',
+      discountReason: bkDiscount > 0 ? (Number(booking.discount_percent) > 0 ? `First wash ${Number(booking.discount_percent)}% off` : 'Discount') : '',
+      finalTotal,
+      receivedAmt: advancePaid,
+      balanceDue,
+      statusText: paymentStatusText,
+    });
 
-    const pdfBuffer = await htmlToPdfBuffer(html);
+    const pdfBuffer = await htmlToPdfBuffer(withQr(html, await paymentQrHtml(balanceDue, invoiceNumber)));
     return { pdfBuffer, invoiceNumber };
   } finally {
-    conn.release();
+    if (!released) conn.release();
   }
 }
 
+/** Sample invoice with the studio's current Settings — for the "Preview invoice" button. */
+async function generateSampleInvoicePDF(franchiseId = 1) {
+  await loadStudio(franchiseId);
+  const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const items = [
+    { name: 'Premium Foam Wash', qty: 1, rate: 800, amount: 800 },
+    { name: 'Ceramic Coating', note: '3-year protection', qty: 1, rate: 6500, amount: 6500 },
+    { name: 'Interior Detailing', qty: 1, rate: 2000, amount: 2000 },
+  ];
+  const subtotal = items.reduce((a, b) => a + b.amount, 0);
+  const html = buildInvoiceHTML({
+    title: 'INVOICE',
+    invoiceNumber: `${(STUDIO.settings && STUDIO.settings.invoice_prefix) || 'O3'}-SAMPLE`,
+    invoiceDate: today,
+    partyName: 'Sample Customer',
+    partyMobile: '9XXXXXXXXX',
+    billTo: { name: 'Sample Customer', mobile: '9XXXXXXXXX', address: 'Customer address appears here' },
+    vehicle: { model: 'Toyota Fortuner', reg: 'GJ06AB1234', colour: 'White', km: 45230, type: 'SUV' },
+    items,
+    grandTotal: subtotal,
+    finalTotal: subtotal,
+    receivedAmt: null,
+    balanceDue: subtotal,
+    statusText: 'SAMPLE',
+  });
+  return htmlToPdfBuffer(withQr(html, await paymentQrHtml(subtotal, 'Sample')));
+}
+
 module.exports = {
+  htmlToPdfBuffer,
+  renderStatementPDF,
+  warmUp: () => getBrowser().catch(() => null),
+  generateSampleInvoicePDF,
   generateInvoicePDF,
   generateBuySellInvoicePDF,
   generateManualBillPDF,

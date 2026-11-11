@@ -39,7 +39,7 @@ export default function Pagination({
 
   return (
     <div className={`flex items-center justify-between px-5 py-3 border-t border-gray-100 bg-gray-50/50 ${className}`}>
-      <p className="text-[11px] text-[#5f5e5e] font-medium">
+      <p className="text-[11px] text-[#64748B] font-medium">
         Showing {start}–{end} of {total}
       </p>
       <div className="flex items-center gap-1">
@@ -67,7 +67,7 @@ export default function Pagination({
             className={`w-7 h-7 rounded text-xs font-semibold transition-colors ${
               p === page
                 ? 'bg-[#0F172A] text-white'
-                : 'text-[#5f5e5e] hover:bg-gray-200'
+                : 'text-[#64748B] hover:bg-gray-200'
             }`}
           >
             {p}

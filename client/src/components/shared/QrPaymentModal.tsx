@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
+import StudioQr from './StudioQr';
+import { fileUrl } from '../../utils/endpoints';
 import Modal from '../ui/Modal';
 import api from '../../api/axiosInstance';
 import { useToastStore } from '../../store/toastStore';
 import { Loader2, QrCode, CheckCircle, Info } from 'lucide-react';
+import Dropdown from '../ui/Dropdown';
 
 interface QrPaymentModalProps {
   open: boolean;
@@ -23,6 +26,9 @@ export default function QrPaymentModal({
 }: QrPaymentModalProps) {
   const { addToast } = useToastStore();
   const [transactionId, setTransactionId] = useState('');
+  // what the customer actually paid (defaults to the amount due; can be less for a part payment)
+  const [paidAmount, setPaidAmount] = useState(String(amount || ''));
+  useEffect(() => { if (open) setPaidAmount(String(amount || '')); }, [open, amount]);
   const [submitting, setSubmitting] = useState(false);
   const [allQrs, setAllQrs] = useState<any[]>([]);
   const [selectedQrId, setSelectedQrId] = useState<number | null>(null);
@@ -33,10 +39,10 @@ export default function QrPaymentModal({
     upi_name: string;
     upi_qr_url: string | null;
   }>({
-    studio_name: 'O3 Car Spaaa',
-    upi_id: '7225030303@paytm',
-    upi_number: '7225030303',
-    upi_name: 'O3 Car Spaaa',
+    studio_name: 'O3 Car Spaa',
+    upi_id: '',
+    upi_number: '',
+    upi_name: 'O3 Car Spaa',
     upi_qr_url: null,
   });
 
@@ -76,12 +82,15 @@ export default function QrPaymentModal({
       return;
     }
 
+    const paid = Number(paidAmount);
+    if (!(paid > 0)) { addToast('error', 'Enter the amount you paid'); return; }
+
     setSubmitting(true);
     try {
       const res = await api.post('/payments/qr-confirm', {
         booking_id: bookingId,
         package_request_id: packageRequestId,
-        amount,
+        amount: paid,
         transaction_id: transactionId.trim(),
         payment_qr_id: currentQr.id
       });
@@ -110,7 +119,7 @@ export default function QrPaymentModal({
             <label className="block text-[11px] font-black text-slate-700 uppercase tracking-wider mb-1">
               Select Preferred Payment QR Code
             </label>
-            <select
+            <Dropdown
               value={selectedQrId || ''}
               onChange={(e) => setSelectedQrId(parseInt(e.target.value, 10))}
               className="w-full px-3 py-2 bg-white border border-blue-300 rounded-lg text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
@@ -120,7 +129,7 @@ export default function QrPaymentModal({
                   {q.title} — {q.upi_id}
                 </option>
               ))}
-            </select>
+            </Dropdown>
           </div>
         )}
 
@@ -128,12 +137,12 @@ export default function QrPaymentModal({
         <div className="bg-sky-50 border border-sky-100 rounded-xl p-3.5 w-full flex items-center justify-between">
           <div className="text-left">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Payee Name</p>
-            <p className="text-sm font-extrabold text-slate-900">{currentQr.upi_name || settings.upi_name || settings.studio_name || 'O3 Car Spaaa'}</p>
+            <p className="text-sm font-extrabold text-slate-900">{currentQr.upi_name || settings.upi_name || settings.studio_name || 'O3 Car Spaa'}</p>
           </div>
           <div className="text-right">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">UPI ID / Number</p>
-            <p className="text-sm font-bold text-[#0284C7]">{currentQr.upi_id || settings.upi_id || '7225030303@paytm'}</p>
-            <p className="text-xs text-slate-500 font-semibold">{currentQr.upi_number || settings.upi_number || '7225030303'}</p>
+            <p className="text-sm font-bold text-[#0284C7]">{currentQr.upi_id || settings.upi_id}</p>
+            <p className="text-xs text-slate-500 font-semibold">{currentQr.upi_number || settings.upi_number}</p>
           </div>
         </div>
 
@@ -147,19 +156,12 @@ export default function QrPaymentModal({
         <div className="relative border-4 border-slate-100 rounded-2xl overflow-hidden bg-white shadow-md p-2 w-64 h-64 flex flex-col items-center justify-center">
           {currentQr.qr_image_url || settings.upi_qr_url ? (
             <img
-              src={currentQr.qr_image_url || settings.upi_qr_url || ''}
+              src={fileUrl(currentQr.qr_image_url || settings.upi_qr_url || '')}
               alt="UPI QR Code"
               className="w-56 h-56 object-contain"
             />
           ) : (
-            <div className="flex flex-col items-center justify-center w-full h-full p-4 bg-sky-50/50 rounded-xl border border-sky-100">
-              <QrCode size={64} className="text-[#0284C7] mb-2" />
-              <p className="text-xs font-bold text-slate-800">{currentQr.upi_name || settings.upi_name || 'O3 Car Spaaa'}</p>
-              <p className="text-[11px] font-semibold text-[#0284C7] mt-0.5">{currentQr.upi_id || settings.upi_id || '7225030303@paytm'}</p>
-              <span className="mt-2 px-2.5 py-1 bg-white text-[10px] text-slate-500 font-medium rounded-md shadow-xs border border-slate-200">
-                Scan with GPay, PhonePe, Paytm or UPI App
-              </span>
-            </div>
+            <StudioQr amount={amount} className="w-56 h-56" />
           )}
         </div>
 
@@ -170,7 +172,7 @@ export default function QrPaymentModal({
             <p className="text-xs font-bold text-slate-800">Scan & Pay Instructions</p>
             <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
               1. Open GPay, PhonePe, Paytm, or any UPI App & scan the QR above.<br />
-              2. Pay exact amount <strong>₹{amount.toLocaleString('en-IN')}</strong>.<br />
+              2. Pay <strong>₹{amount.toLocaleString("en-IN")}</strong> (or the amount agreed with the studio) and enter what you paid below.<br />
               3. Paste your 12-digit <strong>UTR / Reference No.</strong> below to confirm.
             </p>
           </div>
@@ -178,6 +180,11 @@ export default function QrPaymentModal({
 
         {/* Transaction ID Input Form */}
         <form onSubmit={handleSubmit} className="w-full space-y-3 pt-1">
+          <div className="text-left">
+            <label className="block text-xs font-bold text-slate-700 mb-1">Amount you paid (₹) <span className="text-blue-500">*</span></label>
+            <input type="number" inputMode="decimal" min={1} value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)}
+              className="w-full px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-[#0284C7]/20 focus:border-[#0284C7] bg-white font-bold" />
+          </div>
           <div className="text-left">
             <label className="block text-xs font-bold text-slate-700 mb-1">
               Enter 12-Digit UTR / UPI Transaction Reference No. <span className="text-blue-500">*</span>

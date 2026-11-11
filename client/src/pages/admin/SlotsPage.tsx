@@ -15,9 +15,11 @@ import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
 import Modal from '../../components/ui/Modal';
 import { useUIStore } from '../../store/uiStore';
-import { formatTime } from '../../utils/formatters';
+import { formatTime, dateOnly } from '../../utils/formatters';
 import api from '../../api/axiosInstance';
+import Dropdown from '../../components/ui/Dropdown';
 
+import { askText } from '../../utils/ask';
 function getWeekDates(offset: number): Date[] {
   const now = new Date();
   const monday = new Date(now);
@@ -100,16 +102,9 @@ export default function SlotsPage() {
         // Get all slot IDs for this week
         if (slots.length === 0) { setWeekBookings([]); return; }
         const slotIds = slots.map((s: any) => s.id);
-        // Fetch in batches — get bookings for each slot
-        const allBookings: any[] = [];
-        for (const sid of slotIds) {
-          try {
-            const res = await api.get(`/bookings?slot_id=${sid}&limit=50`);
-            const bks = (res.data.data || []).map((b: any) => ({ ...b, _slot_id: sid }));
-            allBookings.push(...bks);
-          } catch { /* skip */ }
-        }
-        setWeekBookings(allBookings);
+        // one request for the whole week (was one request per slot)
+        const res = await api.get('/bookings', { params: { slot_ids: slotIds.join(','), limit: 500 } });
+        setWeekBookings((res.data.data || []).map((b: any) => ({ ...b, _slot_id: b.slot_id })));
       } catch { setWeekBookings([]); }
     };
     if (slots.length > 0) fetchWeekBookings();
@@ -189,7 +184,7 @@ export default function SlotsPage() {
     try {
       let reason = undefined;
       if (!slot.is_blocked) {
-        const inputReason = window.prompt('Enter reason for blocking this slot:', 'Walk-in Reserved');
+        const inputReason = await askText('Reason for blocking this slot:', 'Walk-in reserved', { title: 'Block slot', okLabel: 'Block slot' });
         if (inputReason === null) return; // User cancelled
         reason = inputReason || 'Walk-in Reserved';
       }
@@ -348,12 +343,28 @@ export default function SlotsPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => {
+                setClosureType('full_day');
+                setClosureStartDate(from_date);
+                setClosureEndDate(to_date);
+                setClosureTitle(`Week Closure (${from_date} to ${to_date})`);
+                setClosureReason('Whole Week Holiday / Studio Renovation');
+                setClosureTab('create');
+                setClosureModalOpen(true);
+              }}
+              icon={<Calendar size={14} className="text-amber-500" />}
+            >
+              Close Whole Week
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => navigate('/admin/customer-bookings')}
               icon={<ExternalLink size={14} />}
             >
               All Bookings
             </Button>
-            <Button onClick={() => { setGenFrom(from_date); setGenTo(to_date); setGenOpen(true); }} icon={<Plus size={16} />}>
+            <Button onClick={() => { const today = fmtDate(new Date()); setGenFrom(from_date < today ? today : from_date); setGenTo(to_date < today ? today : to_date); setGenOpen(true); }} icon={<Plus size={16} />}>
               Generate Slots
             </Button>
           </div>
@@ -368,7 +379,7 @@ export default function SlotsPage() {
           </button>
           <button
             onClick={() => setWeekOffset(0)}
-            className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider bg-[#f6f3f2] rounded-lg hover:bg-[#e5e2e1] transition-colors"
+            className="px-3 py-1.5 text-xs font-bold uppercase tracking-wider bg-[#F1F5F9] rounded-lg hover:bg-[#E2E8F0] transition-colors"
           >
             This Week
           </button>
@@ -377,7 +388,7 @@ export default function SlotsPage() {
           </button>
         </div>
 
-        <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#5f5e5e] hover:text-[#0F172A] transition-colors bg-white px-3 py-1.5 rounded-lg border border-gray-200">
+        <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#64748B] hover:text-[#0F172A] transition-colors bg-white px-3 py-1.5 rounded-lg border border-gray-200">
           <input
             type="checkbox"
             checked={showDeleted}
@@ -385,6 +396,13 @@ export default function SlotsPage() {
             className="rounded border-gray-300 text-[#2563EB] focus:ring-[#2563EB]"
           />
           <span>Show Archived / Deleted Slots</span>
+          {showDeleted && (
+            <span className={`ml-1 px-2 py-0.5 rounded-full text-[10px] ${slots.some((x: any) => x.is_deleted) ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-500'}`}>
+              {slots.filter((x: any) => x.is_deleted).length
+                ? `${slots.filter((x: any) => x.is_deleted).length} deleted this week (shown in red)`
+                : 'none deleted this week'}
+            </span>
+          )}
         </label>
       </div>
 
@@ -399,14 +417,14 @@ export default function SlotsPage() {
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <Calendar size={40} className="text-gray-300 mb-4" />
               <p className="font-bold text-[#0F172A]">No Slots This Week</p>
-              <p className="text-sm text-[#5f5e5e] mt-1">Generate slots using the button above</p>
+              <p className="text-sm text-[#64748B] mt-1">Generate slots using the button above</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-gray-100">
-                    <th className="p-3 text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] text-left w-24 sticky left-0 bg-white z-10">Time</th>
+                    <th className="p-3 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] text-left w-24 sticky left-0 bg-white z-10">Time</th>
                     {weekDates.map((d) => {
                       const isToday = fmtDate(d) === fmtDate(new Date());
                       const dayClosure = closuresList.find((c: any) => {
@@ -426,12 +444,38 @@ export default function SlotsPage() {
                       });
 
                       return (
-                        <th key={fmtDate(d)} className={`p-3 text-[10px] font-extrabold uppercase tracking-widest text-center min-w-[140px] ${isToday ? 'text-[#2563EB] bg-blue-50/30' : 'text-[#5f5e5e]'}`}>
+                        <th key={fmtDate(d)} className={`p-3 text-[10px] font-extrabold uppercase tracking-widest text-center min-w-[140px] ${isToday ? 'text-[#2563EB] bg-blue-50/30' : 'text-[#64748B]'}`}>
                           <div>{fmtDay(d)}</div>
-                          {dayClosure && (
-                            <div className="text-[9px] font-black text-rose-700 bg-rose-100 rounded px-1.5 py-0.5 mt-0.5 max-w-[130px] truncate mx-auto border border-rose-200" title={dayClosure.title || dayClosure.reason || 'Closed'}>
-                              {dayClosure.title || 'Studio Closed'}
+                          {dayClosure ? (
+                            <div className="mt-1 flex flex-col items-center gap-1">
+                              <span className="text-[9px] font-black text-rose-700 bg-rose-100 rounded px-1.5 py-0.5 max-w-[130px] truncate border border-rose-200" title={dayClosure.title || dayClosure.reason || 'Closed'}>
+                                {dayClosure.title || 'Studio Closed'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleReopenClosure(dayClosure.id, dayClosure.title)}
+                                className="text-[8px] font-bold text-rose-600 hover:text-rose-800 underline uppercase"
+                              >
+                                Reopen Day
+                              </button>
                             </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setClosureType('full_day');
+                                setClosureStartDate(fmtDate(d));
+                                setClosureEndDate(fmtDate(d));
+                                setClosureTitle(`Holiday / Closed on ${fmtDay(d)}`);
+                                setClosureReason('Full Day Studio Closure');
+                                setClosureTab('create');
+                                setClosureModalOpen(true);
+                              }}
+                              className="mt-1 px-2 py-0.5 text-[8px] font-black text-gray-400 hover:text-rose-600 hover:bg-rose-50 border border-gray-200 hover:border-rose-200 rounded-md transition-all inline-flex items-center gap-1"
+                              title={`Close whole day for ${fmtDay(d)}`}
+                            >
+                              <Ban size={9} /> Close Day
+                            </button>
                           )}
                         </th>
                       );
@@ -441,7 +485,7 @@ export default function SlotsPage() {
                 <tbody>
                   {timeSlots.map((time) => (
                     <tr key={time} className="border-b border-gray-50">
-                      <td className="p-3 text-xs font-bold text-[#5f5e5e] sticky left-0 bg-white whitespace-nowrap z-10">
+                      <td className="p-3 text-xs font-bold text-[#64748B] sticky left-0 bg-white whitespace-nowrap z-10">
                         {formatTime(time)}
                       </td>
                       {weekDates.map((d) => {
@@ -510,7 +554,7 @@ export default function SlotsPage() {
                                               {b.customer_name?.split(' ')[0] || 'Customer'}
                                             </p>
                                             {b.vehicle_brand && (
-                                              <p className="text-[8px] text-[#5f5e5e] truncate leading-tight">
+                                              <p className="text-[8px] text-[#64748B] truncate leading-tight">
                                                 {b.vehicle_brand} {b.vehicle_model ? b.vehicle_model.substring(0, 8) : ''}
                                               </p>
                                             )}
@@ -518,7 +562,7 @@ export default function SlotsPage() {
                                         </div>
                                       ))}
                                       {confirmedBookings.length > 3 && (
-                                        <p className="text-[8px] font-bold text-[#5f5e5e] text-center">
+                                        <p className="text-[8px] font-bold text-[#64748B] text-center">
                                           +{confirmedBookings.length - 3} more
                                         </p>
                                       )}
@@ -548,9 +592,9 @@ export default function SlotsPage() {
 
             <div className="space-y-3 text-sm">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Date & Time</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Date & Time</p>
                 <p className="font-bold text-[#0F172A]">
-                  {new Date(selectedSlot.slot_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  {new Date(`${dateOnly(selectedSlot.slot_date)}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
                   {' · '}
                   {formatTime(selectedSlot.start_time)} – {formatTime(selectedSlot.end_time)}
                 </p>
@@ -558,7 +602,7 @@ export default function SlotsPage() {
 
               <div>
                 <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Capacity</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Capacity</p>
                   {!editingCap && (
                     <button onClick={() => setEditingCap(true)} className="text-[10px] font-bold text-[#2563EB] hover:underline">Edit</button>
                   )}
@@ -581,7 +625,7 @@ export default function SlotsPage() {
               </div>
 
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Status</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">Status</p>
                 <p className="font-bold">
                   {selectedSlot.is_blocked ? (
                     <span className="text-gray-400">Blocked {selectedSlot.blocked_reason ? `(${selectedSlot.blocked_reason})` : ''}</span>
@@ -596,9 +640,9 @@ export default function SlotsPage() {
 
             {/* Bookings List */}
             <div className="mt-5 pt-4 border-t border-gray-100">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-3 flex justify-between items-center">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-3 flex justify-between items-center">
                 <span>Bookings</span>
-                <span className="bg-[#f6f3f2] px-1.5 py-0.5 rounded text-[10px]">{slotBookings.length} Total</span>
+                <span className="bg-[#F1F5F9] px-1.5 py-0.5 rounded text-[10px]">{slotBookings.length} Total</span>
               </p>
               {panelLoading ? (
                 <div className="flex justify-center py-4"><Loader2 className="animate-spin text-[#2563EB] w-4 h-4" /></div>
@@ -607,7 +651,7 @@ export default function SlotsPage() {
                   {slotBookings.map((b) => (
                     <div
                       key={b.id}
-                      className="bg-[#f6f3f2] p-3 rounded-xl text-sm border border-transparent hover:border-[#e5e2e1] transition-all group/card cursor-pointer"
+                      className="bg-[#F1F5F9] p-3 rounded-xl text-sm border border-transparent hover:border-[#E2E8F0] transition-all group/card cursor-pointer"
                       onClick={() => navigate('/admin/customer-bookings')}
                     >
                       {/* Customer header */}
@@ -618,7 +662,7 @@ export default function SlotsPage() {
                           </div>
                           <div className="min-w-0">
                             <p className="font-bold text-[#0F172A] text-xs truncate">{b.customer_name}</p>
-                            <p className="text-[10px] text-[#5f5e5e] flex items-center gap-1">
+                            <p className="text-[10px] text-[#64748B] flex items-center gap-1">
                               <Phone size={8} /> {b.customer_mobile}
                             </p>
                           </div>
@@ -643,7 +687,7 @@ export default function SlotsPage() {
 
                       {/* Service */}
                       {(b.service_name || b.package_name) && (
-                        <p className="text-[10px] text-[#5f5e5e] mb-2">
+                        <p className="text-[10px] text-[#64748B] mb-2">
                           <span className="font-bold">Service:</span> {b.service_name || b.package_name}
                         </p>
                       )}
@@ -666,7 +710,7 @@ export default function SlotsPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-center text-[#5f5e5e] py-4 bg-gray-50 rounded-lg">No bookings yet</p>
+                <p className="text-xs text-center text-[#64748B] py-4 bg-gray-50 rounded-lg">No bookings yet</p>
               )}
 
               {/* Link to all customer bookings */}
@@ -802,7 +846,7 @@ export default function SlotsPage() {
               className={`pb-2.5 px-4 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 ${
                 closureTab === 'create'
                   ? 'border-[#2563EB] text-[#2563EB]'
-                  : 'border-transparent text-[#5f5e5e] hover:text-[#0F172A]'
+                  : 'border-transparent text-[#64748B] hover:text-[#0F172A]'
               }`}
             >
               + Add Closure or Holiday
@@ -812,7 +856,7 @@ export default function SlotsPage() {
               className={`pb-2.5 px-4 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 flex items-center gap-1.5 ${
                 closureTab === 'list'
                   ? 'border-[#2563EB] text-[#2563EB]'
-                  : 'border-transparent text-[#5f5e5e] hover:text-[#0F172A]'
+                  : 'border-transparent text-[#64748B] hover:text-[#0F172A]'
               }`}
             >
               Active Closures & Holidays
@@ -825,13 +869,13 @@ export default function SlotsPage() {
           {closureTab === 'create' ? (
             <div className="space-y-4 pt-1">
               <div>
-                <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">
                   Closure Scope *
                 </label>
-                <select
+                <Dropdown
                   value={closureType}
                   onChange={(e) => setClosureType(e.target.value)}
-                  className="w-full px-3 py-2.5 bg-[#f6f3f2] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
+                  className="w-full px-3 py-2.5 bg-[#F1F5F9] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
                 >
                   <option value="single_slot">Single Slot (Specific Date & Time)</option>
                   <option value="full_day">Whole Day (Entire Date Closed)</option>
@@ -839,7 +883,7 @@ export default function SlotsPage() {
                   <option value="range">Custom Date Range (From - To Dates)</option>
                   <option value="recurring_weekly">Recurring Weekly Holiday (e.g. Every Monday / Sunday)</option>
                   <option value="recurring_yearly">Recurring Yearly Holiday (e.g. Diwali / National Holiday)</option>
-                </select>
+                </Dropdown>
               </div>
 
               {/* Dynamic Inputs depending on type */}
@@ -879,7 +923,7 @@ export default function SlotsPage() {
                     value={closureStartDate}
                     onChange={(e) => setClosureStartDate(e.target.value)}
                   />
-                  <p className="text-[11px] text-[#5f5e5e] mt-1">
+                  <p className="text-[11px] text-[#64748B] mt-1">
                     Will automatically close from this date for the following 7 days.
                   </p>
                 </div>
@@ -904,13 +948,13 @@ export default function SlotsPage() {
 
               {closureType === 'recurring_weekly' && (
                 <div>
-                  <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                  <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">
                     Repeats Every Week On *
                   </label>
-                  <select
+                  <Dropdown
                     value={closureRecurrenceDay}
                     onChange={(e) => setClosureRecurrenceDay(parseInt(e.target.value, 10))}
-                    className="w-full px-3 py-2.5 bg-[#f6f3f2] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
+                    className="w-full px-3 py-2.5 bg-[#F1F5F9] border border-transparent rounded-lg text-sm font-semibold text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all cursor-pointer"
                   >
                     <option value={0}>Sunday</option>
                     <option value={1}>Monday</option>
@@ -919,7 +963,7 @@ export default function SlotsPage() {
                     <option value={4}>Thursday</option>
                     <option value={5}>Friday</option>
                     <option value={6}>Saturday</option>
-                  </select>
+                  </Dropdown>
                 </div>
               )}
 
@@ -931,7 +975,7 @@ export default function SlotsPage() {
                     value={closureStartDate}
                     onChange={(e) => setClosureStartDate(e.target.value)}
                   />
-                  <p className="text-[11px] text-[#5f5e5e] mt-1">
+                  <p className="text-[11px] text-[#64748B] mt-1">
                     This day will automatically be marked closed every year on the same month & day.
                   </p>
                 </div>
@@ -945,7 +989,7 @@ export default function SlotsPage() {
               />
 
               <div>
-                <label className="block text-xs font-bold text-[#5f5e5e] mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-bold text-[#64748B] mb-1.5 uppercase tracking-wide">
                   Reason Shown to Customers *
                 </label>
                 <textarea
@@ -953,9 +997,9 @@ export default function SlotsPage() {
                   value={closureReason}
                   onChange={(e) => setClosureReason(e.target.value)}
                   placeholder="e.g. Studio is closed for Diwali celebrations. Appointments will resume tomorrow."
-                  className="w-full px-3 py-2 bg-[#f6f3f2] border border-transparent rounded-lg text-sm text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all"
+                  className="w-full px-3 py-2 bg-[#F1F5F9] border border-transparent rounded-lg text-sm text-[#0F172A] focus:ring-2 focus:ring-[#2563EB]/20 focus:bg-white focus:border-[#2563EB]/30 transition-all"
                 />
-                <p className="text-[11px] text-[#5f5e5e] mt-1">
+                <p className="text-[11px] text-[#64748B] mt-1">
                   Customers will see this notice clearly on the booking calendar and time slot screen.
                 </p>
               </div>
@@ -981,17 +1025,17 @@ export default function SlotsPage() {
                 <div className="py-12 text-center bg-gray-50 rounded-xl border border-gray-100">
                   <Calendar size={32} className="text-gray-300 mx-auto mb-2" />
                   <p className="text-sm font-bold text-[#0F172A]">No Active Closures or Holidays</p>
-                  <p className="text-xs text-[#5f5e5e] mt-0.5">Add a closure using the tab above.</p>
+                  <p className="text-xs text-[#64748B] mt-0.5">Add a closure using the tab above.</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto max-h-[420px] rounded-lg border border-gray-200">
                   <table className="w-full border-collapse text-left text-xs">
-                    <thead className="bg-[#f6f3f2] sticky top-0 z-10 border-b border-gray-200">
+                    <thead className="bg-[#F1F5F9] sticky top-0 z-10 border-b border-gray-200">
                       <tr>
-                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Title & Reason</th>
-                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Scope</th>
-                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e]">Schedule</th>
-                        <th className="p-3 font-extrabold uppercase text-[#5f5e5e] text-right">Action</th>
+                        <th className="p-3 font-extrabold uppercase text-[#64748B]">Title & Reason</th>
+                        <th className="p-3 font-extrabold uppercase text-[#64748B]">Scope</th>
+                        <th className="p-3 font-extrabold uppercase text-[#64748B]">Schedule</th>
+                        <th className="p-3 font-extrabold uppercase text-[#64748B] text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 bg-white">
@@ -1095,13 +1139,13 @@ export default function SlotsPage() {
 
           <div className="overflow-x-auto max-h-[300px] rounded-lg border border-gray-200">
             <table className="w-full border-collapse text-left text-xs">
-              <thead className="bg-[#f6f3f2] sticky top-0 border-b border-gray-200">
+              <thead className="bg-[#F1F5F9] sticky top-0 border-b border-gray-200">
                 <tr>
-                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Booking #</th>
-                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Customer</th>
-                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Vehicle</th>
-                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Slot Time</th>
-                  <th className="p-2.5 font-extrabold uppercase text-[#5f5e5e]">Status</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#64748B]">Booking #</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#64748B]">Customer</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#64748B]">Vehicle</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#64748B]">Slot Time</th>
+                  <th className="p-2.5 font-extrabold uppercase text-[#64748B]">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white">
@@ -1112,7 +1156,7 @@ export default function SlotsPage() {
                     </td>
                     <td className="p-2.5">
                       <p className="font-bold text-[#0F172A]">{b.customer_name || 'Customer'}</p>
-                      <p className="text-[11px] text-[#5f5e5e]">{b.customer_mobile || '-'}</p>
+                      <p className="text-[11px] text-[#64748B]">{b.customer_mobile || '-'}</p>
                     </td>
                     <td className="p-2.5">
                       <p className="font-semibold text-[#0F172A]">{b.vehicle_brand} {b.vehicle_model}</p>

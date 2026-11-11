@@ -2,6 +2,7 @@ import { ShieldAlert, ArrowLeft, Home, HelpCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import Button from '../../components/ui/Button';
+import { landingPath } from '../../utils/access';
 
 export default function NoAccessPage() {
   const navigate = useNavigate();
@@ -12,17 +13,11 @@ export default function NoAccessPage() {
       navigate('/login');
       return;
     }
-    if (user.role === 'customer') {
-      navigate('/customer');
-    } else if (user.role === 'staff') {
-      navigate('/staff/job-carts');
-    } else {
-      navigate('/admin');
-    }
+    navigate(landingPath(user));
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+    <div className="min-h-[70vh] flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white rounded-3xl p-8 sm:p-10 shadow-xl border border-slate-100 text-center animate-in fade-in zoom-in-95 duration-200">
         <div className="w-18 h-18 rounded-3xl bg-rose-50 text-rose-500 border border-rose-100 flex items-center justify-center mx-auto mb-6 shadow-sm">
           <ShieldAlert size={36} />
@@ -37,7 +32,7 @@ export default function NoAccessPage() {
         </h1>
 
         <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-          You do not have sufficient permissions to view this module, or this feature is not enabled under your studio franchise plan.
+          You don't have access to this section. Ask your studio admin (or the Super Admin) to give your role this permission.
         </p>
 
         <div className="bg-slate-50 rounded-2xl p-4 my-6 text-xs text-slate-600 text-left border border-slate-100 space-y-1.5">
@@ -58,7 +53,7 @@ export default function NoAccessPage() {
             className="w-full py-3 text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-md"
           >
             <Home size={15} />
-            <span>Return to Dashboard</span>
+            <span>Go to my home page</span>
           </Button>
 
           <button

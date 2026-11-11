@@ -1,3 +1,6 @@
+import { ymd, dateOnly } from '../../utils/formatters';
+import { normalizeCarType } from '../../utils/carTypes';
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Trash2, ArrowLeft, Loader2, Save, ShoppingBag, Search } from 'lucide-react';
@@ -10,14 +13,10 @@ import { usePackages } from '../../api/hooks/usePackages';
 import { useCreateQuotation, useUpdateQuotation, useQuotation } from '../../api/hooks/useQuotations';
 import { useBrands, useModels } from '../../api/hooks/useVehicles';
 import { getCategoryForModel, carBrands as fallbackCarBrands, getModelsForBrand } from '../../utils/carData';
+import { socketUrl } from '../../utils/endpoints';
+import Dropdown from '../../components/ui/Dropdown';
 
-const CAR_SEGMENTS = [
-  { value: 'hatchback', label: 'Small Hatchback', packageCarType: 'SMALL_HATCHBACK', serviceCol: 'price_hatchback' },
-  { value: 'medium_hatchback', label: 'Medium Hatchback', packageCarType: 'MEDIUM_HATCHBACK', serviceCol: 'price_medium_hatchback' },
-  { value: 'sedan', label: 'Sedan', packageCarType: 'SEDAN_SUV', serviceCol: 'price_sedan' },
-  { value: 'premium_sedan', label: 'Premium Sedan', packageCarType: 'PREMIUM_SEDAN', serviceCol: 'price_premium_sedan' },
-  { value: 'suv', label: 'SUV / Large Car', packageCarType: 'LARGE_CAR', serviceCol: 'price_suv' }
-];
+const CAR_SEGMENTS = CAR_TYPES.map(t => ({ value: t.value, label: t.label, packageCarType: t.value, serviceCol: `price_${t.value}` }));
 
 function formatINR(n: number) {
   return Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -53,6 +52,10 @@ export default function QuotationCreatePage() {
   const [items, setItems] = useState<FormItem[]>([]);
   const [discountType, setDiscountType] = useState<'fixed' | 'percentage'>('fixed');
   const [discountValue, setDiscountValue] = useState(0);
+  const [discountReason, setDiscountReason] = useState('');
+  const [discountApprover, setDiscountApprover] = useState('');
+  const [approvers, setApprovers] = useState<{ id: number; name: string; role: string }[]>([]);
+  useEffect(() => { api.get('/job-carts/discount-approvers').then(r => setApprovers(r.data.data || [])).catch(() => {}); }, []);
   const [taxPercentage, setTaxPercentage] = useState(18);
   const [applyTax, setApplyTax] = useState(true);
 
@@ -75,8 +78,8 @@ export default function QuotationCreatePage() {
   useEffect(() => {
     refreshCustomerList();
 
-    const socketUrl = import.meta.env.VITE_API_URL?.replace('/api/v1', '') || window.location.origin;
-    const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+    const wsUrl = socketUrl();
+    const socket = io(wsUrl, { transports: ['websocket', 'polling'] });
 
     socket.on('customer_updated', () => refreshCustomerList());
     socket.on('customer_created', () => refreshCustomerList());
@@ -106,7 +109,8 @@ export default function QuotationCreatePage() {
     if (cust.vehicle_reg_no) setVehicleNo(cust.vehicle_reg_no);
     if (cust.vehicle_brand) setCarBrand(cust.vehicle_brand);
     if (cust.vehicle_model) setCarModel(cust.vehicle_model);
-    if (cust.vehicle_category) handleSegmentChange(cust.vehicle_category);
+    const cat = normalizeCarType(cust.vehicle_category) || (cust.vehicle_model ? getCategoryForModel(cust.vehicle_brand || '', cust.vehicle_model) : '');
+    if (cat) handleSegmentChange(cat);
     toast.success(`Auto-filled details for ${cust.name}`);
   };
 
@@ -144,7 +148,7 @@ export default function QuotationCreatePage() {
     if (!isEdit) {
       const d = new Date();
       d.setDate(d.getDate() + 30);
-      setValidUntil(d.toISOString().split('T')[0]);
+      setValidUntil(ymd(d));
     }
   }, [isEdit]);
 
@@ -159,12 +163,14 @@ export default function QuotationCreatePage() {
       setCarModel(existingQuotation.car_model || '');
       setCarSegment(existingQuotation.car_segment || 'sedan');
       if (existingQuotation.valid_until) {
-        setValidUntil(new Date(existingQuotation.valid_until).toISOString().split('T')[0]);
+        setValidUntil(dateOnly(existingQuotation.valid_until));
       }
       setNotes(existingQuotation.notes || '');
       setStatus(existingQuotation.status || 'draft');
       setDiscountType(existingQuotation.discount_type || 'fixed');
       setDiscountValue(Number(existingQuotation.discount_value || 0));
+      setDiscountReason(existingQuotation.discount_reason || '');
+      setDiscountApprover(existingQuotation.discount_approved_by ? String(existingQuotation.discount_approved_by) : '');
       setTaxPercentage(Number(existingQuotation.tax_percentage || 0));
       setApplyTax(Number(existingQuotation.tax_percentage || 0) > 0);
 
@@ -325,6 +331,8 @@ export default function QuotationCreatePage() {
       discount_type: discountType,
       discount_value: discountValue,
       discount_amount,
+      discount_reason: discountValue > 0 ? discountReason : null,
+      discount_approved_by: discountValue > 0 && discountApprover ? Number(discountApprover) : null,
       tax_percentage: applyTax ? taxPercentage : 0,
       tax_amount,
       grand_total,
@@ -360,7 +368,7 @@ export default function QuotationCreatePage() {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
         <Loader2 size={40} color="#2563EB" style={{ animation: 'spin 1s linear infinite' }} />
-        <p style={{ marginTop: '16px', color: '#5f5e5e', fontWeight: 600 }}>Loading quotation details...</p>
+        <p style={{ marginTop: '16px', color: '#64748B', fontWeight: 600 }}>Loading quotation details...</p>
       </div>
     );
   }
@@ -368,12 +376,12 @@ export default function QuotationCreatePage() {
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', sans-serif", minHeight: '100vh', paddingBottom: '40px' }}>
+    <div style={{ fontFamily: "'Manrope', sans-serif", minHeight: '100vh', paddingBottom: '40px' }}>
       {/* ─── Header ─── */}
       <div style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
         <button
           onClick={() => navigate('/admin/quotations')}
-          style={{ background: '#f6f3f2', border: 'none', borderRadius: '50%', padding: '10px', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#0F172A' }}
+          style={{ background: '#F1F5F9', border: 'none', borderRadius: '50%', padding: '10px', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#0F172A' }}
         >
           <ArrowLeft size={18} />
         </button>
@@ -381,7 +389,7 @@ export default function QuotationCreatePage() {
           <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#0F172A', margin: 0, letterSpacing: '-0.5px' }}>
             {isEdit ? `Edit Quotation Estimate` : 'Create New Quotation'}
           </h1>
-          <p style={{ color: '#5f5e5e', fontSize: '13px', marginTop: '2px' }}>
+          <p style={{ color: '#64748B', fontSize: '13px', marginTop: '2px' }}>
             Draft a detailed service estimate with segment-matched pricing
           </p>
         </div>
@@ -437,7 +445,7 @@ export default function QuotationCreatePage() {
                   Search
                 </button>
               </div>
-              <select
+              <Dropdown
                 value={selectedCustKey}
                 onChange={(e) => handleSelectExistingCustomer(e.target.value)}
                 style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #f87171', fontSize: '13px', fontWeight: 700, color: '#111827', background: 'white', outline: 'none' }}
@@ -451,12 +459,12 @@ export default function QuotationCreatePage() {
                     </option>
                   );
                 })}
-              </select>
+              </Dropdown>
             </div>
 
             <div className="quotation-fields-grid" style={{ display: 'grid', gap: '16px 20px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Customer Name *</label>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Customer Name *</label>
                 <input
                   value={customerName}
                   onChange={e => setCustomerName(e.target.value)}
@@ -467,7 +475,7 @@ export default function QuotationCreatePage() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Mobile Number *</label>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Mobile Number *</label>
                 <input
                   value={customerMobile}
                   onChange={e => setCustomerMobile(e.target.value)}
@@ -478,7 +486,7 @@ export default function QuotationCreatePage() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Email Address</label>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Email Address</label>
                 <input
                   type="email"
                   value={customerEmail}
@@ -489,18 +497,18 @@ export default function QuotationCreatePage() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Vehicle Registration No.</label>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Vehicle Registration No.</label>
                 <input
                   value={vehicleNo}
                   onChange={e => setVehicleNo(e.target.value.toUpperCase())}
-                  placeholder="e.g. GJ06AB1234"
+                  placeholder="e.g. MH01AB1234"
                   style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #ede8e7', fontSize: '13px', outline: 'none' }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Car Brand</label>
-                <select
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Car Brand</label>
+                <Dropdown
                   value={carBrand}
                   onChange={e => {
                     const selectedB = e.target.value;
@@ -513,12 +521,12 @@ export default function QuotationCreatePage() {
                   {carBrandsList.map(b => (
                     <option key={b} value={b}>{b}</option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#5f5e5e', marginBottom: '6px' }}>Car Model</label>
-                <select
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#64748B', marginBottom: '6px' }}>Car Model</label>
+                <Dropdown
                   value={carModel}
                   onChange={e => {
                     const selectedM = e.target.value;
@@ -535,14 +543,14 @@ export default function QuotationCreatePage() {
                   {carModelsList.map(m => (
                     <option key={m} value={m}>{m}</option>
                   ))}
-                </select>
+                </Dropdown>
               </div>
 
               <div className="quotation-segment-col">
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#2563EB', marginBottom: '6px' }}>
                   Vehicle Segment (Pricing Dictator) *
                 </label>
-                <select
+                <Dropdown
                   value={carSegment}
                   onChange={e => handleSegmentChange(e.target.value)}
                   style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #2563EB', fontSize: '13px', fontWeight: 600, outline: 'none', background: 'white', cursor: 'pointer' }}
@@ -550,7 +558,7 @@ export default function QuotationCreatePage() {
                   {CAR_SEGMENTS.map(seg => (
                     <option key={seg.value} value={seg.value}>{seg.label}</option>
                   ))}
-                </select>
+                </Dropdown>
                 <p style={{ fontSize: '11px', color: '#9e9e9e', marginTop: '4px' }}>
                   Changing the segment automatically updates the prices of added services and packages.
                 </p>
@@ -602,7 +610,7 @@ export default function QuotationCreatePage() {
                     }}
                   >
                     {/* Item Type */}
-                    <select
+                    <Dropdown
                       value={item.item_type}
                       onChange={e => handleUpdateItemRow(item.id!, { item_type: e.target.value as any, item_id: null, name: '', price: 0 })}
                       style={{ padding: '8px', border: '1px solid #ede8e7', borderRadius: '6px', fontSize: '12px', background: 'white', outline: 'none' }}
@@ -610,11 +618,11 @@ export default function QuotationCreatePage() {
                       <option value="service">Service</option>
                       <option value="package">Package</option>
                       <option value="custom">Custom Item</option>
-                    </select>
+                    </Dropdown>
 
                     {/* Item Selector / Custom Name */}
                     {item.item_type === 'service' ? (
-                      <select
+                      <Dropdown
                         value={item.item_id || ''}
                         onChange={e => handleUpdateItemRow(item.id!, { item_id: Number(e.target.value) })}
                         style={{ padding: '8px', border: '1px solid #ede8e7', borderRadius: '6px', fontSize: '12px', background: 'white', outline: 'none' }}
@@ -623,10 +631,10 @@ export default function QuotationCreatePage() {
                         {servicesCatalog.map((s: any) => (
                           <option key={s.id} value={s.id}>{s.name}</option>
                         ))}
-                      </select>
+                      </Dropdown>
                     ) : item.item_type === 'package' ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <select
+                        <Dropdown
                           value={item.item_id || ''}
                           onChange={e => handleUpdateItemRow(item.id!, { item_id: Number(e.target.value) })}
                           style={{ padding: '8px', border: '1px solid #ede8e7', borderRadius: '6px', fontSize: '12px', background: 'white', outline: 'none' }}
@@ -635,10 +643,10 @@ export default function QuotationCreatePage() {
                           {packagesCatalog.map((p: any) => (
                             <option key={p.id} value={p.id}>{p.name}</option>
                           ))}
-                        </select>
+                        </Dropdown>
                         {item.item_id && (
                           <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                            <label style={{ fontSize: '10px', color: '#5f5e5e', fontWeight: 700 }}>Tier:</label>
+                            <label style={{ fontSize: '10px', color: '#64748B', fontWeight: 700 }}>Tier:</label>
                             <label style={{ display: 'flex', alignItems: 'center', gap: '3px', fontSize: '10px', cursor: 'pointer' }}>
                               <input
                                 type="radio"
@@ -720,8 +728,8 @@ export default function QuotationCreatePage() {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#5f5e5e', marginBottom: '4px' }}>Quotation Status</label>
-                <select
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>Quotation Status</label>
+                <Dropdown
                   value={status}
                   onChange={e => setStatus(e.target.value as any)}
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #ede8e7', fontSize: '12px', outline: 'none', background: 'white', cursor: 'pointer' }}
@@ -730,11 +738,11 @@ export default function QuotationCreatePage() {
                   <option value="sent">Sent</option>
                   <option value="accepted">Accepted</option>
                   <option value="declined">Declined</option>
-                </select>
+                </Dropdown>
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#5f5e5e', marginBottom: '4px' }}>Valid Until Date</label>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>Valid Until Date</label>
                 <input
                   type="date"
                   value={validUntil}
@@ -744,7 +752,7 @@ export default function QuotationCreatePage() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#5f5e5e', marginBottom: '4px' }}>Quotation / Notes</label>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>Quotation / Notes</label>
                 <textarea
                   value={notes}
                   onChange={e => setNotes(e.target.value)}
@@ -760,7 +768,7 @@ export default function QuotationCreatePage() {
           <div style={{ background: 'white', borderRadius: '14px', border: '1px solid #ede8e7', padding: '20px' }}>
             <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A', marginBottom: '14px' }}>Summary</h3>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', color: '#5f5e5e' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', color: '#64748B' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>Subtotal ({items.length} items)</span>
                 <span style={{ fontWeight: 600, color: '#0F172A' }}>₹{formatINR(subtotal)}</span>
@@ -774,14 +782,14 @@ export default function QuotationCreatePage() {
                     <button
                       type="button"
                       onClick={() => setDiscountType('fixed')}
-                      style={{ border: '1px solid #ede8e7', padding: '2px 6px', fontSize: '10px', fontWeight: 700, background: discountType === 'fixed' ? '#0F172A' : 'white', color: discountType === 'fixed' ? 'white' : '#5f5e5e', borderRadius: '4px', cursor: 'pointer' }}
+                      style={{ border: '1px solid #ede8e7', padding: '2px 6px', fontSize: '10px', fontWeight: 700, background: discountType === 'fixed' ? '#0F172A' : 'white', color: discountType === 'fixed' ? 'white' : '#64748B', borderRadius: '4px', cursor: 'pointer' }}
                     >
                       ₹ Fixed
                     </button>
                     <button
                       type="button"
                       onClick={() => setDiscountType('percentage')}
-                      style={{ border: '1px solid #ede8e7', padding: '2px 6px', fontSize: '10px', fontWeight: 700, background: discountType === 'percentage' ? '#0F172A' : 'white', color: discountType === 'percentage' ? 'white' : '#5f5e5e', borderRadius: '4px', cursor: 'pointer' }}
+                      style={{ border: '1px solid #ede8e7', padding: '2px 6px', fontSize: '10px', fontWeight: 700, background: discountType === 'percentage' ? '#0F172A' : 'white', color: discountType === 'percentage' ? 'white' : '#64748B', borderRadius: '4px', cursor: 'pointer' }}
                     >
                       % Percent
                     </button>
@@ -799,6 +807,17 @@ export default function QuotationCreatePage() {
                     (- ₹{formatINR(discount_amount)})
                   </span>
                 </div>
+                {discountValue > 0 && (
+                  <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
+                    <input value={discountReason} onChange={e => setDiscountReason(e.target.value)} placeholder="Reason for discount *"
+                      style={{ width: '100%', padding: '6px', border: '1px solid #ede8e7', borderRadius: '6px', fontSize: '12px', outline: 'none' }} />
+                    <Dropdown value={discountApprover} onChange={(e) => setDiscountApprover(e.target.value)}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded-md text-xs bg-white">
+                      <option value="">Approved by *</option>
+                      {approvers.map(a => <option key={a.id} value={a.id}>{a.name} ({a.role === 'super_admin' ? 'Super admin' : 'Admin'})</option>)}
+                    </Dropdown>
+                  </div>
+                )}
               </div>
 
               {/* GST options */}
@@ -875,7 +894,7 @@ export default function QuotationCreatePage() {
               <button
                 type="button"
                 onClick={() => navigate('/admin/quotations')}
-                style={{ width: '100%', background: 'transparent', color: '#5f5e5e', border: '1px solid #ede8e7', borderRadius: '10px', padding: '10px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
+                style={{ width: '100%', background: 'transparent', color: '#64748B', border: '1px solid #ede8e7', borderRadius: '10px', padding: '10px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}
               >
                 Cancel
               </button>

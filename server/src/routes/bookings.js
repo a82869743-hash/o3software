@@ -7,6 +7,7 @@ const ctrl = require('../controllers/bookingsController');
 router.get('/vehicle-history/:regNo', auth, role(['admin']), ctrl.vehicleHistory);
 
 router.get('/',           auth, role(['admin', 'customer']), ctrl.list);
+router.get('/offer-check', auth, role(['admin', 'customer']), ctrl.offerCheck);
 router.get('/first-wash-eligibility', auth, role(['admin', 'customer']), ctrl.firstWashEligibility);
 router.get('/pending',    auth, role(['admin']), ctrl.listPending);
 router.get('/:id',        auth, role(['admin', 'customer']), ctrl.getOne);

@@ -1,13 +1,22 @@
+import api from '../../api/axiosInstance';
+import { normalizeCarType } from '../../utils/carTypes';
+import { getCategoryForModel } from '../../utils/carData';
+import { CAR_TYPES } from '../../utils/carTypes';
 import { useState, useEffect, useCallback } from 'react';
 import { Droplets, Clock, CheckCircle2, Truck, Plus, RefreshCw, Hash, Search, Car, X, ChevronDown, Download, Check } from 'lucide-react';
 import { useQuickWashes, useQuickWashStats, useCreateQuickWash, useUpdateWashStatus } from '../../api/hooks/useQuickWash';
 import { useCustomerSearch } from '../../api/hooks/useSearch';
 import { useBrands, useModels } from '../../api/hooks/useVehicles';
 import { useServices } from '../../api/hooks/useServices';
+import { carBrands, getModelsForBrand } from '../../utils/carData';
+import { regNoError, normalizeRegNo, isValidMobile } from '../../utils/validators';
+import ReferrerPicker, { ReferrerValue, referrerPayload } from '../../components/shared/ReferrerPicker';
 import type { QuickWashBooking, WashStatus } from '../../types';
 import { useToastStore } from '../../store/toastStore';
 import AdminTopBar from '../../components/layout/AdminTopBar';
+import Dropdown from '../../components/ui/Dropdown';
 
+import { askText } from '../../utils/ask';
 const STATUS_CONFIG: Record<WashStatus, { label: string; color: string; bg: string; icon: React.ElementType; next?: WashStatus }> = {
   pending:   { label: 'In Queue',  color: 'text-amber-600',   bg: 'bg-amber-50 border-amber-200',     icon: Clock,        next: 'washing' },
   washing:   { label: 'Washing',   color: 'text-blue-600',    bg: 'bg-blue-50 border-blue-200',       icon: Droplets,     next: 'completed' },
@@ -15,13 +24,7 @@ const STATUS_CONFIG: Record<WashStatus, { label: string; color: string; bg: stri
   delivered: { label: 'Delivered', color: 'text-gray-500',    bg: 'bg-gray-50 border-gray-200',       icon: Truck },
 };
 
-const VEHICLE_CATEGORIES = [
-  { value: 'hatchback', label: 'Hatchback' },
-  { value: 'medium_hatchback', label: 'Medium Hatchback' },
-  { value: 'sedan', label: 'Sedan' },
-  { value: 'premium_sedan', label: 'Premium Sedan' },
-  { value: 'suv', label: 'SUV' },
-];
+const VEHICLE_CATEGORIES = CAR_TYPES.map(t => ({ value: t.value, label: t.label }));
 
 const WASH_PHASE_LABELS = {
   pre_wash: 'Pre-Wash',
@@ -161,6 +164,15 @@ export default function QuickWashPage() {
                   {wash.service_name && (
                     <p className="text-xs text-blue-600 font-medium">{wash.service_name}</p>
                   )}
+                  <button type="button" className="text-xs font-bold text-gray-800 underline decoration-dotted"
+                    onClick={async () => {
+                      const v = await askText('Price for this wash (₹)', String(Number((wash as any).total_amount) || ''), { title: 'Change price', okLabel: 'Save', type: 'number' });
+                      if (v === null || v.trim() === '' || isNaN(Number(v)) || Number(v) < 0) return;
+                      try { await api.put(`/quick-wash/${wash.id}/price`, { price: Number(v) }); addToast('success', 'Price saved'); refetch(); }
+                      catch (e: any) { addToast('error', e?.response?.data?.error || 'Could not save the price'); }
+                    }}>
+                    Price: ₹{Number((wash as any).total_amount) || 0} · change
+                  </button>
                 </div>
 
                 {wash.notes && (
@@ -305,9 +317,21 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
   const { addToast } = useToastStore();
 
   // Parse brands and models from API responses
-  const brands: string[] = brandsData?.data || [];
-  const models: string[] = modelsData?.data || [];
-  const services: { id: number; name: string }[] = servicesData?.data || [];
+  // Full Indian car dataset + any brand/model already saved on customer vehicles
+  const brands: string[] = Array.from(new Set([...carBrands.filter(b => b !== 'Others'), ...(brandsData?.data || [])])).sort();
+  // include the saved car's own model even when it isn't in the catalogue list (e.g. "Innova")
+  const models: string[] = Array.from(new Set([...(form.vehicle_brand ? getModelsForBrand(form.vehicle_brand) : []), ...(modelsData?.data || []), form.vehicle_model])).filter(m => m && m !== 'Other' && m !== 'Others').sort();
+  const [walkInName, setWalkInName] = useState('');
+  const [walkInMobile, setWalkInMobile] = useState('');
+  const [referrer, setReferrer] = useState<ReferrerValue>({ referrer_type: 'none' });
+  const [submitting, setSubmitting] = useState(false);
+  const services: any[] = servicesData?.data || [];
+  // Price for this car type, filled from the chosen service; admin can change it before booking
+  const [price, setPrice] = useState('');
+  useEffect(() => {
+    const svc = services.find(s => s.id === form.service_id);
+    if (svc) setPrice(String(Number(svc[`price_${form.vehicle_category}`]) || Number(svc.price_sedan) || 0));
+  }, [form.service_id, form.vehicle_category, services.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-fill customer/vehicle details when typing registration number
   useEffect(() => {
@@ -329,7 +353,7 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
             vehicle_id: match.id,
             vehicle_brand: match.brand || f.vehicle_brand,
             vehicle_model: match.model || f.vehicle_model,
-            vehicle_category: match.category || f.vehicle_category,
+            vehicle_category: normalizeCarType(match.category) || getCategoryForModel(match.brand, match.model) || f.vehicle_category,
           }));
           if (match.customer_name) {
             setSelectedCustomerName(`${match.customer_name} (${match.customer_mobile || 'No mobile'})`);
@@ -361,7 +385,7 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
           vehicle_reg_no: primary.registration_no || '',
           vehicle_brand: primary.brand || '',
           vehicle_model: primary.model || '',
-          vehicle_category: primary.category || 'hatchback',
+          vehicle_category: normalizeCarType(primary.category) || getCategoryForModel(primary.brand, primary.model) || 'sedan',
         }));
       }
     } catch {
@@ -371,10 +395,17 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.vehicle_reg_no && !form.customer_id) {
-      addToast('error', 'Please provide a vehicle registration or select a customer');
-      return;
+    if (submitting) return;
+    const regErr = regNoError(form.vehicle_reg_no);
+    if (regErr) { addToast('error', regErr); return; }
+    if (!form.customer_id && !form.vehicle_id) {
+      if (!walkInName.trim()) { addToast('error', 'Enter the customer name (or search an existing customer)'); return; }
+      if (!isValidMobile(walkInMobile)) { addToast('error', 'Enter a valid 10-digit customer mobile'); return; }
     }
+    if (!form.vehicle_id && (!form.vehicle_brand || (!form.vehicle_model && form.vehicle_brand !== 'Others'))) {
+      addToast('error', 'Select the car brand and model'); return;
+    }
+    if (price === '' || Number(price) < 0) { addToast('error', 'Enter the price'); return; }
 
     const finalBrand = form.vehicle_brand === 'Others' ? customBrand : form.vehicle_brand;
     const finalModel = (form.vehicle_brand === 'Others' || form.vehicle_model === 'Other') ? customModel : form.vehicle_model;
@@ -385,15 +416,22 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
         vehicle_brand: finalBrand,
         vehicle_model: finalModel,
         service_id: form.service_id || undefined,
+        price: Number(price),
         vehicle_id: form.vehicle_id || undefined,
         customer_id: form.customer_id || undefined,
+        customer_name: walkInName.trim() || undefined,
+        customer_mobile: walkInMobile || undefined,
+        ...referrerPayload(referrer),
       };
-      const result = await createMutation.mutateAsync(payload);
+      setSubmitting(true);
+      const result = await createMutation.mutateAsync(payload as any);
       addToast('success', result.message || 'Quick wash booked!');
       onClose();
     } catch (err: any) {
       const msg = err?.response?.data?.error || 'Failed to create quick wash';
       addToast('error', msg);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -456,10 +494,22 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
             <input
               type="text"
               value={form.vehicle_reg_no}
-              onChange={(e) => setForm((f) => ({ ...f, vehicle_reg_no: e.target.value.toUpperCase() }))}
-              placeholder="MH12AB1234"
-              className="w-full px-4 py-2.5 bg-[#f6f3f2] focus:bg-white border border-transparent focus:border-blue-300 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-blue-100 outline-none uppercase font-mono tracking-wider transition-all"
+              onChange={(e) => setForm((f) => ({ ...f, vehicle_reg_no: normalizeRegNo(e.target.value) }))}
+              maxLength={13}
+              placeholder="e.g. MH01AB1234"
+              className="w-full px-4 py-2.5 bg-[#F1F5F9] focus:bg-white border border-transparent focus:border-blue-300 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-blue-100 outline-none uppercase font-mono tracking-wider transition-all"
             />
+            {form.vehicle_reg_no.length >= 6 && regNoError(form.vehicle_reg_no) && (
+              <p className="text-[11px] text-rose-600 font-semibold mt-1">{regNoError(form.vehicle_reg_no)}</p>
+            )}
+            {!form.customer_id && !isAutoFilled && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <input value={walkInName} onChange={e => setWalkInName(e.target.value)} placeholder="New customer name"
+                  className="px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm" />
+                <input value={walkInMobile} onChange={e => setWalkInMobile(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="Mobile (10 digits)" inputMode="numeric"
+                  className="px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm" />
+              </div>
+            )}
             {isAutoFilled && (
               <p className="text-[10px] text-emerald-700 font-bold mt-1.5 flex items-center gap-1">
                 <Check size={11} className="text-emerald-600" /> Auto-filled customer and vehicle details from record
@@ -472,7 +522,7 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
             <div>
               <label className="block text-xs text-gray-500 mb-1.5 font-semibold uppercase tracking-wider">Brand</label>
               <div className="relative">
-                <select
+                <Dropdown
                   value={form.vehicle_brand}
                   onChange={(e) => {
                     setForm((f) => ({ ...f, vehicle_brand: e.target.value, vehicle_model: '' }));
@@ -486,17 +536,17 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
                     <option key={b} value={b}>{b}</option>
                   ))}
                   <option value="Others">Others (Enter Manually)</option>
-                </select>
+                </Dropdown>
                 <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               </div>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1.5 font-semibold uppercase tracking-wider">Model</label>
               <div className="relative">
-                <select
+                <Dropdown
                   value={form.vehicle_model}
                   onChange={(e) => {
-                    setForm((f) => ({ ...f, vehicle_model: e.target.value }));
+                    setForm((f) => ({ ...f, vehicle_model: e.target.value, vehicle_category: e.target.value && e.target.value !== 'Other' ? getCategoryForModel(f.vehicle_brand, e.target.value) : f.vehicle_category }));
                     setCustomModel('');
                   }}
                   disabled={!form.vehicle_brand || form.vehicle_brand === 'Others'}
@@ -507,7 +557,7 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
                     <option key={m} value={m}>{m}</option>
                   ))}
                   <option value="Other">Other (Enter Manually)</option>
-                </select>
+                </Dropdown>
                 <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               </div>
             </div>
@@ -544,11 +594,13 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
+          <ReferrerPicker value={referrer} onChange={setReferrer} />
+
           {/* Vehicle Category */}
           <div>
             <label className="block text-xs text-gray-500 mb-1.5 font-semibold uppercase tracking-wider">Vehicle Category</label>
             <div className="relative">
-              <select
+              <Dropdown
                 value={form.vehicle_category}
                 onChange={(e) => setForm((f) => ({ ...f, vehicle_category: e.target.value }))}
                 className="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 outline-none appearance-none cursor-pointer"
@@ -556,7 +608,7 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
                 {VEHICLE_CATEGORIES.map((cat) => (
                   <option key={cat.value} value={cat.value}>{cat.label}</option>
                 ))}
-              </select>
+              </Dropdown>
               <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
             </div>
           </div>
@@ -565,18 +617,26 @@ function CreateQuickWashModal({ onClose }: { onClose: () => void }) {
           <div>
             <label className="block text-xs text-gray-500 mb-1.5 font-semibold uppercase tracking-wider">Wash Service (optional)</label>
             <div className="relative">
-              <select
+              <Dropdown
                 value={form.service_id || ''}
                 onChange={(e) => setForm((f) => ({ ...f, service_id: e.target.value ? Number(e.target.value) : undefined }))}
                 className="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 outline-none appearance-none cursor-pointer"
               >
-                <option value="">Select Service</option>
+                <option value="">No service (walk-in wash)</option>
                 {services.map((svc) => (
                   <option key={svc.id} value={svc.id}>{svc.name}</option>
                 ))}
-              </select>
+              </Dropdown>
               <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
             </div>
+          </div>
+
+          {/* Price (filled from the service for this car type; editable) */}
+          <div>
+            <label className="block text-xs text-gray-500 mb-1.5 font-semibold uppercase tracking-wider">Price (₹) *</label>
+            <input type="number" min={0} value={price} onChange={e => setPrice(e.target.value)}
+              className="w-full px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 outline-none" />
+            <p className="text-[11px] text-gray-400 mt-1">Set by the studio. Filled from the service when one is picked. First-wash discount (if eligible) is taken off.</p>
           </div>
 
           {/* Notes */}

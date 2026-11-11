@@ -11,6 +11,7 @@
  */
 
 const router = require('express').Router();
+require('../middleware/numericIds')(router, ['id', 'userPackageId']);
 const { protect, authorize } = require('../middleware/auth');
 const role = require('../middleware/role');
 const ctrl = require('../controllers/userPackagesController');
@@ -29,7 +30,7 @@ router.get('/export', protect, ctrl.exportUserPackages);
 router.get('/renewals', protect, ctrl.getRenewalsHistory);
 
 // Renew a package (admin or customer)
-router.post('/:id/renew', protect, role(['admin', 'customer']), ctrl.renewPackage);
+router.post('/:id/renew', protect, role(['admin']), ctrl.renewPackage); // studio records the money; customers renew through a package request + QR
 
 // Consume a reserved service (admin only — after job completion)
 router.post('/consume', protect, role(['admin']), ctrl.consumeService);
@@ -41,10 +42,13 @@ router.post('/bulk-renew', protect, role(['admin']), ctrl.bulkRenewPackages);
 router.get('/', protect, role(['admin']), ctrl.getAllUserPackages);
 
 // Admin: Adjust credits for a package subscription
+router.patch('/:id/cancel', protect, role(['admin']), ctrl.cancelUserPackage);
 router.patch('/:id/adjust-credits', protect, role(['admin']), ctrl.adjustCredits);
 
 // Admin: Get packages expiring within 30 days for alerts
 router.get('/expiry-alerts', protect, role(['admin']), ctrl.getExpiryAlerts);
+router.post('/expiry-alerts/send-now', protect, role(['admin']), ctrl.sendRemindersNow);
+router.post('/:userPackageId/reminder-sent', protect, role(['admin']), ctrl.markReminderSent);
 
 // Get package service schedule breakdown
 router.get('/:userPackageId/schedules', protect, ctrl.getPackageServiceSchedules);

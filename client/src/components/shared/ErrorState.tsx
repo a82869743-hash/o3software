@@ -16,7 +16,7 @@ export default function ErrorState({
         <AlertTriangle size={28} className="text-blue-500" />
       </div>
       <h3 className="text-lg font-bold text-[#0F172A] mb-1">Error</h3>
-      <p className="text-sm text-[#5f5e5e] max-w-sm">{message}</p>
+      <p className="text-sm text-[#64748B] max-w-sm">{message}</p>
       {onRetry && (
         <div className="mt-5">
           <Button onClick={onRetry} variant="secondary" size="sm" icon={<RefreshCw size={14} />}>

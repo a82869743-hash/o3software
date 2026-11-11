@@ -14,16 +14,7 @@ export const useBookings = (params: {
       const res = await api.get('/bookings', { params });
       return res.data;
     },
-  });
-
-export const useBooking = (id: number | undefined) =>
-  useQuery({
-    queryKey: ['booking', id],
-    queryFn: async () => {
-      const res = await api.get(`/bookings/${id}`);
-      return res.data.data;
-    },
-    enabled: !!id,
+    refetchInterval: 30_000, // new / moved bookings show up without a manual refresh
   });
 
 export const useVehicleHistory = (regNo: string) =>
@@ -50,6 +41,7 @@ export const useCreateBooking = () => {
       pay_advance?: boolean | 'full' | 'part' | 'none';
       pickup_type?: string;
       pickup_address_details?: any;
+      offer_code?: string;
     }) => {
       const res = await api.post('/bookings', payload);
       return res.data;
@@ -74,16 +66,6 @@ export const useCancelBooking = () => {
     },
   });
 };
-
-export const useCanChangeBooking = (id: number | undefined) =>
-  useQuery({
-    queryKey: ['booking-can-change', id],
-    queryFn: async () => {
-      const res = await api.get(`/bookings/${id}/can-change`);
-      return res.data;
-    },
-    enabled: !!id,
-  });
 
 export const useChangeBookingServices = () => {
   const qc = useQueryClient();

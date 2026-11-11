@@ -102,10 +102,19 @@ class NotificationService {
 
       const results = [];
 
+      // Email copy of important customer messages (bills, quotations, bookings, completion, packages, payments)
+      // whenever the customer has an email — progress updates stay WhatsApp-only. EMAIL_COPIES=false turns it off.
+      const EMAIL_WORTHY = /invoice|bill|quotation|booking|complete|package|payment|receipt|warranty|welcome/i;
+      if (!channels.includes('email') && recipientEmail && process.env.EMAIL_ENABLED === 'true' && process.env.EMAIL_COPIES !== 'false'
+          && EMAIL_WORTHY.test(`${eventTrigger || ''} ${templateName || ''} ${referenceType || ''}`)
+          && !/PIPELINE|STAGE/i.test(`${eventTrigger || ''}`)) {
+        channels = [...channels, 'email'];
+      }
+
       // 3. Dispatch to requested channels
       for (const channel of channels) {
         if (channel === 'whatsapp' && !recipientMobile) continue;
-        if (channel === 'email' && !recipientEmail) continue;
+        if (channel === 'email' && (!recipientEmail || process.env.EMAIL_ENABLED !== 'true')) continue;
 
         // Unique channel-specific idempotency key
         const channelKey = idempotencyKey ? `${idempotencyKey}_${channel}` : null;
@@ -197,7 +206,7 @@ class NotificationService {
       );
 
       let certificate;
-      const issueDate = new Date().toISOString().slice(0, 10);
+      const issueDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
       const expDateObj = new Date();
       expDateObj.setFullYear(expDateObj.getFullYear() + warrantyYears);
       const expiryDate = expDateObj.toISOString().slice(0, 10);
@@ -368,7 +377,15 @@ class NotificationService {
       }
 
       // Generate Soft Copy PDF
-      const pdfRes = await pdfService.generateBuySellBillPdf(billData);
+      // same invoice design as the bill downloaded in the app
+      const inv = require('./invoiceService');
+      const buf = billType === 'manual_bill' ? (await inv.generateManualBillPDF(billId)).pdfBuffer : await inv.generateBuySellInvoicePDF(billId);
+      const fsx = require('fs'); const pathx = require('path');
+      const billsDir = pathx.join(__dirname, '..', '..', 'uploads', 'bills');
+      fsx.mkdirSync(billsDir, { recursive: true });
+      const fileName = `${String(invoiceNo).replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now()}.pdf`;
+      fsx.writeFileSync(pathx.join(billsDir, fileName), buf);
+      const pdfRes = { filePath: pathx.join(billsDir, fileName), fileName, publicUrl: `/uploads/bills/${fileName}` };
       const baseUrl = process.env.APP_BASE_URL || 'http://localhost:5000';
       const fullBillUrl = `${baseUrl}${pdfRes.publicUrl}`;
 
@@ -465,7 +482,16 @@ class NotificationService {
           if (!booking.customer_mobile) continue;
 
           const vehDisplay = booking.registration_no || `${booking.brand || ''} ${booking.model || ''}`.trim() || 'your vehicle';
-          const formattedSlot = `${booking.slot_date} at ${booking.start_time}`;
+          // e.g. "Sat, 7 Nov at 10:00 AM"
+          const dPart = booking.slot_date
+            ? new Date(booking.slot_date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })
+            : '';
+          let tPart = '';
+          if (booking.start_time) {
+            const [hh, mm] = String(booking.start_time).split(':').map(Number);
+            tPart = `${((hh + 11) % 12) + 1}:${String(mm || 0).padStart(2, '0')} ${hh >= 12 ? 'PM' : 'AM'}`;
+          }
+          const formattedSlot = [dPart, tPart].filter(Boolean).join(' at ');
           const idempotencyKey = `${interval.keyPrefix}_${booking.id}`;
 
           await this.notify({

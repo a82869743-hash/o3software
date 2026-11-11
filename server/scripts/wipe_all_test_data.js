@@ -119,8 +119,8 @@ async function wipeAllTestData() {
       await conn.query("DELETE FROM franchises WHERE id != 1");
       await conn.query(`
         INSERT INTO franchises (id, name, code, is_main_studio, is_active)
-        VALUES (1, 'O3 CAR SPA - MAIN STUDIO', 'MAIN01', 1, 1)
-        ON DUPLICATE KEY UPDATE name = 'O3 CAR SPA - MAIN STUDIO', is_main_studio = 1, is_active = 1
+        VALUES (1, 'O3 CAR SPAA - MAIN STUDIO', 'MAIN01', 1, 1)
+        ON DUPLICATE KEY UPDATE name = 'O3 CAR SPAA - MAIN STUDIO', is_main_studio = 1, is_active = 1
       `);
       console.log('  ✓ Main Studio franchise preserved (Test branch franchises removed)');
     } catch { /* Ignore if franchises table structure varies */ }

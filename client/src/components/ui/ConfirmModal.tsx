@@ -38,7 +38,7 @@ export default function ConfirmModal({
           {isDestructive ? <Trash2 size={24} /> : <CheckCircle size={24} />}
         </div>
         <h3 className="text-xl font-bold text-[#0F172A] mb-2">{title}</h3>
-        <p className="text-sm text-[#5f5e5e]">{description}</p>
+        <p className="text-sm text-[#64748B]">{description}</p>
       </div>
       
       <div className="flex gap-3 mt-6">

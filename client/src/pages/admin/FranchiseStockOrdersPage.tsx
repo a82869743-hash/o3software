@@ -29,6 +29,9 @@ interface CartItem {
 }
 
 import { useAuthStore } from '../../store/authStore';
+import { Link } from 'react-router-dom';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 export default function FranchiseStockOrdersPage() {
   const toast = useUIStore((s) => s.toast);
@@ -92,6 +95,7 @@ export default function FranchiseStockOrdersPage() {
     }
   };
 
+  useLiveReload(() => { loadData(); }); // reload when anything changes elsewhere
   useEffect(() => {
     loadData();
   }, []);
@@ -232,11 +236,23 @@ export default function FranchiseStockOrdersPage() {
   const pendingCount = orders.filter((o) => o.status === 'pending').length;
   const approvedCount = orders.filter((o) => o.status === 'approved').length;
 
+  if (isMainStudioAdmin) {
+    return (
+      <div className="space-y-6">
+        <PremiumPageHeader title="Stock orders" subtitle="Branch studios order stock from the main studio here." icon={ShoppingBag} />
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 text-sm text-slate-600">
+          <p className="font-bold text-slate-900 mb-1">You are in the main studio.</p>
+          <p>The main studio does not order stock from itself. Orders from other studios arrive in {user?.role === 'super_admin' ? <Link to="/admin/stock-approvals" className="font-bold text-blue-600">Stock approvals</Link> : <b>Stock approvals</b>} (Super Admin). To add your own stock, use <Link to="/admin/inventory" className="font-bold text-blue-600">Inventory</Link>.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <PremiumPageHeader
-        title="Franchise Stock Replenishment & Ordering Portal"
-        subtitle="Curate order lists from uploaded main studio items or manually written unlisted items, and submit to Admin."
+        title="Stock orders"
+        subtitle="Order stock from the main studio — pick items, add to the list, send."
         icon={ShoppingBag}
         actions={
           <div className="flex items-center gap-2">
@@ -246,7 +262,7 @@ export default function FranchiseStockOrdersPage() {
               className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-extrabold rounded-xl transition-all flex items-center gap-1.5 shadow-xs"
             >
               <Edit3 size={15} />
-              <span>+ Manual Written Item</span>
+              <span>Unlisted item</span>
             </button>
 
             <button
@@ -267,19 +283,11 @@ export default function FranchiseStockOrdersPage() {
       />
 
       {isMainStudioAdmin && (
-        <div className="bg-blue-50 border border-blue-200 rounded-3xl p-4 flex items-center gap-3 text-blue-900 text-xs font-semibold">
-          <AlertCircle size={20} className="text-[#2563EB] shrink-0" />
-          <div>
-            <p className="font-extrabold text-[#2563EB]">Main Studio Central Warehouse Context</p>
-            <p className="text-[11px] text-slate-600 mt-0.5">
-              Main Studio holds master inventory with central pricing and does not place stock orders for itself. Franchise outlets submit replenishment requests from this portal, which Main Studio reviews in the <strong>Stock Approvals Console</strong>.
-            </p>
-          </div>
-        </div>
+        <p className="text-[12px] text-slate-500"><AlertCircle size={14} className="inline -mt-0.5 mr-1 text-[#2563EB]" />You are the main studio — orders from other studios arrive in <strong className="text-slate-700">Stock approvals</strong>.</p>
       )}
 
       {/* Navigation Tabs & Quick Stats */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 rounded-3xl border border-gray-100 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-2xl">
           <button
             type="button"
@@ -290,7 +298,7 @@ export default function FranchiseStockOrdersPage() {
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            🏬 Stock Catalog & Quick Picker
+            Catalogue
           </button>
           <button
             type="button"
@@ -301,7 +309,7 @@ export default function FranchiseStockOrdersPage() {
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <span>📋 My Order History</span>
+            <span>My orders</span>
             {pendingCount > 0 && (
               <span className="px-2 py-0.5 bg-amber-500 text-white font-black text-[10px] rounded-full">
                 {pendingCount} Pending
@@ -310,47 +318,36 @@ export default function FranchiseStockOrdersPage() {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 text-xs font-bold text-gray-500">
-          <div className="flex items-center gap-1.5 bg-blue-50 text-[#2563EB] px-3 py-1.5 rounded-xl border border-blue-100">
-            <ShieldCheck size={14} />
-            <span>Wholesale Pricing Active</span>
-          </div>
-          <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-xl border border-emerald-100">
-            <PackageCheck size={14} />
-            <span>{approvedCount} Orders Received</span>
-          </div>
-        </div>
+        <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5 w-fit"><PackageCheck size={14} /> {approvedCount} orders received</span>
       </div>
 
       {/* TAB 1: ORDER CATALOG & DROPDOWN PICKER */}
       {activeTab === 'catalog' && (
         <div className="space-y-6">
           {/* Quick Select Dropdown Bar + Manual Item Trigger */}
-          <div className="bg-gradient-to-r from-blue-50/80 via-white to-indigo-50/50 p-5 rounded-3xl border border-blue-100 shadow-sm space-y-3">
+          <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-2">
-                <Filter size={16} className="text-[#2563EB]" />
-                <span>Select Uploaded Item from Dropdown</span>
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <Filter size={16} className="text-[#2563EB]" /> Quick add
               </h3>
-              <span className="text-[11px] text-[#2563EB] font-bold">Quick Dropdown Order</span>
             </div>
 
             <div className="flex flex-col sm:flex-row items-center gap-3">
-              <select
+              <Dropdown
                 value={selectedCatalogId}
                 onChange={(e) => setSelectedCatalogId(e.target.value)}
-                className="flex-1 w-full p-2.5 bg-white border border-gray-200 rounded-2xl text-xs font-bold text-slate-900 focus:outline-none focus:border-[#2563EB] shadow-2xs"
+                className="flex-1 w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:outline-none focus:border-[#2563EB]"
               >
-                <option value="">-- Choose Product from Uploaded Inventory Dropdown --</option>
+                <option value="">Choose a product…</option>
                 {catalog.map((p) => {
                   const rate = parseFloat(String(p.franchise_price || p.selling_price || 0));
                   return (
                     <option key={p.id} value={String(p.id)}>
-                      {p.product_name} (Wholesale: ₹{rate} / {p.unit || 'pc'} | Stock: {p.quantity})
+                      {p.product_name} — ₹{rate}/{p.unit || 'pc'} · {p.quantity} in stock
                     </option>
                   );
                 })}
-              </select>
+              </Dropdown>
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 <input
@@ -378,19 +375,19 @@ export default function FranchiseStockOrdersPage() {
                   }}
                   className="px-4 py-2.5 bg-[#2563EB] hover:bg-blue-700 text-white text-xs font-extrabold rounded-2xl transition-all shrink-0 flex items-center gap-1 shadow-xs"
                 >
-                  <Plus size={15} /> Add Dropdown Item
+                  <Plus size={15} /> Add to list
                 </button>
               </div>
             </div>
 
             <div className="pt-2 border-t border-blue-100/60 flex items-center justify-between text-xs">
-              <span className="text-gray-500 font-medium">Item not in dropdown list?</span>
+              <span className="text-gray-500 font-medium">Not in the list?</span>
               <button
                 type="button"
                 onClick={() => setManualModalOpen(true)}
                 className="font-extrabold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 underline"
               >
-                <Edit3 size={13} /> Write / Type Custom Unlisted Item Manually
+                <Edit3 size={13} /> Add an unlisted item
               </button>
             </div>
           </div>

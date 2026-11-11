@@ -1,3 +1,4 @@
+import { formatDuration, ymd, dateOnly } from '../../utils/formatters';
 import { useState, useEffect } from 'react';
 import { Calendar, Clock, ArrowRight, CalendarPlus, Car, Sparkles, X, Loader2, CreditCard, QrCode } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
@@ -13,6 +14,25 @@ import api from '../../api/axiosInstance';
 import { useAuthStore } from '../../store/authStore';
 import QrPaymentModal from '../../components/shared/QrPaymentModal';
 import Modal from '../../components/ui/Modal';
+import { carImage } from '../../utils/carImage';
+import { photoFor, PHOTOS } from '../../components/customer/serviceVisuals';
+import { normalizeCarType } from '../../utils/carTypes';
+import MyPackages from '../../components/customer/MyPackages';
+import CustomerJobCartsPage from './JobCartsPage';
+import { API_BASE } from '../../utils/endpoints';
+
+const STATUS: Record<string, { label: string; cls: string }> = {
+  pending_approval: { label: 'Waiting for studio', cls: 'bg-amber-50 text-amber-700' },
+  pending_payment: { label: 'Payment due', cls: 'bg-orange-50 text-orange-700' },
+  confirmed: { label: 'Confirmed', cls: 'bg-emerald-50 text-emerald-700' },
+  in_progress: { label: 'In the studio', cls: 'bg-blue-50 text-blue-700' },
+  completed: { label: 'Completed', cls: 'bg-slate-100 text-slate-700' },
+  delivered: { label: 'Delivered', cls: 'bg-slate-100 text-slate-700' },
+  cancelled: { label: 'Cancelled', cls: 'bg-rose-50 text-rose-600' },
+  rejected: { label: 'Declined', cls: 'bg-rose-50 text-rose-600' },
+};
+
+const priceFor = (s: any, cat?: string) => Number(s[`price_${normalizeCarType(cat) || 'sedan'}`] || s.price_sedan || 0);
 
 function BookingCountdown({ expiresAt, onExpire }: { expiresAt: string; onExpire: () => void }) {
   const [timeLeft, setTimeLeft] = useState<string>('');
@@ -54,7 +74,7 @@ export default function BookingsPage() {
   const { data, isLoading, isError, refetch } = useBookings({ page, limit: 20 });
   const cancelMut = useCancelBooking();
   const changeServicesMut = useChangeBookingServices();
-  const { data: servicesRes } = useServices({ active_only: true });
+  const { data: servicesRes } = useServices({ active_only: true, for_app: true });
 
   const [changeTargetBooking, setChangeTargetBooking] = useState<any>(null);
   const [selectedServiceIds, setSelectedServiceIds] = useState<number[]>([]);
@@ -63,103 +83,31 @@ export default function BookingsPage() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrAmount, setQrAmount] = useState(0);
   const [activeBookingId, setActiveBookingId] = useState<number | null>(null);
-  const [submittingOnline, setSubmittingOnline] = useState(false);
-
-  const loadRazorpayScript = () => {
-    return new Promise((resolve) => {
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
-  const handlePayOnline = async (bookingId: number, advanceAmt: number) => {
-    setSubmittingOnline(true);
-    try {
-      const sdkLoaded = await loadRazorpayScript();
-      if (!sdkLoaded) {
-        toast('error', 'Razorpay SDK failed to load. Are you online?');
-        setSubmittingOnline(false);
-        return;
-      }
-
-      const resOrder = await api.post('/payments/razorpay/order', {
-        amount: advanceAmt,
-        booking_id: bookingId
-      });
-
-      if (!resOrder.data.success) {
-        throw new Error(resOrder.data.error || 'Failed to create payment order');
-      }
-
-      const orderData = resOrder.data.data;
-
-      const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
-        amount: orderData.amount,
-        currency: orderData.currency,
-        name: 'O3 Car Spaa',
-        description: `Booking Advance Payment (Booking #${bookingId})`,
-        order_id: orderData.id,
-        prefill: {
-          name: useAuthStore.getState().user?.name || '',
-          email: useAuthStore.getState().user?.email || '',
-          contact: useAuthStore.getState().user?.mobile || ''
-        },
-        handler: async function (response: any) {
-          try {
-            await api.post('/payments/razorpay/verify', {
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
-            });
-            toast('success', 'Payment successful! Your booking is now pending approval.');
-            setChoiceBookingData(null);
-            refetch();
-          } catch (err: any) {
-            console.error(err);
-            toast('error', err.response?.data?.error || 'Payment verification failed');
-          }
-        },
-        modal: {
-          ondismiss: function () {
-            toast('warning', 'Razorpay checkout dismissed.');
-          }
-        },
-        theme: { color: '#2563EB' }
-      };
-
-      if (orderData.id.startsWith('order_mock_')) {
-        const confirmSimulate = window.confirm(
-          "RAZORPAY SANDBOX MODE (Keys Missing)\n\nWould you like to simulate a successful online payment?"
-        );
-        if (confirmSimulate) {
-          await options.handler({
-            razorpay_order_id: orderData.id,
-            razorpay_payment_id: 'pay_mock_' + Date.now(),
-            razorpay_signature: 'sig_mock_' + Date.now()
-          });
-        } else {
-          options.modal.ondismiss();
-        }
-        return;
-      }
-
-      const rzp = new (window as any).Razorpay(options);
-      rzp.open();
-    } catch (err: any) {
-      console.error('RAZORPAY ERROR:', err);
-      toast('error', err.message || 'An error occurred during Razorpay checkout.');
-    } finally {
-      setSubmittingOnline(false);
-    }
-  };
-
-  const bookings = data?.data || [];
+  const [tab, setTab] = useState<'upcoming' | 'past'>('upcoming');
+  // My bookings = visits booked (upcoming / past). My services = packages left + work done on my cars (job cards, invoices).
+  const [section, setSection] = useState<'bookings' | 'services'>(() => (new URLSearchParams(window.location.search).get('section') === 'services' ? 'services' : 'bookings'));
+  const allBookings: any[] = data?.data || [];
+  const todayStr = ymd();
+  const isUpcoming = (b: any) => ['pending_payment', 'pending_approval', 'confirmed', 'in_progress'].includes(b.status)
+    && (!b.slot_date || dateOnly(b.slot_date) >= todayStr || b.status === 'in_progress');
+  const upcoming = allBookings.filter(isUpcoming).sort((a, b) => String(a.slot_date).localeCompare(String(b.slot_date)));
+  const past = allBookings.filter(b => !isUpcoming(b));
+  const bookings = tab === 'upcoming' ? upcoming : past;
   const pagination = data?.pagination;
   const services = servicesRes?.data || [];
+
+  // Quick wash bill (own finished wash only)
+  const downloadQwInvoice = async (id: number) => {
+    try {
+      const r = await api.get(`/quick-wash/${id}/invoice`, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const link = document.createElement('a');
+      link.href = url; link.download = `Quick-wash-${id}.pdf`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch {
+      toast('error', 'Invoice not available yet');
+    }
+  };
 
   const handleCancel = async (id: number) => {
     if (!confirm('Are you sure you want to cancel this booking?')) return;
@@ -190,17 +138,41 @@ export default function BookingsPage() {
     }
   };
 
+  const sectionSwitch = (
+    <div className="flex bg-slate-100 rounded-xl p-1 mb-3">
+      {([['bookings', 'My bookings'], ['services', 'My services']] as const).map(([k, label]) => (
+        <button key={k} onClick={() => setSection(k)}
+          className={`flex-1 py-2 rounded-lg text-[13px] font-extrabold transition ${section === k ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}>{label}</button>
+      ))}
+    </div>
+  );
+
+  if (section === 'services') {
+    return (
+      <>
+        {sectionSwitch}
+        <p className="text-xs text-slate-500 mb-3">Your packages (what is left) and every service done on your cars, with invoices.</p>
+        <div className="mb-4"><MyPackages /></div>
+        <CustomerJobCartsPage hidePackages />
+      </>
+    );
+  }
+
   return (
     <>
-      <AdminTopBar
-        title="My Bookings"
-        subtitle="Your upcoming appointments"
-        actions={
-          <Button icon={<CalendarPlus size={16} />} onClick={() => navigate('/customer/bookings/new')}>
-            Book Service
-          </Button>
-        }
-      />
+      {sectionSwitch}
+      {/* Upcoming / Past + book button (the page title is already in the top bar) */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex bg-white rounded-xl p-1 shadow-sm flex-1">
+          {([['upcoming', `Upcoming (${upcoming.length})`], ['past', 'Past']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={`flex-1 py-2 rounded-lg text-[13px] font-bold transition ${tab === k ? 'bg-[#2563EB] text-white shadow' : 'text-slate-500'}`}>{label}</button>
+          ))}
+        </div>
+        <button onClick={() => navigate('/customer/bookings/new')} className="shrink-0 flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#0F172A] text-white text-[13px] font-bold">
+          <CalendarPlus size={15} /> Book
+        </button>
+      </div>
 
       <div className="max-w-4xl">
         {isError ? (
@@ -215,135 +187,105 @@ export default function BookingsPage() {
         ) : !bookings.length ? (
           <EmptyState
             icon={Calendar}
-            title="No Bookings Yet"
-            description="You don't have any service appointments. Book one now!"
-            actionLabel="Book Now"
-            onAction={() => navigate('/customer/bookings/new')}
+            title={tab === 'upcoming' ? 'Nothing booked yet' : 'No past bookings'}
+            description={tab === 'upcoming' ? 'Book your next wash or detailing in a few taps.' : 'Your completed and cancelled bookings will show here.'}
+            actionLabel={tab === 'upcoming' ? 'Book now' : undefined}
+            onAction={tab === 'upcoming' ? () => navigate('/customer/bookings/new') : undefined}
           />
         ) : (
           <>
-            <div className="grid gap-4">
+            <div className="grid gap-3">
               {bookings.map((b: any, idx: number) => {
-                const dateObj = b.slot_date ? new Date(b.slot_date) : null;
-                const isPast = dateObj ? dateObj < new Date(new Date().toISOString().split('T')[0]) : false;
-
-                // Calculate if can change service (must be >= 24h away)
-                let canChange = false;
+                const dateObj = b.slot_date ? new Date(`${dateOnly(b.slot_date)}T00:00:00`) : null;
+                const isPast = dateObj ? ymd(dateObj) < ymd() : false;
                 let hoursRemaining = 0;
                 if (dateObj && b.start_time && !isPast) {
-                  const slotDateStr = dateObj.toISOString().split('T')[0];
-                  const slotDateTime = new Date(`${slotDateStr}T${b.start_time}`);
-                  const now = new Date();
-                  const diffMs = slotDateTime.getTime() - now.getTime();
-                  hoursRemaining = diffMs / (1000 * 60 * 60);
-                  canChange = hoursRemaining >= 24;
+                  const slotDateTime = new Date(`${ymd(dateObj)}T${b.start_time}`);
+                  hoursRemaining = (slotDateTime.getTime() - Date.now()) / 36e5;
                 }
-
+                // services can be added/removed only until the studio confirms (not for package bookings)
+                const canEdit = b.status === 'pending_approval' && !b.user_package_id && hoursRemaining >= 24;
+                const title = b.service_names || b.service_name || b.package_service_name || b.package_name || 'Service booking';
+                const art = photoFor(title) || PHOTOS.wash;
+                const st = STATUS[b.status] || { label: String(b.status || '').replace(/_/g, ' '), cls: 'bg-slate-100 text-slate-700' };
+                const brand = b.vehicle_brand || b.linked_vehicle_brand;
+                const model = b.vehicle_model || b.linked_vehicle_model;
+                const qwDone = b.job_type === 'quick_wash' && ['completed', 'delivered'].includes(b.status);
+                const jobDue = Number(b.job_balance_due) > 0 && b.job_payment_status !== 'paid' ? Number(b.job_balance_due) : 0;
+                const jobDone = b.job_cart_status === 'complete';
+                const step = b.delivery_status === 'delivered' ? 'Delivered to you'
+                  : b.delivery_status === 'in_transit' ? 'Out for delivery'
+                  : b.delivery_status === 'assigned' ? 'Ready — delivery being arranged'
+                  : jobDone ? 'Work done — ready'
+                  : b.job_cart_id ? (b.job_stage || 'Work started') : '';
+                const showBar = qwDone || !!b.job_cart_id || b.pickup_status || Number(b.total_amount) > 0 || canEdit || b.status === 'pending_payment' || (['confirmed', 'pending_approval'].includes(b.status) && !isPast);
                 return (
-                  <div
-                    key={b.id}
-                    onClick={() => {
-                      if (b.status === 'pending_payment') {
-                        setChoiceBookingData(b);
-                      }
-                    }}
-                    className={`bg-white p-6 rounded-xl border shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 group card-premium opacity-0 animate-fade-in-up transition-all ${
-                      b.status === 'cancelled' ? 'border-blue-100 bg-blue-50/20' : 
-                      b.status === 'pending_payment' ? 'border-amber-200 bg-amber-50/5 hover:border-amber-400 cursor-pointer hover:shadow-md' :
-                      'border-gray-100'
-                    }`}
-                    style={{ animationDelay: `${idx * 0.05}s`, animationFillMode: 'forwards' }}
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center transition-shadow ${
-                        b.status === 'cancelled'
-                          ? 'bg-gradient-to-br from-gray-50 to-gray-100 text-gray-400'
-                          : 'bg-gradient-to-br from-blue-50 to-blue-100 text-[#2563EB] group-hover:shadow-blue-glow'
-                      }`}>
-                        <Calendar size={24} />
-                      </div>
-                      <div>
-                        <h3 className={`font-bold text-lg transition-colors ${
-                          b.status === 'cancelled' ? 'text-gray-400 line-through' : 'text-[#0F172A] group-hover:text-[#2563EB]'
-                        }`}>
-                          {b.service_name || b.package_name || 'Service Booking'}
-                        </h3>
-                        <div className="flex items-center gap-3 text-sm text-[#5f5e5e] mt-1 font-medium flex-wrap">
-                          {dateObj && (
-                            <span className="flex items-center gap-1">
-                              <Calendar size={14} />
-                              {dateObj.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </span>
-                          )}
-                          {b.start_time && (
-                            <span className="flex items-center gap-1">
-                              <Clock size={14} />
-                              {formatTime(b.start_time)} – {formatTime(b.end_time)}
-                            </span>
-                          )}
+                  <div key={b.id}
+                    onClick={() => { if (b.status === 'pending_payment') setChoiceBookingData(b); }}
+                    className={`rise bg-white rounded-2xl shadow-[0_4px_18px_rgba(15,23,42,0.06)] border overflow-hidden ${b.status === 'pending_payment' ? 'border-amber-200 cursor-pointer' : 'border-slate-100'} ${b.status === 'cancelled' ? 'opacity-60' : ''}`}
+                    style={{ animationDelay: `${idx * 40}ms` }}>
+                    <div className="flex gap-3 p-3">
+                      <img src={art} alt="" loading="lazy"
+                        className="w-[72px] h-[72px] rounded-xl shrink-0 object-cover" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <h3 className={`font-extrabold text-[15px] leading-snug text-slate-900 line-clamp-2 ${b.status === 'cancelled' ? 'line-through' : ''}`}>{title}</h3>
+                          <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10.5px] font-bold ${st.cls}`}>{st.label}</span>
                         </div>
-                        {(b.vehicle_brand || b.vehicle_model) && (
-                          <div className="flex items-center gap-1.5 text-xs text-[#5f5e5e] mt-1.5">
-                            <Car size={12} className="text-[#2563EB]" />
-                            <span>{b.vehicle_brand} {b.vehicle_model} {b.vehicle_reg_no ? `(${b.vehicle_reg_no})` : ''}</span>
-                          </div>
+                        <p className="flex items-center gap-1.5 text-[12px] text-slate-500 font-semibold mt-1">
+                          <Calendar size={12} />{dateObj ? dateObj.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
+                          {b.start_time && <><Clock size={12} className="ml-1" />{formatTime(b.start_time)}</>}
+                        </p>
+                        {(brand || model) && (
+                          <p className="flex items-center gap-1.5 text-[12px] text-slate-500 mt-1 truncate">
+                            <img src={carImage({ brand, model, category: b.vehicle_category })} alt="" className="w-8 h-5 object-contain shrink-0" />
+                            {brand} {model}{b.vehicle_reg_no ? ` · ${b.vehicle_reg_no}` : ''}
+                          </p>
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center justify-between md:justify-end gap-3 w-full md:w-auto mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-0 border-gray-100">
-                      {b.pickup_status && (
-                        <span className={`px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider border ${
-                          b.pickup_status === 'pending' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                          b.pickup_status === 'assigned' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                          b.pickup_status === 'picked_up' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                          'bg-gray-50 text-gray-700 border-gray-200'
-                        }`}>
-                          📍 Pickup: {b.pickup_status === 'picked_up' ? 'Picked Up' : b.pickup_status}
-                        </span>
-                      )}
-                      {b.status === 'pending_payment' ? (
-                        <div className="flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                          {b.expires_at && (
-                            <BookingCountdown expiresAt={b.expires_at} onExpire={refetch} />
+                    {step && (
+                      <div className="mx-3 mb-2 px-3 py-2 rounded-xl bg-blue-50 text-[12px] font-bold text-blue-800 flex items-center justify-between gap-2" onClick={e => e.stopPropagation()}>
+                        <span>Status: {step}{jobDue ? ` · Due ₹${jobDue.toLocaleString('en-IN')}` : jobDone && b.job_payment_status === 'paid' ? ' · Paid' : ''}</span>
+                        {b.job_public_token && b.delivery_status !== 'delivered' && (
+                          <button onClick={() => navigate(`/job/${b.job_public_token}`)} className="px-2.5 py-1 bg-blue-600 text-white rounded-lg text-[11px]">Track live</button>
+                        )}
+                      </div>
+                    )}
+                    {showBar && (
+                      <div className="flex items-center gap-2 px-3 py-2.5 border-t border-slate-100 bg-slate-50/60" onClick={e => e.stopPropagation()}>
+                        {Number(b.total_amount) > 0 && <span className="text-[13px] font-black text-slate-900">₹{Number(b.total_amount).toLocaleString('en-IN')}</span>}
+                        {b.offer_code && Number(b.discount_amount) > 0 && <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">{b.offer_code} −₹{Number(b.discount_amount).toLocaleString('en-IN')}</span>}
+                        {b.pickup_status && <span className="text-[11px] font-semibold text-slate-500 truncate">· Pickup {b.pickup_status === 'picked_up' ? 'done' : b.pickup_status}</span>}
+                        <span className="ml-auto flex items-center gap-1.5">
+                          {b.status === 'pending_payment' && (
+                            <>
+                              {b.expires_at && <BookingCountdown expiresAt={b.expires_at} onExpire={refetch} />}
+                              <button onClick={() => setChoiceBookingData(b)} className="px-3 py-1.5 bg-amber-500 text-white font-bold rounded-lg text-xs">Pay now</button>
+                            </>
                           )}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setChoiceBookingData(b);
-                            }}
-                            className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-extrabold rounded-lg text-xs shadow-md shadow-amber-500/10 transition-all flex items-center gap-1 shrink-0"
-                          >
-                            Pay Now
-                          </button>
-                        </div>
-                      ) : (
-                        <span className={`px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider border ${
-                          b.status === 'confirmed' ? 'bg-green-50 text-green-700 border-green-200' :
-                          b.status === 'completed' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                          b.status === 'pending_approval' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                          'bg-blue-50 text-blue-700 border-blue-200'
-                        }`}>
-                          {b.status === 'pending_approval' ? 'Pending Approval' : b.status}
+                          {canEdit && (
+                            <button onClick={() => { setChangeTargetBooking(b); setSelectedServiceIds(String(b.service_ids_csv || b.service_id || '').split(',').map(Number).filter(Boolean)); }}
+                              className="px-3 py-1.5 bg-white border border-blue-200 text-[#2563EB] font-bold rounded-lg text-xs">Edit services</button>
+                          )}
+                          {jobDone && b.job_cart_id && (
+                            <button onClick={() => window.open(`${API_BASE}/job-carts/${b.job_cart_id}/invoice?token=${useAuthStore.getState().token}`, '_blank')}
+                              className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-lg text-xs">Invoice</button>
+                          )}
+                          {jobDue > 0 && (
+                            <button onClick={() => window.open(`${API_BASE}/job-carts/${b.job_cart_id}/invoice?token=${useAuthStore.getState().token}`, '_blank')}
+                              title="The invoice has a UPI QR for the amount due"
+                              className="px-3 py-1.5 bg-amber-500 text-white font-bold rounded-lg text-xs">Pay ₹{jobDue.toLocaleString('en-IN')}</button>
+                          )}
+                          {qwDone && (
+                            <button onClick={() => downloadQwInvoice(b.id)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-lg text-xs">Invoice</button>
+                          )}
+                          {['confirmed', 'pending_approval'].includes(b.status) && !isPast && (
+                            <button onClick={() => handleCancel(b.id)} className="px-2.5 py-1.5 text-rose-600 font-bold rounded-lg text-xs hover:bg-rose-50">Cancel</button>
+                          )}
                         </span>
-                      )}
-                      {['confirmed', 'pending_approval'].includes(b.status) && canChange && (
-                        <button
-                          onClick={() => setChangeTargetBooking(b)}
-                          className="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg text-xs hover:bg-blue-100 transition-all"
-                        >
-                          Change Service
-                        </button>
-                      )}
-                      {b.status === 'confirmed' && !isPast && (
-                        <button
-                          onClick={() => handleCancel(b.id)}
-                          className="text-blue-500 hover:text-blue-700 transition p-2 rounded-full hover:bg-blue-50 text-xs font-bold"
-                          title="Cancel Booking"
-                        >
-                          <X size={18} />
-                        </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -360,7 +302,7 @@ export default function BookingsPage() {
                 >
                   Previous
                 </Button>
-                <span className="text-xs text-[#5f5e5e] font-medium">
+                <span className="text-xs text-[#64748B] font-medium">
                   Page {page} of {Math.ceil(pagination.total / pagination.limit)}
                 </span>
                 <Button
@@ -379,16 +321,16 @@ export default function BookingsPage() {
 
       {/* Service Update Modal */}
       {changeTargetBooking && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center sm:p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setChangeTargetBooking(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in-up">
+          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in-up">
             {/* Header */}
             <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center text-white">
                   <Sparkles size={16} />
                 </div>
-                <h3 className="font-bold text-[#0F172A]">Change Booking Services</h3>
+                <h3 className="font-bold text-[#0F172A]">Edit services</h3>
               </div>
               <button onClick={() => setChangeTargetBooking(null)} className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition-colors">
                 <X size={16} />
@@ -397,8 +339,8 @@ export default function BookingsPage() {
 
             {/* Body */}
             <div className="p-6 max-h-[60vh] overflow-y-auto space-y-3">
-              <p className="text-xs text-[#5f5e5e] font-medium mb-4">
-                Choose the services you would like to swap for Booking #{changeTargetBooking.id}.
+              <p className="text-xs text-[#64748B] font-medium mb-4">
+                Add or remove services. Prices are for your {changeTargetBooking.vehicle_model || 'car'} — you can change this until the studio confirms.
               </p>
               {services.map((s: any) => {
                 const isChecked = selectedServiceIds.includes(s.id);
@@ -426,11 +368,11 @@ export default function BookingsPage() {
                       />
                       <div>
                         <div className="font-bold text-[#0F172A] text-sm">{s.name}</div>
-                        <div className="text-xs text-[#5f5e5e] mt-0.5">{s.duration_minutes} min</div>
+                        {s.show_duration !== 0 && s.duration_minutes > 0 && <div className="text-xs text-[#64748B] mt-0.5">approx. {formatDuration(s.duration_minutes)}</div>}
                       </div>
                     </div>
                     <div className="font-black text-sm text-[#0F172A]">
-                      ₹{s.price_sedan || s.price_hatchback || s.price_suv}
+                      ₹{priceFor(s, changeTargetBooking.vehicle_category).toLocaleString('en-IN')}
                     </div>
                   </label>
                 );
@@ -439,6 +381,7 @@ export default function BookingsPage() {
 
             {/* Footer */}
             <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-end gap-3">
+              <span className="mr-auto text-sm font-black text-slate-900">Total ₹{services.filter((s: any) => selectedServiceIds.includes(s.id)).reduce((t: number, s: any) => t + priceFor(s, changeTargetBooking.vehicle_category), 0).toLocaleString('en-IN')}</span>
               <Button variant="ghost" onClick={() => setChangeTargetBooking(null)}>
                 Cancel
               </Button>

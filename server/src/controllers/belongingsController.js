@@ -40,9 +40,14 @@ exports.create = async (req, res) => {
         });
         image_url = result.secure_url;
       } catch (uploadErr) {
-        console.error('Cloudinary upload error for belonging, falling back to data URI:', uploadErr);
-        // Fallback to storing data URI directly so image is NEVER lost
-        image_url = dataURI;
+        // No cloud storage → keep the photo on this server (uploads/belongings) so it is never lost
+        const fs = require('fs'), path = require('path');
+        const dir = path.join(__dirname, '..', '..', 'uploads', 'belongings');
+        fs.mkdirSync(dir, { recursive: true });
+        const ext = ({ 'image/png': '.png', 'image/webp': '.webp' })[req.file.mimetype] || '.jpg';
+        const name = `belonging_${req.params.id}_${Date.now()}_${require('crypto').randomBytes(3).toString('hex')}${ext}`;
+        fs.writeFileSync(path.join(dir, name), req.file.buffer);
+        image_url = `/uploads/belongings/${name}`;
       }
     }
 

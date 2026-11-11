@@ -51,11 +51,11 @@ export default function FileUpload({
   return (
     <div>
       {label && (
-        <p className="text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-2">{label}</p>
+        <p className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] mb-2">{label}</p>
       )}
       <div
         className={`border-2 border-dashed rounded-lg p-6 text-center transition-all cursor-pointer ${
-          dragActive ? 'border-[#2563EB] bg-blue-50/30' : 'border-gray-200 hover:border-gray-300 bg-[#f6f3f2]'
+          dragActive ? 'border-[#2563EB] bg-blue-50/30' : 'border-gray-200 hover:border-gray-300 bg-[#F1F5F9]'
         }`}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
@@ -63,9 +63,9 @@ export default function FileUpload({
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
       >
-        <Upload size={24} className="mx-auto text-[#8f6f6c] mb-2" />
-        <p className="text-xs font-semibold text-[#5f5e5e]">Drop files here or click to browse</p>
-        <p className="text-[10px] text-[#8f6f6c] mt-1">Max {maxFiles} files</p>
+        <Upload size={24} className="mx-auto text-[#94A3B8] mb-2" />
+        <p className="text-xs font-semibold text-[#64748B]">Drop files here or click to browse</p>
+        <p className="text-[10px] text-[#94A3B8] mt-1">Max {maxFiles} files</p>
         <input
           ref={inputRef}
           type="file"

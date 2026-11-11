@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Trash2, RotateCcw, Users, ClipboardList, Receipt, Loader2 } from 'lucide-react';
 import api from '../../api/axiosInstance';
+import AdminHero from '../../components/admin/AdminHero';
 import toast from 'react-hot-toast';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 type Tab = 'customers' | 'jobCarts' | 'bills';
 
@@ -22,6 +24,7 @@ export default function ArchivePage() {
     }
   };
 
+  useLiveReload(() => { fetchArchived(); }); // reload when anything changes elsewhere
   useEffect(() => { fetchArchived(); }, []);
 
   const restore = async (type: string, id: number) => {
@@ -47,15 +50,12 @@ export default function ArchivePage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
+      <AdminHero title={'Recycle Bin'} subtitle={'Archived customers, cancelled job cards, and voided bills. Restore items to bring them back.'} />
       {/* Header */}
       <div className="mb-6 border-l-4 pl-6" style={{ borderImage: 'linear-gradient(to bottom, #1D4ED8, #2563EB) 1' }}>
         <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#2563EB] mb-1">MANAGE</p>
-        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#0F172A]">
-          Recycle Bin
-        </h1>
-        <p className="text-[#5f5e5e] text-sm font-medium mt-1">
-          Archived customers, cancelled job cards, and voided bills. Restore items to bring them back.
-        </p>
+        
+        
       </div>
 
       {/* Tabs */}
@@ -67,7 +67,7 @@ export default function ArchivePage() {
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
               tab === t.key
                 ? 'bg-[#0F172A] text-white shadow-md'
-                : 'bg-[#f6f3f2] text-[#5f5e5e] hover:bg-[#e5e2e1]'
+                : 'bg-[#F1F5F9] text-[#64748B] hover:bg-[#E2E8F0]'
             }`}
           >
             <t.icon size={14} />

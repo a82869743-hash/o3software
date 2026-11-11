@@ -23,3 +23,22 @@ backups/
 *.sql
 
 
+LOGINS.local.txt
+
+# local test screenshots
+screenshots/
+media-incoming/
+
+# Kept on the PC only (repo is public): test leftovers, password-guessing helpers, business documents
+server/comprehensive_audit.js
+server/get_users.js
+server/datecols.txt
+server/pkg_*.pdf
+server/scripts/find_mysql_pass.js
+server/scripts/test_cli_pass.js
+turboflow_filenames.txt
+FOR SOFTWARE USE.xlsx
+Developer Guide.docx
+O3_Launch_Plan.pdf
+*.local.txt
+server/test_phase*.js

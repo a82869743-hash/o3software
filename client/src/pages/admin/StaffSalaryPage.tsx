@@ -1,319 +1,273 @@
-import { useState, useEffect } from 'react';
-import { Users, FileText, Check, Settings, Save, AlertTriangle, Download, Plus } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Settings, Download, Wallet, SlidersHorizontal, Save } from 'lucide-react';
 import AdminTopBar from '../../components/layout/AdminTopBar';
 import Button from '../../components/ui/Button';
+import Modal from '../../components/ui/Modal';
 import api from '../../api/axiosInstance';
-import toast from 'react-hot-toast';
+import { useUIStore } from '../../store/uiStore';
+import { useAuthStore } from '../../store/authStore';
+import { can } from '../../utils/access';
 import { formatINR } from '../../utils/formatters';
+import { exportToExcel } from '../../utils/exportExcel';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
-export default function StaffSalaryPage() {
-  const [monthYear, setMonthYear] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  });
-  
-  const [salaries, setSalaries] = useState<any[]>([]);
+const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+
+export default function StaffSalaryPage({ embedded = false }: { embedded?: boolean }) {
+  const toast = useUIStore(s => s.toast);
+  const user = useAuthStore(s => s.user);
+  const canEdit = can(user, 'salary', 'edit');
+  const canPay = can(user, 'salary', 'pay');
+
+  const [monthYear, setMonthYear] = useState(thisMonth);
+  const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [downloading, setDownloading] = useState<number | null>(null);
+  const [edit, setEdit] = useState<any>(null);
+  const [payRow, setPayRow] = useState<any>(null);
+  const [payMode, setPayMode] = useState('cash');
+  const [payInclude, setPayInclude] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [showMethods, setShowMethods] = useState(false);
+  const [staff, setStaff] = useState<any[]>([]);
 
-  // Custom salary modal
-  const [showAdd, setShowAdd] = useState(false);
-  const [staffList, setStaffList] = useState<any[]>([]);
-  const [addForm, setAddForm] = useState({ staff_id: '', base_salary: 0, bonus: 0, deductions: 0, status: 'paid', notes: '' });
-  
-  // Editing state
-  const [editId, setEditId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState({
-    base_salary: 0,
-    bonus: 0,
-    deductions: 0,
-    status: 'pending',
-    notes: ''
-  });
-
-  const fetchSalaries = async () => {
+  const load = async () => {
     setLoading(true);
+    try { const { data } = await api.get('/salary', { params: { month_year: monthYear } }); setRows(data.data || []); }
+    catch (e: any) { toast('error', e.message); setRows([]); } finally { setLoading(false); }
+  };
+  useLiveReload(() => { load(); }); // reload when anything changes elsewhere
+  useEffect(() => { load(); }, [monthYear]);
+
+  const generate = async () => {
+    setGenerating(true);
+    try { const { data } = await api.post('/salary/calculate', { month_year: monthYear }); toast('success', data.message); load(); }
+    catch (e: any) { toast('error', e.message); } finally { setGenerating(false); }
+  };
+
+  const saveEdit = async () => {
+    setBusy(true);
     try {
-      const res = await api.get('/salary', { params: { month_year: monthYear } });
-      setSalaries(res.data.data || []);
-      setEditId(null);
-    } catch (err) {
-      setSalaries([]);
-    } finally {
-      setLoading(false);
-    }
+      await api.put(`/salary/${edit.id}`, { base_salary: edit.base_salary, bonus: edit.bonus, deductions: edit.deductions, include_referral: edit.include_referral, notes: edit.notes });
+      toast('success', 'Salary updated'); setEdit(null); load();
+    } catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
   };
 
-  useEffect(() => {
-    fetchSalaries();
-    // Fetch staff for dropdown
-    api.get('/staff').then(res => setStaffList(res.data.data || [])).catch(() => {});
-  }, [monthYear]);
+  // incentive left out stays owed and comes up again on the next salary
+  const toggleIncentive = async (r: any) => {
+    try { await api.put(`/salary/${r.id}`, { include_incentive: !Number(r.include_incentive ?? 1) }); load(); }
+    catch (e: any) { toast('error', e.message); }
+  };
 
-  const handleGenerate = async () => {
+  const toggleReferral = async (r: any) => {
+    try { await api.put(`/salary/${r.id}`, { include_referral: !Number(r.include_referral) }); load(); }
+    catch (e: any) { toast('error', e.message); }
+  };
+
+  const pay = async () => {
+    setBusy(true);
     try {
-      setGenerating(true);
-      await api.post('/salary/calculate', { month_year: monthYear });
-      toast.success('Salary records generated successfully');
-      fetchSalaries();
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to generate salaries');
-    } finally {
-      setGenerating(false);
-    }
+      const { data } = await api.post(`/salary/${payRow.id}/pay`, { payment_mode: payMode, include_referral: payInclude });
+      toast('success', data.message); setPayRow(null); load();
+    } catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
   };
 
-  const startEdit = (s: any) => {
-    setEditId(s.id);
-    setEditForm({
-      base_salary: parseFloat(s.base_salary),
-      bonus: parseFloat(s.bonus),
-      deductions: parseFloat(s.deductions),
-      status: s.status,
-      notes: s.notes || ''
-    });
-  };
-
-  const handleSave = async (id: number) => {
+  const slip = async (r: any) => {
     try {
-      await api.put(`/salary/${id}`, editForm);
-      toast.success('Salary updated');
-      fetchSalaries();
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to update');
-    }
+      const res = await api.get(`/salary/${r.id}/slip`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a'); a.href = url; a.download = `Salary_${r.staff_name}_${r.month_year}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast('error', 'Could not generate the salary slip'); }
   };
 
-  const getFinalSalary = () => {
-    return editForm.base_salary + editForm.bonus - editForm.deductions;
+  const openMethods = async () => {
+    try { const { data } = await api.get('/staff'); setStaff((data.data || []).map((s: any) => ({ ...s }))); setShowMethods(true); }
+    catch (e: any) { toast('error', e.message); }
   };
-
-  const handleDownload = async (s: any) => {
-    setDownloading(s.id);
+  const saveMethod = async (s: any) => {
     try {
-      // Use the auth store token implicitly or explicitly
-      const tokenStr = sessionStorage.getItem('gk-auth-v1') || localStorage.getItem('gk-auth-v1');
-      let token = '';
-      if (tokenStr) token = JSON.parse(tokenStr).state?.token || '';
-      
-      const API = import.meta.env.VITE_API_URL || '';
-      const url = `${API}/salary/${s.id}/slip?token=${token}`;
-      
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error('Failed');
-      const blob = await resp.blob();
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `SAL-${s.month_year}-${s.id}.pdf`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-    } catch (e) {
-      toast.error('Could not generate PDF');
-    } finally {
-      setDownloading(null);
-    }
+      await api.put(`/staff/${s.id}`, { salary_type: s.salary_type, salary_rate: s.salary_rate, working_days_per_month: s.working_days_per_month, paid_leaves_per_month: s.paid_leaves_per_month });
+      toast('success', `Saved salary method for ${s.name}`);
+    } catch (e: any) { toast('error', e.message); }
   };
 
-  const handleCreateSalary = async () => {
-    if (!addForm.staff_id) return toast.error('Select a staff member');
-    try {
-      // Create manually (assuming backend has an endpoint or we just use calculate with specific ID)
-      // Actually, we don't have a POST /salary endpoint for single manual salary creation.
-      // Wait, let's create it in backend or check if it exists.
-      await api.post('/salary', { ...addForm, month_year: monthYear });
-      toast.success('Salary record created');
-      setShowAdd(false);
-      fetchSalaries();
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to create');
-    }
-  };
+  const doExport = () => exportToExcel('Salary', `Salary ${monthYear}`, [
+    { header: 'Employee', value: 'staff_name', width: 22 },
+    { header: 'Mobile', value: 'staff_mobile' },
+    { header: 'Method', value: (r: any) => `${r.salary_type || 'monthly'} @ ${r.salary_rate}` },
+    { header: 'Present', value: 'days_present', type: 'number' },
+    { header: 'Half Days', value: 'half_days', type: 'number' },
+    { header: 'Paid Leave', value: 'paid_leave_days', type: 'number' },
+    { header: 'Unpaid Leave', value: 'unpaid_leave_days', type: 'number' },
+    { header: 'Hours', value: 'hours_worked', type: 'number' },
+    { header: 'Earned Base', value: 'base_salary', type: 'money' },
+    { header: 'Incentives', value: 'incentive_amount', type: 'money' },
+    { header: 'Referral (included)', value: (r: any) => (Number(r.include_referral) ? r.referral_amount : 0), type: 'money' },
+    { header: 'Bonus', value: 'bonus', type: 'money' },
+    { header: 'Deductions', value: 'deductions', type: 'money' },
+    { header: 'Net Salary', value: 'final_salary', type: 'money' },
+    { header: 'Status', value: 'status' },
+    { header: 'Paid Via', value: 'payment_mode' },
+  ], rows, `O3 Car Spaa — Salary ${monthYear}`);
 
-
+  const cls = 'px-2 py-1.5 border border-gray-300 rounded-lg text-sm w-full';
   return (
     <>
-      <AdminTopBar
-        title="Staff Salary Management"
-        subtitle="Calculate and manage monthly payroll"
-      />
+      {!embedded && <AdminTopBar title="Salary" subtitle="Auto-generated from each employee's salary method, attendance, approved leave, incentives and referrals" />}
 
-      <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
-        <div className="flex items-center gap-3 w-full sm:w-auto">
-          <label className="font-bold text-[#5f5e5e] text-sm whitespace-nowrap">Select Month:</label>
-          <input 
-            type="month" 
-            value={monthYear} 
-            onChange={(e) => setMonthYear(e.target.value)}
-            className="px-4 py-2 border border-gray-200 rounded-lg outline-none focus:border-[#2563EB] text-sm font-medium w-full sm:w-auto"
-          />
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={() => setShowAdd(true)} icon={<Plus size={16} />}>
-            Custom Salary
-          </Button>
-          <Button onClick={handleGenerate} loading={generating} icon={<Settings size={16} />}>
-            Auto Generate
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        <input type="month" className="px-3 py-2 border border-gray-300 rounded-lg text-sm" value={monthYear} onChange={e => setMonthYear(e.target.value)} />
+        {canEdit && <Button onClick={generate} loading={generating} icon={<Settings size={16} />}>Generate / refresh salary</Button>}
+        {canEdit && <Button variant="secondary" onClick={openMethods} icon={<SlidersHorizontal size={16} />}>Set staff salary (monthly / daily / hourly)</Button>}
+        <Button variant="secondary" onClick={doExport} disabled={!rows.length} icon={<Download size={16} />}>Export Excel</Button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        {loading ? (
-          <div className="p-8 text-center text-gray-500">Loading...</div>
-        ) : salaries.length === 0 ? (
-          <div className="p-12 text-center text-gray-500">
-            <FileText size={40} className="mx-auto mb-3 text-gray-300" />
-            <p className="font-bold text-[#0F172A] mb-1">No Salary Records Found</p>
-            <p className="text-sm">Click "Generate / Recalculate" to calculate salaries for {monthYear}.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse whitespace-nowrap">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-100 text-xs uppercase tracking-wider text-[#5f5e5e] font-bold">
-                  <th className="p-4">Staff Name</th>
-                  <th className="p-4">Base Salary</th>
-                  <th className="p-4">Bonus</th>
-                  <th className="p-4">Deductions</th>
-                  <th className="p-4 bg-blue-50 text-[#2563EB]">Final Salary</th>
-                  <th className="p-4">Status</th>
-                  <th className="p-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {salaries.map((s) => (
-                  <tr key={s.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                    <td className="p-4">
-                      <p className="font-bold text-[#0F172A]">{s.staff_name}</p>
-                      <p className="text-xs text-gray-500">{s.staff_mobile}</p>
-                    </td>
-                    
-                    {editId === s.id ? (
-                      <>
-                        <td className="p-4">
-                          <input type="number" value={editForm.base_salary} onChange={e => setEditForm({...editForm, base_salary: parseFloat(e.target.value) || 0})} className="w-24 px-2 py-1 border rounded text-sm" />
-                        </td>
-                        <td className="p-4">
-                          <input type="number" value={editForm.bonus} onChange={e => setEditForm({...editForm, bonus: parseFloat(e.target.value) || 0})} className="w-20 px-2 py-1 border rounded text-sm" />
-                        </td>
-                        <td className="p-4">
-                          <input type="number" value={editForm.deductions} onChange={e => setEditForm({...editForm, deductions: parseFloat(e.target.value) || 0})} className="w-20 px-2 py-1 border rounded text-sm" />
-                        </td>
-                        <td className="p-4 font-black text-[#2563EB]">
-                          {formatINR(getFinalSalary())}
-                        </td>
-                        <td className="p-4">
-                          <select value={editForm.status} onChange={e => setEditForm({...editForm, status: e.target.value})} className="px-2 py-1 border rounded text-xs uppercase font-bold">
-                            <option value="pending">Pending</option>
-                            <option value="paid">Paid</option>
-                          </select>
-                        </td>
-                        <td className="p-4 text-right">
-                          <button onClick={() => handleSave(s.id)} className="text-green-600 hover:text-green-800 font-bold text-xs uppercase bg-green-50 px-3 py-1.5 rounded flex items-center gap-1 inline-flex">
-                            <Save size={14} /> Save
-                          </button>
-                          <button onClick={() => setEditId(null)} className="ml-2 text-gray-500 hover:text-gray-700 font-bold text-xs uppercase px-3 py-1.5 rounded inline-flex">
-                            Cancel
-                          </button>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="p-4 font-medium text-[#0F172A]">{formatINR(s.base_salary)}</td>
-                        <td className="p-4 font-medium text-green-600">{parseFloat(s.bonus) > 0 ? `+${formatINR(s.bonus)}` : '—'}</td>
-                        <td className="p-4 font-medium text-blue-500">{parseFloat(s.deductions) > 0 ? `-${formatINR(s.deductions)}` : '—'}</td>
-                        <td className="p-4 font-black text-[#2563EB] bg-blue-50/30">{formatINR(s.final_salary)}</td>
-                        <td className="p-4">
-                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${s.status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                            {s.status}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right">
-                          <div className="flex items-center justify-end gap-3">
-                            <button onClick={() => startEdit(s)} className="text-blue-600 hover:underline font-bold text-xs uppercase">
-                              Edit
-                            </button>
-                            <button 
-                              onClick={() => handleDownload(s)} 
-                              disabled={downloading === s.id}
-                              className="text-[#2563EB] hover:underline font-bold text-xs uppercase flex items-center gap-1 disabled:opacity-50"
-                            >
-                              {downloading === s.id ? '...' : <><Download size={13} /> PDF</>}
-                            </button>
-                          </div>
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      {/* Add Custom Salary Modal */}
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
-            <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-              <h3 className="font-bold text-[#0F172A]">Create Custom Salary</h3>
-              <button onClick={() => setShowAdd(false)} className="text-gray-400 hover:text-gray-600 font-bold">✕</button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Staff Member</label>
-                <select 
-                  value={addForm.staff_id} 
-                  onChange={e => {
-                    const st = staffList.find(s => s.id === parseInt(e.target.value));
-                    // Auto-fill base salary if staff has it in some profile, but we don't store it yet. Default 0.
-                    setAddForm({...addForm, staff_id: e.target.value});
-                  }}
-                  className="w-full px-3 py-2 border rounded-lg outline-none focus:border-[#2563EB] text-sm font-medium"
-                >
-                  <option value="">Select Staff</option>
-                  {staffList.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.mobile})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Base Salary</label>
-                  <input type="number" value={addForm.base_salary} onChange={e => setAddForm({...addForm, base_salary: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 border rounded-lg text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Bonus</label>
-                  <input type="number" value={addForm.bonus} onChange={e => setAddForm({...addForm, bonus: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 border rounded-lg text-sm" />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Deductions</label>
-                  <input type="number" value={addForm.deductions} onChange={e => setAddForm({...addForm, deductions: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 border rounded-lg text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Status</label>
-                  <select value={addForm.status} onChange={e => setAddForm({...addForm, status: e.target.value})} className="w-full px-3 py-2 border rounded-lg text-sm font-bold uppercase">
-                    <option value="pending">Pending</option>
-                    <option value="paid">Paid</option>
-                  </select>
-                </div>
-              </div>
-              <div className="bg-blue-50 p-3 rounded-lg flex justify-between items-center">
-                <span className="text-xs font-bold text-[#2563EB] uppercase">Final Salary</span>
-                <span className="font-black text-xl text-[#2563EB]">{formatINR(addForm.base_salary + addForm.bonus - addForm.deductions)}</span>
-              </div>
-            </div>
-            <div className="p-5 border-t border-gray-100 flex justify-end gap-3 bg-gray-50">
-              <Button variant="secondary" onClick={() => setShowAdd(false)}>Cancel</Button>
-              <Button onClick={handleCreateSalary}>Create Salary Slip</Button>
-            </div>
-          </div>
+      {rows.some((r: any) => !Number(r.salary_rate)) && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {rows.filter((r: any) => !Number(r.salary_rate)).length} staff have no salary set (₹0). Tap <b>Set staff salary</b>, enter monthly / per day / per hour pay for each person, then tap <b>Generate / refresh salary</b>.
+          Pay is worked out from attendance and approved leave, and incentives and unpaid referral earnings are added.
         </div>
       )}
+
+      {/* Phone: one salary card per employee */}
+      <div className="md:hidden space-y-2.5">
+        {loading && <p className="p-6 text-center text-slate-400 text-sm">Loading…</p>}
+        {!loading && !rows.length && <p className="p-8 text-center text-slate-400 text-sm bg-white rounded-2xl">No salary for {monthYear} yet. Set each employee's salary method, then tap "Generate".</p>}
+        {rows.map(r => (
+          <div key={r.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-3.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-extrabold text-slate-900 truncate">{r.staff_name}</p>
+                <p className="text-[11px] text-slate-500 capitalize">{r.salary_type || 'monthly'} · {formatINR(r.salary_rate)}</p>
+              </div>
+              <div className="text-right shrink-0">
+                <p className="text-lg font-black text-blue-700 leading-none">{formatINR(r.final_salary)}</p>
+                <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${r.status === 'paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{r.status}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5 mt-3 text-center">
+              {[['Present', r.days_present], ['Half day', r.half_days], ['Paid leave', r.paid_leave_days], ['Unpaid', r.unpaid_leave_days]].map(([l, v]) => (
+                <div key={l as string} className="rounded-lg bg-slate-50 py-1.5"><p className="text-[13px] font-black text-slate-800">{Number(v)}</p><p className="text-[9.5px] font-semibold text-slate-500">{l}</p></div>
+              ))}
+            </div>
+            <div className="flex justify-between text-[11.5px] text-slate-600 mt-2.5">
+              <span>Base {formatINR(r.base_salary)}</span><span>Incentive {formatINR(r.incentive_amount)}</span><span>Referral {formatINR(r.referral_amount)}</span>
+            </div>
+            <div className="flex gap-2 mt-3">
+              {r.status !== 'paid' && canEdit && <button className="flex-1 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700" onClick={() => setEdit({ ...r })}>Adjust</button>}
+              {r.status !== 'paid' && canPay && <button className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold" onClick={() => { setPayRow(r); setPayInclude(!!Number(r.include_referral)); }}>Pay</button>}
+              <button className="flex-1 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold inline-flex items-center justify-center gap-1" onClick={() => slip(r)}><Download size={12} /> Slip</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden md:block bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+            <tr>
+              <th className="p-3 text-left">Employee</th><th className="p-3 text-left">Attendance</th><th className="p-3 text-right">Base</th>
+              <th className="p-3 text-right">Incentive</th><th className="p-3 text-center">Referral earnings</th><th className="p-3 text-right">Bonus / Ded.</th>
+              <th className="p-3 text-right">Net</th><th className="p-3">Status</th><th className="p-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={9} className="p-8 text-center text-slate-400">Loading…</td></tr>}
+            {!loading && !rows.length && (
+              <tr><td colSpan={9} className="p-10 text-center text-slate-400">No salary for {monthYear} yet. Set each employee's salary method, then click "Generate".</td></tr>
+            )}
+            {rows.map(r => (
+              <tr key={r.id} className="border-t border-slate-100 align-top">
+                <td className="p-3"><p className="font-bold">{r.staff_name}</p><p className="text-xs text-slate-500 capitalize">{r.salary_type || 'monthly'} · {formatINR(r.salary_rate)}</p></td>
+                <td className="p-3 text-xs text-slate-600">
+                  {Number(r.days_present)} present · {Number(r.half_days)} half · {Number(r.paid_leave_days)} paid leave · {Number(r.unpaid_leave_days)} unpaid
+                  {r.salary_type === 'hourly' && <div>{Number(r.hours_worked)} h</div>}
+                </td>
+                <td className="p-3 text-right">{formatINR(r.base_salary)}</td>
+                <td className="p-3 text-right">
+                  <div className={Number(r.include_incentive ?? 1) ? 'font-semibold' : 'text-slate-400 line-through'}>{formatINR(r.incentive_amount)}</div>
+                  {r.status !== 'paid' && canEdit && Number(r.incentive_amount) > 0 && (
+                    <label className="inline-flex items-center gap-1 text-xs mt-1 cursor-pointer">
+                      <input type="checkbox" checked={!!Number(r.include_incentive ?? 1)} onChange={() => toggleIncentive(r)} /> Add to salary
+                    </label>
+                  )}
+                  {Number(r.complaint_deduction) > 0 && <div className="text-[11px] font-bold text-rose-600 mt-0.5">− {formatINR(r.complaint_deduction)} complaints</div>}
+                </td>
+                <td className="p-3 text-center">
+                  <div className="font-semibold">{formatINR(r.referral_amount)}</div>
+                  {r.status !== 'paid' && canEdit && Number(r.referral_amount) > 0 && (
+                    <label className="inline-flex items-center gap-1 text-xs mt-1 cursor-pointer">
+                      <input type="checkbox" checked={!!Number(r.include_referral)} onChange={() => toggleReferral(r)} /> Add to salary
+                    </label>
+                  )}
+                  {r.status === 'paid' && <div className="text-[11px] text-slate-500">{Number(r.include_referral) ? 'Paid with salary' : 'Not included'}</div>}
+                </td>
+                <td className="p-3 text-right text-xs"><span className="text-emerald-700">+{formatINR(r.bonus)}</span><br /><span className="text-rose-600">-{formatINR(r.deductions)}</span></td>
+                <td className="p-3 text-right font-extrabold text-blue-700">{formatINR(r.final_salary)}</td>
+                <td className="p-3"><span className={`px-2 py-0.5 rounded-full text-[11px] font-bold uppercase ${r.status === 'paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{r.status}</span></td>
+                <td className="p-3 text-right whitespace-nowrap space-x-2">
+                  {r.status !== 'paid' && canEdit && <button className="text-xs font-bold text-blue-600" onClick={() => setEdit({ ...r })}>Adjust</button>}
+                  {r.status !== 'paid' && canPay && <button className="text-xs font-bold text-emerald-700" onClick={() => { setPayRow(r); setPayInclude(!!Number(r.include_referral)); }}>Pay</button>}
+                  <button className="text-xs font-bold text-slate-600 inline-flex items-center gap-1" onClick={() => slip(r)}><Download size={12} /> Slip</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal open={!!edit} onClose={() => setEdit(null)} title={`Adjust salary — ${edit?.staff_name || ''}`}
+        footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancel</Button><Button loading={busy} onClick={saveEdit} icon={<Save size={14} />}>Save</Button></>}>
+        {edit && (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <label>Earned base (₹)<input className={cls} type="number" min={0} value={edit.base_salary} onChange={e => setEdit({ ...edit, base_salary: e.target.value })} /></label>
+            <label>Bonus (₹)<input className={cls} type="number" min={0} value={edit.bonus} onChange={e => setEdit({ ...edit, bonus: e.target.value })} /></label>
+            <label>Deductions (₹)<input className={cls} type="number" min={0} value={edit.deductions} onChange={e => setEdit({ ...edit, deductions: e.target.value })} /></label>
+            <label className="flex items-center gap-2 mt-5"><input type="checkbox" checked={!!Number(edit.include_referral)} onChange={e => setEdit({ ...edit, include_referral: e.target.checked })} /> Include referral earnings ({formatINR(edit.referral_amount)})</label>
+            <label className="col-span-2">Notes<input className={cls} value={edit.notes || ''} onChange={e => setEdit({ ...edit, notes: e.target.value })} /></label>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!payRow} onClose={() => setPayRow(null)} title={`Pay salary — ${payRow?.staff_name || ''}`}
+        footer={<><Button variant="ghost" onClick={() => setPayRow(null)}>Cancel</Button><Button loading={busy} onClick={pay} icon={<Wallet size={14} />}>Confirm payment</Button></>}>
+        {payRow && (
+          <div className="space-y-3 text-sm">
+            <p>Salary for <b>{payRow.month_year}</b> without referrals: <b>{formatINR(Number(payRow.final_salary) - (Number(payRow.include_referral) ? Number(payRow.referral_amount) : 0))}</b></p>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={payInclude} onChange={e => setPayInclude(e.target.checked)} disabled={!Number(payRow.referral_amount)} />
+              Also pay unpaid referral earnings ({formatINR(payRow.referral_amount)}) — they will show as paid in Referrals</label>
+            <p className="font-bold">Total to pay: {formatINR(Number(payRow.final_salary) - (Number(payRow.include_referral) ? Number(payRow.referral_amount) : 0) + (payInclude ? Number(payRow.referral_amount) : 0))}</p>
+            <Dropdown className={cls} value={payMode} onChange={e => setPayMode(e.target.value)}>
+              <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank transfer</option>
+            </Dropdown>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={showMethods} onClose={() => { setShowMethods(false); }} title="Set each staff member's salary" size="xl">
+        <p className="text-xs text-slate-500 mb-3">Monthly = fixed amount pro-rated by payable days. Daily = rate × payable days. Hourly = rate × hours between check-in and check-out.</p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-xs text-slate-500"><tr><th className="text-left py-1">Employee</th><th>Method</th><th>Rate (₹)</th><th>Working days / month</th><th>Paid leaves / month</th><th></th></tr></thead>
+            <tbody>
+              {staff.map((s, i) => (
+                <tr key={s.id} className="border-t border-slate-100">
+                  <td className="py-2 font-semibold">{s.name}<div className="text-[11px] text-slate-400 capitalize">{s.role}</div></td>
+                  <td><Dropdown className={cls} value={s.salary_type || 'monthly'} onChange={e => setStaff(p => p.map((x, j) => j === i ? { ...x, salary_type: e.target.value } : x))}>
+                    <option value="monthly">Monthly</option><option value="daily">Per day</option><option value="hourly">Per hour</option></Dropdown></td>
+                  <td><input className={cls} type="number" min={0} value={s.salary_rate ?? 0} onChange={e => setStaff(p => p.map((x, j) => j === i ? { ...x, salary_rate: e.target.value } : x))} /></td>
+                  <td><input className={cls} type="number" min={1} max={31} value={s.working_days_per_month ?? 26} onChange={e => setStaff(p => p.map((x, j) => j === i ? { ...x, working_days_per_month: e.target.value } : x))} /></td>
+                  <td><input className={cls} type="number" min={0} max={10} value={s.paid_leaves_per_month ?? 1} onChange={e => setStaff(p => p.map((x, j) => j === i ? { ...x, paid_leaves_per_month: e.target.value } : x))} /></td>
+                  <td className="pl-2"><Button size="sm" onClick={() => saveMethod(s)}>Save</Button></td>
+                </tr>
+              ))}
+              {!staff.length && <tr><td colSpan={6} className="py-6 text-center text-slate-400">No staff yet — add staff from the Staff page.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Modal>
     </>
   );
 }

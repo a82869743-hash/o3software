@@ -38,7 +38,7 @@ export default function ConfirmDialog({
           <AlertTriangle size={28} className="text-blue-500" />
         </div>
         <h3 className="text-lg font-bold text-[#0F172A] mb-2">{title}</h3>
-        <p className="text-sm text-[#5f5e5e]">{message}</p>
+        <p className="text-sm text-[#64748B]">{message}</p>
       </div>
     </Modal>
   );

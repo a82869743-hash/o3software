@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react';
+import JobPipeline from '../../components/shared/JobPipeline';
+import ReferrerPicker, { ReferrerValue, referrerPayload } from '../../components/shared/ReferrerPicker';
+import { can, canAny } from '../../utils/access';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Download, Truck, CheckCircle, Send, Plus, Trash2, X, Save, Loader2, Edit2, Package, Mail, Share2, MessageCircle, Activity, CheckCircle2, History, Users, UserCheck, Award, ExternalLink, Clock, Check, Sparkles } from 'lucide-react';
 
@@ -22,10 +25,15 @@ import { useAuthStore } from '../../store/authStore';
 import { formatINR, formatDate } from '../../utils/formatters';
 import BelongingsSection from '../../components/shared/BelongingsSection';
 import PrintJobCardModal from '../../components/shared/PrintJobCardModal';
+import VehicleIncentivePanel from '../../components/admin/VehicleIncentivePanel';
 import { Printer } from 'lucide-react';
 import type { JobService, JobPhoto } from '../../types';
+import { API_BASE, APP_URL } from '../../utils/endpoints';
+import { useLiveReload } from '../../utils/liveUpdates';
+import { copyText } from '../../utils/copyText';
 
 
+import { askForm } from '../../utils/ask';
 interface ProductRow {
   product_id: number;
   product_name: string;
@@ -48,7 +56,9 @@ export default function JobCartDetailPage() {
   const deleteServiceMut = useDeleteJobService();
   const uploadPhotoMut = useUploadPhoto();
   const deletePhotoMut = useDeletePhoto();
-  const { data: messagesData } = useMessagesLog({ reference_type: 'job_cart', reference_id: id });
+  // message history is admin-only on the server; skip the call for other roles
+  const { data: messagesData } = useMessagesLog({ reference_type: 'job_cart', reference_id: id },
+    /^\d+$/.test(String(id)) && ['admin', 'super_admin'].includes(user?.role || ''));
   const messages = messagesData?.data || [];
   const [beforeFiles, setBeforeFiles] = useState<File[]>([]);
   const [afterFiles, setAfterFiles] = useState<File[]>([]);
@@ -63,7 +73,7 @@ export default function JobCartDetailPage() {
 
   const handleNotifyPickupWhatsApp = () => {
     if (!cart?.customer?.mobile) return;
-    const msg = `Hi ${cart.customer?.name || 'Customer'},\n\nYour vehicle *${cart.vehicle?.registration_no || ''}* (${cart.vehicle?.brand || ''} ${cart.vehicle?.model || ''}) is ready for pickup at *O3 Car Spaa*! 🚗✨\n\nTotal Amount: *₹${formatINR(cart.total_amount || 0)}*\nBalance Due: *₹${formatINR(cart.balance_due !== undefined ? cart.balance_due : cart.total_amount || 0)}*\n\nWorkshop Location:\nPlot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Anand - 388121\n📞 7225030303\n\nThank you for choosing O3 Car Spaa! 🙏`;
+    const msg = `Hi ${cart.customer?.name || 'Customer'},\n\nYour vehicle *${cart.vehicle?.registration_no || ''}* (${cart.vehicle?.brand || ''} ${cart.vehicle?.model || ''}) is ready for pickup at *O3 Car Spaa*!\n\nTotal Amount: *${formatINR(cart.total_amount || 0)}*\nBalance Due: *${formatINR(cart.balance_due !== undefined ? cart.balance_due : cart.total_amount || 0)}*\n\nWorkshop Location:\nPlot No. 37, Zone No. D5, Opp. Bank of Baroda, GIDC, Anand - 388121\n7225030303\n\nThank you for choosing O3 Car Spaa!`;
     setSendingPickupWhatsApp(true);
     sendWhatsApp.mutate(
       {
@@ -122,14 +132,25 @@ export default function JobCartDetailPage() {
     }
   };
 
+  // Build this card's PDFs in the background so Print / Download opens instantly
+  useEffect(() => {
+    if (!id) return;
+    const t = setTimeout(() => {
+      api.get(`/job-carts/${id}/pdf`, { responseType: 'arraybuffer' }).catch(() => {});
+      api.get(`/job-carts/${id}/invoice`, { responseType: 'arraybuffer' }).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [id]);
+
+  // belongings can be added from another phone (technician) — reload them with every live update
+  const fetchBelongings = () => { if (id) api.get(`/job-carts/${id}/belongings`).then(r => setBelongings(r.data.data || [])).catch(() => {}); };
+  useLiveReload(() => { fetchPipelineStages(); fetchBelongings(); }); // reload when anything changes elsewhere
   useEffect(() => {
     if (id) {
       fetchPipelineStages();
-      api.get(`/job-carts/${id}/belongings`)
-        .then(r => setBelongings(r.data.data || []))
-        .catch(() => {});
+      fetchBelongings();
     }
-  }, [id]);
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleShareFile = async (url: string, name: string, type: string) => {
     setShareFilePayload({ url, name, type });
@@ -159,11 +180,12 @@ export default function JobCartDetailPage() {
     }
   };
 
-  const isAdmin = user?.role === 'admin';
-  const isStaff = user?.role === 'staff';
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  // Technician view (same rule as the server): staff-role users without money access see no prices / only today's cars
+  const isStaff = user?.role === 'staff' && !['payments', 'accounts', 'invoices', 'billing', 'balance_sheet', 'quotations'].some(m => canAny(user, m));
   const isCustomer = user?.role === 'customer';
   
-  let canEdit = !isCustomer && cart?.status !== 'complete';
+  let canEdit = !isCustomer && cart?.status !== 'complete' && can(user, 'job_cards', 'edit');
   let editTimeRemaining = null;
 
   if (cart?.status === 'complete' && cart?.completed_at) {
@@ -205,7 +227,7 @@ export default function JobCartDetailPage() {
   const [editingInfo, setEditingInfo] = useState(false);
   const [editNotes, setEditNotes] = useState('');
   const [editDate, setEditDate] = useState('');
-  const [editPreInspector, setEditPreInspector] = useState('Sunil Patel (Quality Inspector)');
+  const [editPreInspector, setEditPreInspector] = useState('');
   const [savingInfo, setSavingInfo] = useState(false);
 
   // ─── Add service modal ─────────────────
@@ -236,6 +258,9 @@ export default function JobCartDetailPage() {
   // ─── Loyalty modal ─────────────────────
   const [loyaltyOpen, setLoyaltyOpen] = useState(false);
   const [credits, setCredits] = useState(0);
+  const [paidFull, setPaidFull] = useState(true);
+  const [completeMethod, setCompleteMethod] = useState('cash');
+  const [amountReceived, setAmountReceived] = useState('');
   const [freeWashes, setFreeWashes] = useState(0);
   const [waxAward, setWaxAward] = useState(0);
 
@@ -246,14 +271,17 @@ export default function JobCartDetailPage() {
   const [deliveryLoading, setDeliveryLoading] = useState(false);
 
   // ─── Staff & Car Arrival State ─────────
-  const [referralPerson, setReferralPerson] = useState('');
+  const [referrer, setReferrer] = useState<ReferrerValue>({ referrer_type: 'none' });
+  const [approvers, setApprovers] = useState<{ id: number; label: string }[]>([]);
+  const [discountApprovedBy, setDiscountApprovedBy] = useState('');
   const [handlerId, setHandlerId] = useState<number | ''>('');
   const [technicianId, setTechnicianId] = useState<number | ''>('');
   const [teamIncentiveUsers, setTeamIncentiveUsers] = useState<number[]>([]);
   const [savingStaff, setSavingStaff] = useState(false);
 
   useEffect(() => {
-    api.get('/staff').then(res => setStaffList(res.data.data || [])).catch(() => {});
+    api.get('/staff/technicians').then(res => setStaffList(res.data.data || [])).catch(() => {});
+    api.get('/job-carts/discount-approvers').then(r => setApprovers(r.data.data || [])).catch(() => {});
   }, []);
 
   // ─── Collect Advance Modal ─────────────
@@ -290,7 +318,10 @@ export default function JobCartDetailPage() {
       setAdvancePaidInput(c.advance_paid || 0);
       setInvoiceNotesInput(c.invoice_notes || '');
 
-      setReferralPerson(c.referral_person || '');
+      setReferrer(c.referrer_type
+        ? { referrer_type: c.referrer_type, referrer_user_id: c.referrer_user_id, referrer_name: c.referrer_name || '', referrer_mobile: c.referrer_mobile || '' }
+        : { referrer_type: 'none' });
+      setDiscountApprovedBy(c.discount_approved_by ? String(c.discount_approved_by) : '');
       setHandlerId(c.handler_id || '');
       setTechnicianId(c.technician_id || '');
       let parsedTeam: number[] = [];
@@ -308,7 +339,7 @@ export default function JobCartDetailPage() {
     setSavingStaff(true);
     try {
       await api.put(`/job-carts/${cart.id}`, {
-        referral_person: referralPerson,
+        ...referrerPayload(referrer),
         handler_id: handlerId ? Number(handlerId) : null,
         technician_id: technicianId ? Number(technicianId) : null,
         team_incentive_users: teamIncentiveUsers,
@@ -330,8 +361,8 @@ export default function JobCartDetailPage() {
         toast('error', 'Discount percentage cannot exceed 100%');
         return;
       }
-      if (!discountReason?.trim() || !discountReference?.trim()) {
-        toast('error', 'Discount reason and approved/referred by are mandatory');
+      if (!discountReason?.trim() || !discountApprovedBy) {
+        toast('error', 'Discount reason and "Approved by" are mandatory');
         return;
       }
     }
@@ -346,10 +377,9 @@ export default function JobCartDetailPage() {
         discount_type: discountType,
         discount_value: discountValue,
         discount_reason: discountReason,
-        discount_reference: discountReference,
+        discount_approved_by: discountValue > 0 && discountApprovedBy ? Number(discountApprovedBy) : null,
         pickup_type: pickupType,
         pickup_charge: pickupCharge,
-        advance_paid: advancePaidInput,
         invoice_notes: invoiceNotesInput,
       });
       toast('success', 'Tax, Discount & Billing settings updated!');
@@ -371,7 +401,7 @@ export default function JobCartDetailPage() {
 
   const inventoryOptions = inventory
     .filter((i: any) => !i.is_deleted)
-    .map((i: any) => ({ value: i.id, label: `${i.product_name} (${i.quantity} ${i.unit})` }));
+    .map((i: any) => ({ value: i.id, label: Number(i.quantity) <= 0 ? `${i.product_name} — 0 stock left, kindly reorder from main admin` : `${i.product_name} (${Number(i.quantity)} ${i.unit})`, disabled: Number(i.quantity) <= 0 }));
 
   const emptyProduct = (): ProductRow => ({ product_id: 0, product_name: '', quantity: 1, unit_cost: 0, unit: 'pcs' });
 
@@ -416,7 +446,7 @@ export default function JobCartDetailPage() {
       const d = cart.visit_date ? new Date(cart.visit_date) : new Date();
       setEditDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
       setEditNotes(cart.notes || '');
-      setEditPreInspector(cart.pre_inspector_name || 'Sunil Patel (Quality Inspector)');
+      setEditPreInspector(cart.pre_inspector_name || '');
       setEditingInfo(true);
     }
   };
@@ -584,8 +614,10 @@ export default function JobCartDetailPage() {
         credits_awarded: credits,
         free_washes_awarded: freeWashes,
         wax_awarded: waxAward,
+        amount_received: paidFull ? undefined : (parseFloat(amountReceived) || 0),
+        payment_method: completeMethod,
       });
-      toast('success', 'Job card completed! Invoice generated.');
+      toast('success', paidFull ? 'Job card completed and marked paid. Invoice generated.' : 'Job card completed. The unpaid amount is in Pending Payments.');
       setLoyaltyOpen(false);
       refetch();
     } catch (err: any) {
@@ -593,8 +625,28 @@ export default function JobCartDetailPage() {
     }
   };
 
+  // Collect the balance of a finished job card (shows in Payments + Accounts, leaves Pending Payments when cleared)
+  const markPaid = async () => {
+    const due = Number(cart.balance_due || 0);
+    const f = await askForm('Collect payment', [
+      { name: 'amount', label: `Amount received now (₹) · balance is ₹${due}`, type: 'number', value: String(due), required: true },
+      { name: 'method', label: 'Paid by', options: [{ value: 'cash', label: 'Cash' }, { value: 'upi', label: 'UPI' }, { value: 'qr', label: 'QR code scan' }, { value: 'card', label: 'Card' }, { value: 'net_banking', label: 'Bank transfer' }] },
+    ], { okLabel: 'Save payment' });
+    if (!f) return;
+    const amount = Math.min(due, Math.max(0, parseFloat(f.amount) || 0));
+    if (!amount) { toast('error', 'Enter the amount received'); return; }
+    const method = f.method;
+    try {
+      await api.post('/payments', { customer_id: cart.customer?.id, job_cart_id: cart.id, amount, payment_method: method });
+      toast('success', amount >= due ? 'Marked fully paid' : `₹${amount} recorded, ₹${due - amount} still due`);
+      refetch();
+    } catch (err: any) {
+      toast('error', err?.response?.data?.error || 'Could not record payment');
+    }
+  };
+
   const handleDownloadInvoice = () => {
-    const apiBase = import.meta.env.VITE_API_URL || '/api';
+    const apiBase = API_BASE;
     window.open(
       `${apiBase}/job-carts/${cart.id}/invoice?token=${token}`,
       '_blank'
@@ -606,7 +658,8 @@ export default function JobCartDetailPage() {
       toast('error', 'Customer mobile number not found');
       return;
     }
-    const invUrl = `${window.location.origin}/invoice/${cart.id}`;
+    // invoices need the customer's login — send them to their service history, where the PDF is
+    const invUrl = `${APP_URL}/customer/job-carts`;
     const msg = `Dear ${cart.customer?.name || 'Customer'},\n\nYour tax invoice *${cart.invoice_number || `#${cart.id}`}* from *O3 Car Spaa* is ready! 🚗\n\nTotal Amount: *₹${formatINR(cart.total_amount || 0)}*\nView & Download Invoice: ${invUrl}\n\nThank you for choosing O3 Car Spaa! 🙏`;
     sendWhatsApp.mutate({
       phone: cart.customer.mobile,
@@ -648,7 +701,7 @@ export default function JobCartDetailPage() {
 
   const openDeliveryModal = async () => {
     try {
-      const res = await api.get('/staff');
+      const res = await api.get('/staff/technicians');
       setStaffList(res.data.data || []);
     } catch { setStaffList([]); }
     setDeliveryOpen(true);
@@ -675,7 +728,7 @@ export default function JobCartDetailPage() {
   const ProductEditor = ({ products, setProducts }: { products: ProductRow[]; setProducts: (p: ProductRow[]) => void }) => (
     <div className="mt-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e]">Products Used</span>
+        <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Products Used</span>
         <button onClick={() => setProducts([...products, emptyProduct()])} className="text-xs font-bold text-[#2563EB] hover:underline flex items-center gap-1">
           <Plus size={12} /> Add Product
         </button>
@@ -857,7 +910,7 @@ export default function JobCartDetailPage() {
               {editingInfo ? (
                 <div className="space-y-3 mt-3">
                   <Input label="Visit Date" type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
-                  <Input label="🔍 Delivery Pre-Inspected By (Inspector Name)" value={editPreInspector} onChange={e => setEditPreInspector(e.target.value)} placeholder="e.g. Sunil Patel (Quality Inspector)" />
+                  <Input label="🔍 Delivery Pre-Inspected By (Inspector Name)" value={editPreInspector} onChange={e => setEditPreInspector(e.target.value)} placeholder="Name of the person who checked the car" />
                   <Textarea label="Notes" value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="Any special instructions..." />
                   <div className="flex gap-2">
                     <Button size="sm" onClick={handleSaveInfo} loading={savingInfo} icon={<Save size={14} />}>Save</Button>
@@ -865,7 +918,7 @@ export default function JobCartDetailPage() {
                   </div>
                 </div>
               ) : (
-                <div className="text-sm text-[#5f5e5e] space-y-0.5">
+                <div className="text-sm text-[#64748B] space-y-0.5">
                   <p>
                     <span className="font-semibold">Customer:</span> {(cart as any).customer?.name || 'N/A'}
                     {!isStaff && (cart as any).customer?.mobile && ` · ${(cart as any).customer?.mobile}`}
@@ -873,19 +926,21 @@ export default function JobCartDetailPage() {
                   {cart.vehicle && (
                     <p><span className="font-semibold">Vehicle:</span> {cart.vehicle.brand} {cart.vehicle.model}{cart.vehicle.car_year || cart.vehicle.manufacture_year ? ' (' + (cart.vehicle.car_year || cart.vehicle.manufacture_year) + ')' : ''}</p>
                   )}
-                  <div className="flex items-center gap-2 flex-wrap mt-1">
-                    <p className="text-xs text-gray-500">
-                      <span className="font-semibold text-gray-700">Created:</span> {new Date((cart as any).created_at || cart.visit_date).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  <div className="flex items-center gap-2 flex-wrap mt-2 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                    <p className="text-xs text-slate-700 font-medium">
+                      <span className="font-bold text-slate-900">📅 Made / Created:</span>{' '}
+                      {new Date((cart as any).created_at || cart.visit_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </p>
-                    {(cart as any).updated_at && (new Date((cart as any).updated_at).getTime() - new Date((cart as any).created_at || cart.visit_date).getTime() > 1000) && (
-                      <p className="text-xs text-amber-700 font-bold flex items-center gap-1">
-                        · <span>Edited:</span> {new Date((cart as any).updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    {((cart as any).last_edited_at || ((cart as any).edit_logs && (cart as any).edit_logs.length > 0)) && (
+                      <p className="text-xs text-amber-800 font-semibold flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                        <span>✏️ Edited on:</span>{' '}
+                        {new Date((cart as any).last_edited_at || (cart as any).edit_logs[0]?.edited_at || (cart as any).updated_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </p>
                     )}
                     <button
                       type="button"
                       onClick={() => setEditHistoryOpen(true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors shadow-2xs border border-slate-200"
+                      className="ml-auto inline-flex items-center gap-1 px-2.5 py-0.5 bg-white hover:bg-slate-100 text-slate-700 rounded text-xs font-bold transition-colors shadow-xs border border-slate-300"
                       title="View all edits on this job card"
                     >
                       <History size={13} /> Edit History ({cart.edit_logs?.length || 0})
@@ -896,7 +951,7 @@ export default function JobCartDetailPage() {
                   {cart.invoice_number && <p><span className="font-semibold">Invoice:</span> {cart.invoice_number}</p>}
                   <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-200 text-blue-900 rounded-lg text-xs font-extrabold shadow-2xs">
                     <span>🔍 Delivery Pre-Inspected By:</span>
-                    <span className="text-[#2563EB]">{(cart as any).pre_inspector_name || 'Sunil Patel (Quality Inspector)'}</span>
+                    <span className="text-[#2563EB]">{(cart as any).pre_inspector_name || 'Not added yet'}</span>
                   </div>
                 </div>
               )}
@@ -906,7 +961,18 @@ export default function JobCartDetailPage() {
             {!isStaff && cart.total_amount !== undefined && (
               <div className="text-left sm:text-right shrink-0 space-y-1.5">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e]">Total Amount</p>
+                  {Number((cart as any).discount_amount) > 0 && (
+                    <div className="mb-1.5 text-xs space-y-0.5">
+                      <p className="flex sm:justify-end gap-2 text-gray-500">Price <span className="line-through">{formatINR(Number(cart.total_amount) + Number((cart as any).discount_amount))}</span></p>
+                      <p className="flex sm:justify-end gap-2 font-bold text-emerald-700">
+                        Discount{(cart as any).discount_type === 'percentage' ? ` (${(cart as any).discount_value}%)` : ''} −{formatINR((cart as any).discount_amount)}
+                      </p>
+                      <p className="text-[10px] text-gray-500">
+                        {(cart as any).discount_reason || 'No reason given'} · approved by {(cart as any).discount_approved_by_name || (cart as any).discount_reference || 'not recorded'}
+                      </p>
+                    </div>
+                  )}
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B]">{Number((cart as any).discount_amount) > 0 ? 'Total after discount' : 'Total Amount'}</p>
                   <p className="text-3xl font-black text-[#0F172A] tracking-tight">{formatINR(cart.total_amount)}</p>
                   {(cart as any).pickup_charge > 0 && (
                     <p className="text-[10px] text-gray-500 font-medium mt-0.5">
@@ -945,179 +1011,20 @@ export default function JobCartDetailPage() {
           </div>
         </div>
 
-        {/* ─── Phase 6: Vehicle Detailing Pipeline & Live Stages ─── */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center font-bold">
-                <Activity size={20} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider">
-                    Customer Detailing Pipeline
-                  </h3>
-                  <span className="px-2 py-0.5 bg-blue-100 text-[#2563EB] text-[10px] font-black rounded-full uppercase">
-                    Stage {pipelineData?.stages?.findIndex((s: any) => s.stage_name === pipelineData.current_stage) + 1 || 1} of {pipelineData?.stages?.length || 7}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 font-medium mt-0.5">
-                  Update stages to broadcast live tracking to customer and trigger WhatsApp alerts
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const url = `${window.location.origin}/job/${cart.id}`;
-                  navigator.clipboard.writeText(url);
-                  toast('success', 'Customer live tracking URL copied to clipboard!');
-                }}
-                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 transition-colors flex items-center gap-1.5"
-                title="Copy customer tracking link"
-              >
-                <Share2 size={13} /> Copy Link
-              </button>
-              <a
-                href={`/job/${cart.id}`}
-                target="_blank"
-                rel="noreferrer"
-                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#2563EB] text-xs font-bold rounded-xl border border-blue-200 transition-colors flex items-center gap-1.5"
-              >
-                <ExternalLink size={13} /> Live Customer View
-              </a>
-            </div>
-          </div>
-
-          {/* Stepper Grid */}
-          {loadingPipeline && !pipelineData ? (
-            <div className="h-20 bg-slate-100 rounded-xl animate-pulse" />
-          ) : pipelineData?.stages ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-                {pipelineData.stages.map((stage: any, idx: number) => {
-                  const isDone = stage.status === 'completed';
-                  const isCurrent = stage.stage_name === pipelineData.current_stage;
-                  const isSelected = selectedStageName === stage.stage_name;
-
-                  return (
-                    <button
-                      key={stage.stage_name}
-                      type="button"
-                      onClick={() => {
-                        setSelectedStageName(stage.stage_name);
-                        setStageNotesInput(stage.notes || '');
-                      }}
-                      className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between ${
-                        isSelected
-                          ? 'border-[#2563EB] ring-2 ring-blue-100 bg-blue-50/50'
-                          : isDone
-                          ? 'border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50/70'
-                          : isCurrent
-                          ? 'border-blue-300 bg-blue-50/30 hover:bg-blue-50/50'
-                          : 'border-slate-200 bg-white hover:border-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${
-                          isDone 
-                            ? 'bg-emerald-100 text-emerald-800' 
-                            : isCurrent 
-                            ? 'bg-blue-100 text-[#2563EB]' 
-                            : 'bg-slate-100 text-slate-500'
-                        }`}>
-                          #{idx + 1}
-                        </span>
-                        {isDone ? (
-                          <CheckCircle2 size={15} className="text-emerald-600" />
-                        ) : isCurrent ? (
-                          <span className="w-2 h-2 rounded-full bg-[#2563EB] animate-ping" />
-                        ) : null}
-                      </div>
-                      <div>
-                        <p className={`text-xs font-extrabold truncate ${
-                          isDone ? 'text-slate-800' : isCurrent ? 'text-[#2563EB]' : 'text-slate-600'
-                        }`}>
-                          {stage.stage_name}
-                        </p>
-                        <p className="text-[10px] font-semibold text-slate-400 capitalize mt-0.5">
-                          {stage.status === 'completed' ? 'Done' : stage.status === 'in_progress' ? 'In Progress' : 'Pending'}
-                        </p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Stage Action & Note Bar */}
-              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="flex-1 w-full space-y-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold text-slate-700">
-                      Target Stage: <strong className="text-[#2563EB]">{selectedStageName || pipelineData.current_stage}</strong>
-                    </span>
-                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 ml-auto cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={notifyCustomerOnStage}
-                        onChange={(e) => setNotifyCustomerOnStage(e.target.checked)}
-                        className="rounded text-[#2563EB] focus:ring-blue-500"
-                      />
-                      <span>WhatsApp Notify Customer</span>
-                    </label>
-                  </div>
-                  <input
-                    type="text"
-                    value={stageNotesInput}
-                    onChange={(e) => setStageNotesInput(e.target.value)}
-                    placeholder="Inspection remarks or milestone notes for this stage..."
-                    className="w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-400"
-                  />
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={updatingStage}
-                    onClick={() => handleUpdateStage(selectedStageName || pipelineData.current_stage, 'in_progress')}
-                  >
-                    In Progress
-                  </Button>
-                  <Button
-                    size="sm"
-                    loading={updatingStage}
-                    icon={<CheckCircle size={14} />}
-                    onClick={() => handleUpdateStage(selectedStageName || pipelineData.current_stage, 'completed')}
-                  >
-                    Mark Done & Advance
-                  </Button>
-                </div>
-              </div>
-
-              {/* Transition Audit Log link */}
-              {pipelineData.history && pipelineData.history.length > 0 && (
-                <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
-                  <span>Last Transition: {new Date(pipelineData.history[pipelineData.history.length - 1].created_at).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })} by {pipelineData.history[pipelineData.history.length - 1].updated_by_name || 'Admin'}</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowStageHistoryModal(true)}
-                    className="text-[#2563EB] font-bold hover:underline flex items-center gap-1"
-                  >
-                    <History size={13} /> View Audit Log ({pipelineData.history.length})
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </div>
+        {/* ─── Customer pipeline (single, one-click, live + WhatsApp) ─── */}
+        {(cart.status as string) !== 'cancelled' && (
+          <JobPipeline
+            jobCartId={cart.id}
+            publicToken={(cart as any).public_token}
+            canUpdate={!isCustomer && can(user, 'job_cards', 'edit')}
+            onChanged={() => refetch()}
+          />
+        )}
 
         {/* ─── Vehicle Arrival Capture & Staff Assignment Card ─── */}
         <div className="bg-white rounded-lg p-5 shadow-sm border border-gray-100 space-y-4">
           <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
-            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] flex items-center gap-2">
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-2">
               <Users size={15} className="text-[#2563EB]" />
               Vehicle Arrival Capture & Staff Assignment
             </h3>
@@ -1130,20 +1037,14 @@ export default function JobCartDetailPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Referral Person / Source</label>
-              <Input
-                placeholder="e.g. Ramesh Bhai (Referral) or Direct"
-                value={referralPerson}
-                onChange={e => setReferralPerson(e.target.value)}
-                disabled={!canEdit}
-              />
+              <ReferrerPicker value={referrer} onChange={setReferrer} disabled={!canEdit} />
             </div>
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">Handling Manager</label>
               <Select
                 options={[
                   { value: '', label: 'Select Manager...' },
-                  ...staffList.map(s => ({ value: s.id, label: s.name }))
+                  ...staffList.filter(s => s.role === 'manager').map(s => ({ value: s.id, label: s.name }))
                 ]}
                 value={handlerId}
                 onChange={e => setHandlerId(e.target.value ? Number(e.target.value) : '')}
@@ -1166,7 +1067,7 @@ export default function JobCartDetailPage() {
 
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1.5">
-              Team Incentive Pool Members (Staff Sharing Team Pool)
+              Others who worked on this car (incentive is split equally with the technician)
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
               {staffList.map(s => {
@@ -1230,47 +1131,6 @@ export default function JobCartDetailPage() {
           </div>
         )}
 
-        {/* ─── Live Detailing Progress Stepper ───────────── */}
-        <div className="bg-white rounded-lg p-5 shadow-sm border border-gray-100 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] flex items-center gap-2">
-              <Activity size={15} className="text-[#2563EB]" />
-              Live Detailing Progress Pipeline (Customer Visible)
-            </h3>
-            <span className="text-[10px] font-bold text-slate-400">1-Click Status Update</span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-            {[
-              { key: 'Pre-Inspection', label: '1. Pre-Inspection' },
-              { key: 'Washing', label: '2. Washing & Prep' },
-              { key: 'Stage 1 Polishing', label: '3. Polishing & Paint' },
-              { key: 'PPF Application', label: '4. PPF / Ceramic' },
-              { key: 'Quality Check', label: '5. Quality Check' },
-              { key: 'Ready for Delivery', label: '6. Ready for Pickup' },
-              { key: 'Delivered', label: '7. Vehicle Delivered' },
-            ].map((stg) => (
-              <button
-                key={stg.key}
-                type="button"
-                onClick={async () => {
-                  try {
-                    await api.put(`/job-carts/${cart.id}/stages`, { stage_name: stg.key, status: 'completed' });
-                    toast('success', `Updated stage: ${stg.label}`);
-                    refetch();
-                  } catch {
-                    toast('error', 'Failed to update stage');
-                  }
-                }}
-                className="px-3 py-2 bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-lg text-xs font-bold text-slate-700 hover:text-blue-700 transition-all text-left flex items-center justify-between"
-              >
-                <span>{stg.label}</span>
-                <CheckCircle2 size={13} className="text-blue-600 shrink-0" />
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* ─── Customer Belongings ────────────────── */}
 
         <BelongingsSection
@@ -1284,7 +1144,7 @@ export default function JobCartDetailPage() {
 
         <div className="bg-white rounded-lg shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e]">Services ({cart.services?.length || 0})</h3>
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B]">Services ({cart.services?.length || 0})</h3>
             {canEdit && (
               <button onClick={openAddService} className="text-xs font-bold text-[#2563EB] hover:underline flex items-center gap-1">
                 <Plus size={14} /> Add Service
@@ -1296,7 +1156,7 @@ export default function JobCartDetailPage() {
               {cart.services.map((svc: any, idx: number) => (
                 <div key={svc.id || idx} className="px-6 py-4 group hover:bg-gray-50/50 transition-colors">
                   <div className="flex justify-between items-start">
-                    <div>
+                    <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-bold text-[#0F172A]">{svc.service_name}</p>
                         {svc.custom_notes && (
@@ -1324,21 +1184,21 @@ export default function JobCartDetailPage() {
                         )}
                       </div>
                       {!isStaff && (
-                        <div className="text-xs text-[#5f5e5e] mt-1 space-x-3">
+                        <div className="text-xs text-[#64748B] mt-1 space-x-3">
                           <span>Price: {formatINR(svc.service_price)}</span>
                           <span>Labor: {formatINR(svc.labor_charges)}</span>
                         </div>
                       )}
                     </div>
                     {!isStaff && svc.subtotal !== undefined && (
-                      <span className="text-sm font-extrabold text-[#0F172A]">{formatINR(svc.subtotal)}</span>
+                      <span className="text-sm font-extrabold text-[#0F172A] whitespace-nowrap shrink-0 pl-3">{formatINR(svc.subtotal)}</span>
                     )}
                   </div>
 
                   {svc.products?.length > 0 && (
                     <div className="mt-2 ml-4">
                       {svc.products.map((p: any, pIdx: number) => (
-                        <div key={pIdx} className="text-xs text-[#5f5e5e] flex justify-between py-0.5">
+                        <div key={pIdx} className="text-xs text-[#64748B] flex justify-between py-0.5">
                           <span>• {p.product_name} × {p.quantity} {p.unit}</span>
                           {!isStaff && <span>{formatINR(p.quantity * p.unit_cost)}</span>}
                         </div>
@@ -1351,7 +1211,7 @@ export default function JobCartDetailPage() {
           ) : (
             <div className="px-6 py-8 text-center">
               <Package size={32} className="mx-auto text-gray-300 mb-2" />
-              <p className="text-sm text-[#5f5e5e]">No services added yet</p>
+              <p className="text-sm text-[#64748B]">No services added yet</p>
               {canEdit && (
                 <button onClick={openAddService} className="mt-2 text-sm font-bold text-[#2563EB] hover:underline">
                   + Add First Service
@@ -1361,11 +1221,16 @@ export default function JobCartDetailPage() {
           )}
         </div>
 
+        {/* Slab incentive per worker + complaint */}
+        {!isStaff && cart.status === 'complete' && (
+          <VehicleIncentivePanel jobCartId={cart.id} splits={(cart as any).incentive_splits || []} onDone={() => refetch()} />
+        )}
+
         {/* ─── Billing, Tax & Discount Options ───────────── */}
         {!isStaff && (
           <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100 space-y-4">
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e]">
+              <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B]">
                 Tax, Discount & Billing Breakdown
               </h3>
               {canEdit && (
@@ -1430,11 +1295,12 @@ export default function JobCartDetailPage() {
                   onChange={(e) => setDiscountReason(e.target.value)}
                   disabled={!canEdit}
                 />
-                <Input
-                  label="Approved / Referred By *"
-                  placeholder="e.g. Approved by Sodhi Sir / Reference"
-                  value={discountReference}
-                  onChange={(e) => setDiscountReference(e.target.value)}
+                <Select
+                  label="Approved By *"
+                  options={approvers.map(a => ({ value: String(a.id), label: a.label }))}
+                  value={discountApprovedBy}
+                  onChange={(e) => setDiscountApprovedBy(e.target.value)}
+                  placeholder="Select Super Admin / Admin…"
                   disabled={!canEdit}
                 />
               </div>
@@ -1462,11 +1328,11 @@ export default function JobCartDetailPage() {
                 disabled={!canEdit}
               />
               <Input
-                label="Advance Paid (₹)"
+                label="Already Paid (₹) — add money from Payments"
                 type="number"
                 value={advancePaidInput || ''}
-                onChange={(e) => setAdvancePaidInput(parseFloat(e.target.value) || 0)}
-                disabled={!canEdit}
+                onChange={() => {}}
+                disabled
               />
             </div>
 
@@ -1485,10 +1351,10 @@ export default function JobCartDetailPage() {
         {/* ─── Photos ──────────────────────────── */}
         {(beforePhotos.length > 0 || afterPhotos.length > 0 || canEdit) && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
-            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#5f5e5e] mb-4">Photos</h3>
+            <h3 className="text-xs font-extrabold uppercase tracking-widest text-[#64748B] mb-4">Photos</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">Before</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2">Before</p>
                 {beforePhotos.length > 0 ? (
                   <div className="grid grid-cols-3 gap-2 mb-4">
                     {beforePhotos.map((p: JobPhoto) => (
@@ -1528,7 +1394,7 @@ export default function JobCartDetailPage() {
                 )}
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#5f5e5e] mb-2">After</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#64748B] mb-2">After</p>
                 {afterPhotos.length > 0 ? (
                   <div className="grid grid-cols-3 gap-2 mb-4">
                     {afterPhotos.map((p: JobPhoto) => (
@@ -1579,13 +1445,18 @@ export default function JobCartDetailPage() {
                 Submit Job Card
               </Button>
             )}
-            {cart.status === 'open' && !isStaff && (
+            {cart.status === 'open' && !isStaff && can(user, 'job_cards', 'complete') && (
               <Button onClick={() => setLoyaltyOpen(true)} icon={<CheckCircle size={14} />}>
                 Mark Complete
               </Button>
             )}
             {cart.status === 'complete' && (
               <>
+                {!isStaff && can(user, 'payments', 'create') && Number(cart.balance_due) > 0 && (
+                  <Button className="bg-amber-600 hover:bg-amber-700 text-white" icon={<CheckCircle size={14} />} onClick={markPaid}>
+                    Mark paid ({formatINR(Number(cart.balance_due))} due)
+                  </Button>
+                )}
                 <Button onClick={handleDownloadInvoice} icon={<Download size={14} />}>
                   Download Invoice
                 </Button>
@@ -1600,7 +1471,7 @@ export default function JobCartDetailPage() {
                 <Button variant="secondary" onClick={() => handleShareFile(`/api/job-carts/${cart.id}/invoice`, `Invoice - Job #${cart.invoice_number || cart.id}`, 'pdf')} icon={<Share2 size={14} />}>
                   Share Invoice
                 </Button>
-                {!isStaff && (
+                {!isStaff && can(user, 'deliveries', 'create') && (
                   <Button variant="secondary" onClick={openDeliveryModal} icon={<Truck size={14} />}>
                     Send for Delivery
                   </Button>
@@ -1648,7 +1519,7 @@ export default function JobCartDetailPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-[#5f5e5e]">{log.message_body}</p>
+                      <p className="text-xs text-[#64748B]">{log.message_body}</p>
                       {log.channel === 'whatsapp' && (
                         <button
                           type="button"
@@ -1752,7 +1623,33 @@ export default function JobCartDetailPage() {
         }
       >
         <div className="space-y-4">
-          <p className="text-sm text-[#5f5e5e]">
+          <div className="rounded-xl border border-gray-200 p-3 space-y-2">
+            <p className="text-sm font-bold text-[#0F172A]">Payment</p>
+            <p className="text-xs text-[#64748B]">
+              Bill ≈ {formatINR(Number(cart.total_amount || 0))}{Number(cart.advance_paid) > 0 ? ` · already paid ${formatINR(Number(cart.advance_paid))}` : ''} · due now ≈ {formatINR(Math.max(0, Number(cart.total_amount || 0) - Number(cart.advance_paid || 0)))}
+            </p>
+            <label className="flex items-center gap-2 text-sm"><input type="radio" checked={paidFull} onChange={() => setPaidFull(true)} /> Customer paid the full amount</label>
+            <label className="flex items-center gap-2 text-sm"><input type="radio" checked={!paidFull} onChange={() => setPaidFull(false)} /> Not paid / paid only part</label>
+            {!paidFull && (
+              <Input label="Amount received now (₹) — 0 if nothing" type="number" value={amountReceived} onChange={e => setAmountReceived(e.target.value)} />
+            )}
+            {!paidFull && <p className="text-[11px] text-amber-700">The rest stays as balance due and shows in Pending Payments until it is collected.</p>}
+            {(paidFull || (parseFloat(amountReceived) || 0) > 0) && (
+              <Select
+                label="Paid by"
+                options={[
+                  { value: 'cash', label: 'Cash' },
+                  { value: 'upi', label: 'UPI' },
+                  { value: 'qr', label: 'QR code scan' },
+                  { value: 'card', label: 'Card' },
+                  { value: 'net_banking', label: 'Bank transfer' },
+                ]}
+                value={completeMethod}
+                onChange={(e: any) => setCompleteMethod(e.target.value)}
+              />
+            )}
+          </div>
+          <p className="text-sm text-[#64748B]">
             Award loyalty rewards to the customer for this visit. Leave at 0 to skip.
           </p>
           <Input label="Credits to Award (₹)" type="number" value={credits || ''} onChange={e => setCredits(parseInt(e.target.value) || 0)} />
@@ -1777,7 +1674,7 @@ export default function JobCartDetailPage() {
         }
       >
         <div className="space-y-4">
-          <p className="text-sm text-[#5f5e5e]">Select a staff member to deliver this vehicle.</p>
+          <p className="text-sm text-[#64748B]">Select a staff member to deliver this vehicle.</p>
           <Select
             label="Staff Member"
             options={staffList.map(s => ({ value: s.id, label: s.name }))}
@@ -1804,7 +1701,7 @@ export default function JobCartDetailPage() {
         }
       >
         <div className="space-y-4">
-          <p className="text-sm text-[#5f5e5e]">
+          <p className="text-sm text-[#64748B]">
             Record an advance payment collected from the customer at the counter.
           </p>
           <Input
@@ -1854,7 +1751,7 @@ export default function JobCartDetailPage() {
         <div className="space-y-4">
           {!shareLink ? (
             <>
-              <p className="text-sm text-[#5f5e5e]">
+              <p className="text-sm text-[#64748B]">
                 Choose an expiration period for this shared link. Anyone with the link will be able to access the file without logging in.
               </p>
               <Select
@@ -1883,7 +1780,7 @@ export default function JobCartDetailPage() {
                 />
                 <Button
                   onClick={() => {
-                    navigator.clipboard.writeText(shareLink);
+                    copyText(shareLink);
                     toast('success', 'Copied to clipboard!');
                   }}
                   variant="primary"

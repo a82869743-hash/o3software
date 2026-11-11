@@ -6,6 +6,8 @@ import { useToastStore } from '../../store/toastStore';
 import { formatDate } from '../../utils/formatters';
 import { useAuthStore } from '../../store/authStore';
 import { io } from 'socket.io-client';
+import { socketUrl } from '../../utils/endpoints';
+import { useLiveReload } from '../../utils/liveUpdates';
 
 interface Delivery {
   id: number;
@@ -13,7 +15,7 @@ interface Delivery {
   vehicle_id: number;
   customer_id: number;
   staff_id: number;
-  status: 'pending' | 'in_transit' | 'delivered';
+  status: 'assigned' | 'in_transit' | 'delivered';
   notes: string | null;
   address_from: string | null;
   address_to: string | null;
@@ -33,7 +35,7 @@ interface Delivery {
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ElementType }> = {
-  pending:    { label: 'Pending',    color: 'text-amber-600',   bg: 'bg-amber-50 border-amber-200',     icon: Clock },
+  assigned:   { label: 'To deliver', color: 'text-amber-600',   bg: 'bg-amber-50 border-amber-200',     icon: Clock },
   in_transit: { label: 'In Transit', color: 'text-blue-600',    bg: 'bg-blue-50 border-blue-200',       icon: Navigation },
   delivered:  { label: 'Delivered',  color: 'text-emerald-600', bg: 'bg-emerald-50 border-emerald-200', icon: CheckCircle2 },
 };
@@ -65,6 +67,7 @@ export default function DeliveriesPage() {
     }
   };
 
+  useLiveReload(() => { fetchDeliveries(); }); // reload when anything changes elsewhere
   useEffect(() => {
     fetchDeliveries();
     const interval = setInterval(fetchDeliveries, 15000);
@@ -73,7 +76,7 @@ export default function DeliveriesPage() {
 
   // Handle Simulation Drive
   useEffect(() => {
-    if (!isSimulating || !trackingId) return;
+    if (true || !isSimulating || !trackingId) return; // simulation removed — real driver GPS only
 
     let lat = liveLocation?.lat || 22.3072;
     let lng = liveLocation?.lng || 73.1812;
@@ -159,8 +162,8 @@ export default function DeliveriesPage() {
     // Socket.io for real-time updates
     let socket: any = null;
     try {
-      const socketUrl = import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:5000';
-      socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
+      const wsUrl = socketUrl();
+      socket = io(wsUrl, { auth: { token }, transports: ['websocket', 'polling'] });
 
       socket.on('connect', () => {
         socket.emit('join_delivery', { deliveryId: trackingId });
@@ -200,9 +203,31 @@ export default function DeliveriesPage() {
     }
   };
 
+  // Admin can move a delivery to any status, also to undo a wrong "Delivered"
+  const setStatus = async (id: number, status: string) => {
+    if (!status) return;
+    if (!confirm(status === 'delivered' ? 'Mark this car as delivered? The customer gets a WhatsApp message.' : 'Change the delivery status?')) return;
+    try {
+      await api.patch(`/deliveries/${id}/status`, { status });
+      addToast('success', 'Status changed');
+      fetchDeliveries();
+    } catch (e: any) { addToast('error', e?.response?.data?.error || 'Could not change the status'); }
+  };
+
+  const [drivers, setDrivers] = useState<any[]>([]);
+  useEffect(() => { api.get('/staff/technicians').then(r => setDrivers(r.data.data || [])).catch(() => {}); }, []);
+  const assignDriver = async (id: number, staffId: string) => {
+    if (!staffId) return;
+    try {
+      await api.patch(`/deliveries/${id}/assign`, { staff_id: Number(staffId) });
+      addToast('success', 'Driver assigned — it is now in their My Deliveries');
+      fetchDeliveries();
+    } catch (e: any) { addToast('error', e?.response?.data?.error || 'Could not assign driver'); }
+  };
+
   const stats = {
     total: deliveries.length,
-    pending: deliveries.filter(d => d.status === 'pending').length,
+    pending: deliveries.filter(d => d.status === 'assigned').length,
     in_transit: deliveries.filter(d => d.status === 'in_transit').length,
     delivered: deliveries.filter(d => d.status === 'delivered').length,
   };
@@ -240,7 +265,7 @@ export default function DeliveriesPage() {
 
       {/* Filter Tabs */}
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {['all', 'pending', 'in_transit', 'delivered'].map(status => (
+        {['all', 'assigned', 'in_transit', 'delivered'].map(status => (
           <button
             key={status}
             onClick={() => setFilter(status)}
@@ -284,44 +309,13 @@ export default function DeliveriesPage() {
                     {liveLocation.timestamp ? ` · Updated ${Math.max(0, Math.round((Date.now() - liveLocation.timestamp) / 1000))}s ago` : ''}
                   </p>
                 ) : (
-                  <p className="text-xs text-gray-500 mt-0.5">Initializing GPS coordinates...</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Waiting for the driver's phone GPS (driver must tap "Start live location").</p>
                 )}
               </div>
             </div>
             
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsBroadcastingGps(!isBroadcastingGps);
-                  if (!isBroadcastingGps) setIsSimulating(false);
-                }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 ${
-                  isBroadcastingGps 
-                    ? 'bg-emerald-600 text-white hover:bg-emerald-700' 
-                    : 'bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50'
-                }`}
-              >
-                <Navigation size={13} />
-                {isBroadcastingGps ? 'Stop Device GPS' : '📡 Broadcast Device GPS'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSimulating(!isSimulating);
-                  if (!isSimulating) setIsBroadcastingGps(false);
-                }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 ${
-                  isSimulating 
-                    ? 'bg-amber-600 text-white hover:bg-amber-700' 
-                    : 'bg-white text-amber-700 border border-amber-300 hover:bg-amber-50'
-                }`}
-              >
-                <Truck size={13} />
-                {isSimulating ? 'Stop Simulation' : '🚗 Simulate Transit Drive'}
-              </button>
-
+              <span className="text-[11px] text-gray-500">Location comes from the driver's phone (My Deliveries → Start live location).</span>
               <button
                 type="button"
                 onClick={() => setTrackingId(null)}
@@ -370,7 +364,7 @@ export default function DeliveriesPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {deliveries.map(del => {
-            const config = STATUS_CONFIG[del.status] || STATUS_CONFIG.pending;
+            const config = STATUS_CONFIG[del.status] || STATUS_CONFIG.assigned;
             const StatusIcon = config.icon;
 
             return (
@@ -440,6 +434,19 @@ export default function DeliveriesPage() {
 
                 {/* Actions */}
                 <div className="flex gap-2">
+                  {del.status === 'assigned' && (
+                    <div className="w-full space-y-1">
+                      {!del.staff_name && <p className="text-[11px] font-bold text-amber-700">No driver yet — choose one</p>}
+                      <select
+                        value=""
+                        onChange={(e) => assignDriver(del.id, e.target.value)}
+                        className="w-full text-xs border border-gray-200 rounded-lg px-2 py-2 bg-white"
+                      >
+                        <option value="">{del.staff_name ? `Change driver (now: ${del.staff_name})` : 'Assign driver…'}</option>
+                        {drivers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                  )}
                   {del.status === 'in_transit' && (
                     <>
                       <button
@@ -468,6 +475,20 @@ export default function DeliveriesPage() {
                       Delivered {del.delivered_at ? `on ${formatDate(del.delivered_at)}` : ''}
                     </p>
                   )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-gray-100">
+                  <select value="" onChange={(e) => setStatus(del.id, e.target.value)} className="w-full text-xs border border-gray-200 rounded-lg px-2 py-2 bg-white">
+                    <option value="">Change status…</option>
+                    {del.status !== 'assigned' && <option value="assigned">To deliver</option>}
+                    {del.status !== 'in_transit' && <option value="in_transit">On the way</option>}
+                    {del.status !== 'delivered' && <option value="delivered">Delivered</option>}
+                  </select>
+                  {del.status !== 'assigned' ? (
+                    <select value="" onChange={(e) => assignDriver(del.id, e.target.value)} className="w-full text-xs border border-gray-200 rounded-lg px-2 py-2 bg-white">
+                      <option value="">Change driver…</option>
+                      {drivers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  ) : <span />}
                 </div>
               </div>
             );

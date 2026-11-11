@@ -1,9 +1,14 @@
+import StudioQr from '../../components/shared/StudioQr';
 import { useState, useEffect } from 'react';
 import { ShoppingBag, CreditCard, CheckCircle, Clock, AlertTriangle, ArrowRight, Star, ThumbsUp, Check, Truck, ShieldCheck, ShoppingCart, RefreshCw, X, QrCode, Search } from 'lucide-react';
 import api from '../../api/axiosInstance';
 import { useUIStore } from '../../store/uiStore';
 import { useCartStore } from '../../store/useCartStore';
 import ProductsCartDrawer from '../../components/shared/ProductsCartDrawer';
+import PhotoBanner from '../../components/customer/PhotoBanner';
+import { PHOTOS as BANNER_PHOTOS } from '../../components/customer/serviceVisuals';
+import { useLiveReload } from '../../utils/liveUpdates';
+import Dropdown from '../../components/ui/Dropdown';
 
 function resolveImageUrl(url: string | undefined): string {
   if (!url) return '';
@@ -15,293 +20,8 @@ function resolveImageUrl(url: string | undefined): string {
 }
 
 // Static product configuration with details matching ChatGPT screenshots
-const PRODUCT_TEMPLATES = [
-  {
-    dbName: 'MICROFIBER 40*60 800 GSM',
-    displayName: 'Microfiber Towel 40x60 800 GSM',
-    image: '/products/microfiber_40x60_800gsm.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 399,
-    mrp: 699,
-    discount: '43% OFF',
-    description: 'Premium 800 GSM microfiber towel for a swirl-free shine. Ultra absorbent, lint-free & safe on all surfaces.',
-    features: ['Ultra Soft Touch', 'High Absorbency', 'Scratch Free', 'Durable & Long Lasting'],
-    specs: {
-      Size: '40 x 60 cm',
-      GSM: '800 GSM',
-      Material: 'Premium Microfiber',
-      Color: 'Grey with Red Stitch'
-    },
-    whyBuy: 'Engineered for perfect care. Soft, absorbent & scratch-free for a flawless finish every time.'
-  },
-  {
-    dbName: 'MICROFIBER 40*40 450 GSM 2PCS - SMOOTH FUR',
-    displayName: 'Microfiber 40x40 450 GSM 2PCS - Smooth Fur',
-    image: '/products/microfiber_40x40_smooth_fur.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 299,
-    mrp: 499,
-    discount: '40% OFF',
-    description: 'Premium 450 GSM microfiber towel with smooth fur texture. Ultra soft, lint-free & safe on all surfaces. Perfect for polishing, buffing & final finish.',
-    features: ['Ultra Soft Touch', 'High Absorbency', 'Scratch Free', 'Durable & Long Lasting'],
-    specs: {
-      Size: '40 x 40 cm',
-      GSM: '450 GSM',
-      Quantity: '2 PCS',
-      Color: 'Grey with Red Stitch'
-    },
-    whyBuy: 'Ideal for wax removal, detailing sprays, and interior dusting without leaving any swirl marks.'
-  },
-  {
-    dbName: 'MICROFIBER 40*40 450 GSM 2PCS - HEAVY FUR',
-    displayName: 'Microfiber Towel 40x40 450 GSM 2PCS - Heavy Fur',
-    image: '/products/microfiber_40x40_heavy_fur.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 299,
-    mrp: 499,
-    discount: '40% OFF',
-    description: 'Premium 450 GSM microfiber towel with heavy fur texture. Ultra soft, lint-free & safe on all surfaces. Perfect for polishing, buffing & final finish.',
-    features: ['Ultra Soft Touch', 'High Absorbency', 'Scratch Free', 'Durable & Long Lasting'],
-    specs: {
-      Size: '40 x 40 cm',
-      GSM: '450 GSM',
-      Quantity: '2 PCS',
-      Color: 'Dark Grey with Red Stitch'
-    },
-    whyBuy: 'Long pile fibers safely trap dirt particles away from paint surfaces for a swirl-free finish.'
-  },
-  {
-    dbName: 'ASTONISH PREMIUM DAMPING - 2.8 PLUS',
-    displayName: 'Astonish Premium Damping-2.8 Plus',
-    image: '/products/astonish_damping_2.8_plus.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 1999,
-    mrp: 3499,
-    discount: '43% OFF',
-    description: 'Premium damping sheet with 2.8mm thickness for superior noise reduction and vibration control. Enhances driving comfort with excellent heat resistance and durability.',
-    features: ['Noise Reduction', 'Vibration Control', 'Heat Resistant', 'Long Lasting'],
-    specs: {
-      Thickness: '2.8 mm',
-      PackSize: '5 Sheets (2.8mm Each)',
-      Material: 'Premium Butyl Rubber',
-      Adhesive: 'Industrial grade self-adhesive'
-    },
-    whyBuy: 'Damping sheets improve driving comfort by reducing noise, vibrations and heat for a quieter, smoother and more enjoyable ride.'
-  },
-  {
-    dbName: 'SIDE CONSOL',
-    displayName: 'Side Consol Storage Pocket',
-    image: '/products/side_consol.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 799,
-    mrp: 1299,
-    discount: '38% OFF',
-    description: 'Smart side storage solution to keep your essentials within reach. Fills the gap between seat and console. Prevents items from falling into the gap.',
-    features: ['Extra Storage', 'Premium Quality', 'Universal Fit', 'Easy Install'],
-    specs: {
-      Color: 'Black with Red Stitch',
-      Material: 'Premium PU Leather',
-      Fit: 'Universal',
-      Installation: 'Insert directly into seat gap'
-    },
-    whyBuy: 'Maximize your car space and keep essentials within reach while driving. Smart, stylish & practical.'
-  },
-  {
-    dbName: 'SIDE CONSOL FIX',
-    displayName: 'Side Consol Fix Pocket',
-    image: '/products/side_consol_fix.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 499,
-    mrp: 799,
-    discount: '38% OFF',
-    description: 'Smart solution to fill the gap between seat and console. Prevents small items from falling into the gap. Keeps your car clean, organized and clutter-free.',
-    features: ['Prevents Falls', 'Perfect Fit', 'Premium Quality', 'Easy Install'],
-    specs: {
-      Color: 'Black',
-      Material: 'Flexible ABS & PU Leather',
-      Fit: 'Universal Fit',
-      Installation: 'Insert into seat gap'
-    },
-    whyBuy: 'Small items falling into the seat gap can be annoying and hard to retrieve. Side Consol Fix prevents drops, keeps your car clean and adds a premium look.'
-  },
-  {
-    dbName: 'HOOK',
-    displayName: 'Premium Car Headrest Hook',
-    image: '/products/hook.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 199,
-    mrp: 299,
-    discount: '33% OFF',
-    description: 'Universal hook for your car to hang bags, accessories, and more. Strong grip that holds heavy items securely. Keeps your car organized and clutter-free.',
-    features: ['Strong Hold', 'Premium Quality', 'Universal Fit', 'Easy Install'],
-    specs: {
-      Color: 'Black Carbon Fiber Texture',
-      LoadCapacity: 'Up to 10 kg',
-      Fit: 'Universal headrest shafts',
-      Installation: 'Side-opening design, no removal needed'
-    },
-    whyBuy: 'From groceries to gadgets, keep everything securely hung and within reach. HOOK makes your car tidy, organized and stress-free.'
-  },
-  {
-    dbName: 'TISSU COVER',
-    displayName: 'Premium PU Leather Tissue Cover',
-    image: '/products/tissue_cover.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 249,
-    mrp: 399,
-    discount: '38% OFF',
-    description: 'Stylish tissue cover for your car. Made with premium material for long-lasting use. Easy tissue access and keeps your car interior organized.',
-    features: ['Premium Quality', 'Easy Access', 'Universal Fit', 'Stylish Design'],
-    specs: {
-      Color: 'Black',
-      Material: 'Soft PU Leather',
-      Fit: 'Fits most car dashboards/visors',
-      Closure: 'Magnetic bottom flap'
-    },
-    whyBuy: 'Keep tissues within reach and your car interior organized. A perfect blend of style, convenience and premium quality.'
-  },
-  {
-    dbName: 'TISSU COVER HEAVY',
-    displayName: 'Heavy Build Tissue Cover',
-    image: '/products/tissue_cover_heavy.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 449,
-    mrp: 699,
-    discount: '36% OFF',
-    description: 'Premium heavy build tissue cover for your car. Made with high-quality material for long-lasting use. Keeps tissues within reach and adds a premium look to your car.',
-    features: ['Heavy Build', 'Premium Quality', 'Universal Fit', 'Easy To Use'],
-    specs: {
-      Color: 'Black with Red Stitch',
-      Material: 'Textured PU Leather',
-      Pattern: 'Diamond Quilted',
-      Fit: 'Universal dash or armrest placement'
-    },
-    whyBuy: 'Keep tissues within easy reach and maintain the premium look of your car interior. Heavy build quality ensures long-lasting performance.'
-  },
-  {
-    dbName: 'ST COVER',
-    displayName: 'Premium PU Leather Seat Cover',
-    image: '/products/seat_cover.png',
-    rating: 4.8,
-    reviewsCount: 128,
-    price: 1499,
-    mrp: 2499,
-    discount: '40% OFF',
-    description: 'Give your car interior a premium upgrade. Made with high-quality PU leather for durability and comfort. Universal fit for most cars.',
-    features: ['Premium Quality', 'Comfortable Design', 'Universal Fit', 'Multi-Layer Protection'],
-    specs: {
-      ColorsAvailable: 'Black & Beige, Black & Red',
-      Material: 'High-grade PU Leather',
-      Quantity: 'Complete Set (Front & Rear)',
-      Cleaning: 'Wipe clean surface'
-    },
-    whyBuy: 'Seat covers protect your original seats from dirt, spills, stains and wear & tear. Enhance comfort and give your car interior a premium look.'
-  },
-  {
-    dbName: 'MEMORY NECK REST - ASTONISH',
-    displayName: 'Memory Neck Rest - ASTONISH',
-    image: '/products/memory_neck_rest.png',
-    rating: 4.8,
-    reviewsCount: 128,
-    price: 699,
-    mrp: 1299,
-    discount: '46% OFF',
-    description: 'Experience superior comfort on every drive. Premium memory foam supports your neck and reduces fatigue. Ergonomic design for perfect neck & head support. Universal fit for most cars.',
-    features: ['Memory Foam Comfort', 'Ergonomic Support', 'Universal Fit', 'Reduces Neck Fatigue'],
-    specs: {
-      Color: 'Black with Red Stitching',
-      Material: 'High-Density Memory Foam',
-      Cover: 'Breathable perforated leatherette',
-      Strap: 'Adjustable elastic strap'
-    },
-    whyBuy: 'Long drives can cause neck pain and fatigue. ASTONISH Memory Neck Rest provides perfect support and comfort for a relaxed and enjoyable journey.'
-  },
-  {
-    dbName: 'MEMORY CUSION PILLOW - ASTONISH',
-    displayName: 'Memory Cushion Pillow - ASTONISH',
-    image: '/products/memory_cushion_pillow.png',
-    rating: 4.8,
-    reviewsCount: 128,
-    price: 599,
-    mrp: 1099,
-    discount: '45% OFF',
-    description: 'Experience superior comfort on every drive. Premium memory foam adapts to your back for perfect support. Reduces fatigue and enhances posture while driving. Universal fit for most car seats.',
-    features: ['Memory Foam Comfort', 'Ergonomic Support', 'Universal Fit', 'Reduces Back Fatigue'],
-    specs: {
-      Color: 'Black with Red Stitching',
-      Material: 'High-Density Memory Foam',
-      Design: 'Ergonomic lumbar curvature',
-      Washable: 'Removable zip cover'
-    },
-    whyBuy: 'Long drives can cause back pain and discomfort. ASTONISH Memory Cushion Pillow provides the perfect support to keep you relaxed and comfortable through every journey.'
-  },
-  {
-    dbName: 'TYRE INFLATOR (14)',
-    displayName: 'Digital Tyre Inflator',
-    image: '/products/tyre_inflator.png',
-    rating: 4.8,
-    reviewsCount: 156,
-    price: 1499,
-    mrp: 2499,
-    discount: '40% OFF',
-    description: 'Portable tyre inflator with powerful motor for quick inflation. Digital display for accurate pressure reading. Auto shut-off, LED light & multiple nozzles for all uses. Perfect for cars, bikes, cycles & sports equipment.',
-    features: ['Fast Inflation', 'Digital Display', 'Auto Shut-off', 'LED Light & Multi-use Nozzles'],
-    specs: {
-      PressureUnits: 'BAR, PSI',
-      PowerSource: '12V Car Cigarette Lighter',
-      MaxPressure: '150 PSI',
-      Display: 'Backlit LCD Digital Display'
-    },
-    whyBuy: 'Proper tyre pressure ensures safety, better fuel efficiency & longer tyre life. Keep this compact inflator in your car and be always ready for emergencies.'
-  },
-  {
-    dbName: 'PORTABLE CAR VACUUM CLEANER',
-    displayName: 'Portable Car Vacuum Cleaner',
-    image: '/products/car_vacuum.png',
-    rating: 4.8,
-    reviewsCount: 156,
-    price: 1499,
-    mrp: 2499,
-    discount: '40% OFF',
-    description: 'High power portable vacuum cleaner for deep cleaning. Strong suction for dust, crumbs, pet hair & more. Compact, lightweight & easy to carry. Perfect for car, home & office use.',
-    features: ['Strong Suction', 'HEPA Filter', 'Lightweight & Portable', 'Multi-use Attachments'],
-    specs: {
-      Power: '120W High Performance Motor',
-      FilterType: 'Washable HEPA Filter',
-      Weight: 'Lightweight ergonomic body',
-      Accessories: 'Comes with multiple cleaning nozzles'
-    },
-    whyBuy: 'A clean car is a happy car! Remove dust, dirt, crumbs & pet hair easily with powerful suction. Compact & portable - clean anytime, anywhere.'
-  },
-  {
-    dbName: 'CROSS BODY BAG',
-    displayName: 'Premium Cross Body Bag',
-    image: '/products/cross_body_bag.png',
-    rating: 4.9,
-    reviewsCount: 128,
-    price: 799,
-    mrp: 1299,
-    discount: '38% OFF',
-    description: 'Stylish and durable cross body bag for everyday use. Spacious compartments to keep your essentials organized. Adjustable strap for a comfortable fit. Perfect for travel, work, or casual outings.',
-    features: ['Premium Quality', 'Lightweight Design', 'Spacious Storage', 'Water Resistant'],
-    specs: {
-      Color: 'Black with White Branding',
-      Material: 'Water-resistant nylon/polyester',
-      Strap: 'Adjustable shoulder strap',
-      Zippers: 'Heavy-duty smooth zippers'
-    },
-    whyBuy: 'Keep your essentials organized and secure wherever you go. A perfect blend of style, functionality and durability for every journey.'
-  }
-];
+// Products come only from the studio's own inventory (set up by HQ). No hard-coded catalog.
+const PRODUCT_TEMPLATES: any[] = [];
 
 export default function ProductsPage() {
   const toast = useUIStore((s) => s.toast);
@@ -311,7 +31,7 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<any | null>(null);
   const [quantity, setQuantity] = useState(1);
-  const [paymentMode, setPaymentMode] = useState<'razorpay' | 'qr'>('razorpay');
+  const [paymentMode, setPaymentMode] = useState<'qr'>('qr');
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [qrTransactionId, setQrTransactionId] = useState('');
   const [submittingQr, setSubmittingQr] = useState(false);
@@ -372,7 +92,7 @@ export default function ProductsPage() {
           match = dbItems.find((db: any) => {
             const dbUpper = (db.product_name || '').toUpperCase();
             // At least 2 key words must match
-            const matchCount = tmplWords.filter(w => dbUpper.includes(w)).length;
+            const matchCount = tmplWords.filter((w: string) => dbUpper.includes(w)).length;
             return matchCount >= Math.min(2, tmplWords.length);
           });
         }
@@ -396,13 +116,11 @@ export default function ProductsPage() {
         const effectiveImages = dbImages.length > 0 ? dbImages : [tmpl.image];
 
         // Calculate MRP and discount from DB data
-        const effectivePrice = dbSellingPrice > 0 ? dbSellingPrice : tmpl.price;
-        const effectiveMrp = dbSellingPrice > 0
-          ? Math.ceil(dbSellingPrice * 1.6 / 10) * 10
-          : tmpl.mrp;
-        const effectiveDiscount = effectiveMrp > effectivePrice
-          ? Math.round(((effectiveMrp - effectivePrice) / effectiveMrp) * 100) + '% OFF'
-          : tmpl.discount;
+        // Listed price from inventory; a strike-through only when the admin set a real discount %
+        const pct = match ? Math.min(Math.max(parseFloat(match.discount_pct) || 0, 0), 100) : 0;
+        const effectiveMrp = dbSellingPrice > 0 ? dbSellingPrice : Number(tmpl.price);
+        const effectivePrice = Math.round(effectiveMrp * (100 - pct)) / 100;
+        const effectiveDiscount = pct > 0 ? `${pct}% OFF` : '';
 
         return {
           ...tmpl,
@@ -445,8 +163,8 @@ export default function ProductsPage() {
         // Skip products with no price set
         if (sellingPrice <= 0) continue;
 
-        const estimatedMrp = Math.ceil(sellingPrice * 1.6 / 10) * 10; // Round up to nearest 10
-        const discountPct = Math.round(((estimatedMrp - sellingPrice) / estimatedMrp) * 100);
+        const discountPct = Math.min(Math.max(parseFloat(db.discount_pct) || 0, 0), 100);
+        const estimatedMrp = sellingPrice;
 
         // Extract image(s) from DB images_json
         let dbImages: string[] = [];
@@ -458,16 +176,16 @@ export default function ProductsPage() {
           } catch { /* ignore parse errors */ }
         }
 
-        const effectiveImages = dbImages.length > 0 ? dbImages : ['https://images.unsplash.com/photo-1607860108855-64acf2078ed9?w=500&q=80'];
+        const effectiveImages = dbImages.length > 0 ? dbImages : ['/assets/o3_logo.jpeg'];
 
         mapped.push({
           dbName: db.product_name,
           displayName: db.product_name,
           image: effectiveImages[0],
           images: effectiveImages,
-          rating: 4.5,
+          rating: 0,
           reviewsCount: 0,
-          price: sellingPrice,
+          price: Math.round(sellingPrice * (100 - discountPct)) / 100,
           mrp: estimatedMrp,
           discount: discountPct > 0 ? discountPct + '% OFF' : '',
           description: db.description || db.product_name,
@@ -476,7 +194,7 @@ export default function ProductsPage() {
           whyBuy: '',
           dbId: db.id,
           dbQty: dbQty,
-          dbPrice: sellingPrice,
+          dbPrice: Math.round(sellingPrice * (100 - discountPct)) / 100,
           inStock: isNaN(dbQty) ? true : dbQty > 0,
         } as any);
       }
@@ -494,6 +212,7 @@ export default function ProductsPage() {
     }
   };
 
+  useLiveReload(() => { loadData(); }); // reload when anything changes elsewhere
   useEffect(() => {
     loadData();
   }, []);
@@ -519,18 +238,6 @@ export default function ProductsPage() {
     return matchesSearch && matchesCategory;
   });
 
-  const loadRazorpayScript = () => {
-    return new Promise((resolve) => {
-      if ((window as any).Razorpay) return resolve(true);
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.async = true;
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
   const handlePurchase = async () => {
     if (!selectedProduct) return;
     if (!selectedProduct.dbId) {
@@ -543,99 +250,15 @@ export default function ProductsPage() {
       return;
     }
 
+    // Collect at the studio and pay there (cash / UPI QR at the counter)
     try {
-      if (paymentMode === 'razorpay') {
-        const sdkLoaded = await loadRazorpayScript();
-        if (!sdkLoaded) {
-          toast('error', 'Razorpay SDK failed to load. Are you online?');
-          return;
-        }
-
-        // 1. Create Order
-        const orderRes = await api.post('/products/order', {
-          product_id: selectedProduct.dbId,
-          quantity,
-          payment_method: 'razorpay'
-        });
-
-        const orderData = orderRes.data?.razorpay_order;
-        const productOrderId = orderRes.data?.order_id;
-
-        if (!orderData) {
-          toast('error', 'Failed to initialize payment.');
-          return;
-        }
-
-        const options = {
-          key: import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_123',
-          amount: orderData.amount,
-          currency: orderData.currency,
-          name: 'O3 Car Spaa',
-          description: `Purchase: ${selectedProduct.displayName}`,
-          image: '/assets/logo.png',
-          order_id: orderData.id,
-          handler: async (response: any) => {
-            try {
-              toast('info', 'Verifying payment...');
-              await api.post('/products/order/verify', {
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature
-              });
-              toast('success', 'Order placed successfully! Stock updated.');
-              setSelectedProduct(null);
-              loadData();
-            } catch (err: any) {
-              toast('error', err.response?.data?.error || 'Verification failed.');
-            }
-          },
-          prefill: {
-            name: '',
-            email: '',
-            contact: ''
-          },
-          theme: {
-            color: '#2563EB'
-          },
-          modal: {
-            ondismiss: () => {
-              toast('warning', 'Payment cancelled.');
-            }
-          }
-        };
-
-        // If mock order
-        if (orderData.id.startsWith('order_mock_')) {
-          const confirmSim = window.confirm(
-            "RAZORPAY SANDBOX MODE (Keys Missing)\n\nWould you like to simulate a successful online payment for this product?"
-          );
-          if (confirmSim) {
-            try {
-              await api.post('/products/order/verify', {
-                razorpay_order_id: orderData.id,
-                razorpay_payment_id: 'pay_mock_' + Date.now(),
-                razorpay_signature: 'sig_mock_' + Date.now()
-              });
-              toast('success', 'Order placed successfully! (Simulated)');
-              setSelectedProduct(null);
-              loadData();
-            } catch (err: any) {
-              toast('error', err.response?.data?.error || 'Verification failed.');
-            }
-          }
-          return;
-        }
-
-        const rzp = new (window as any).Razorpay(options);
-        rzp.open();
-
-      } else {
-        // QR Code Modal Open
-        setQrModalOpen(true);
-      }
+      const r = await api.post('/products/order', { product_id: selectedProduct.dbId, quantity, payment_method: 'cash', shipping_address: 'Collect at studio' });
+      toast('success', `Order #${r.data.order_id} placed — collect and pay ₹${Number(r.data.total_amount || selectedProduct.dbPrice * quantity).toLocaleString('en-IN')} at the studio`);
+      setSelectedProduct(null);
+      setActiveTab('orders');
+      loadData();
     } catch (err: any) {
-      console.error('Purchase error:', err);
-      toast('error', err.response?.data?.error || 'Failed to place order.');
+      toast('error', err.response?.data?.error || 'Could not place the order');
     }
   };
 
@@ -671,6 +294,7 @@ export default function ProductsPage() {
     <div className="space-y-6">
       {/* Top Banner */}
       <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-[#0F172A] via-[#1E293B] to-[#0F172A] border border-white/5 p-6 sm:p-8 shadow-xl">
+        <img src={BANNER_PHOTOS.shop} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
         <div className="absolute top-0 right-0 w-64 h-64 bg-sky-600/10 rounded-full blur-3xl" />
         <div className="relative z-10 max-w-xl space-y-3">
           <span className="px-3 py-1 bg-sky-500/10 border border-sky-500/20 text-sky-400 rounded-full text-xs font-bold uppercase tracking-wider">
@@ -680,7 +304,7 @@ export default function ProductsPage() {
             O3 Car Spaa Store
           </h2>
           <p className="text-sm text-slate-300">
-            Professional grade detailing cloths, premium damping sheets, memory foam cushions, and car utilities designed to maintain and upgrade your ride.
+            Car-care products and accessories our detailers use and trust. Order here, pay and collect at the studio.
           </p>
         </div>
       </div>
@@ -747,7 +371,7 @@ export default function ProductsPage() {
 
               {/* Category Select Dropdown */}
               <div className="w-full md:w-56 flex items-center gap-2">
-                <select
+                <Dropdown
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
                   className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all cursor-pointer"
@@ -761,7 +385,7 @@ export default function ProductsPage() {
                       </option>
                     );
                   })}
-                </select>
+                </Dropdown>
               </div>
 
               {/* Reset Filters */}
@@ -844,18 +468,18 @@ export default function ProductsPage() {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               {filteredProducts.map((product, idx) => (
                 <div
                   key={idx}
                   className="bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm hover:shadow-xl transition-all duration-300 flex flex-col group"
                 >
                   {/* Product Image */}
-                  <div className="relative aspect-video bg-gray-50 overflow-hidden">
+                  <div className="relative aspect-square bg-white overflow-hidden">
                     <img
                       src={product.image || 'https://images.unsplash.com/photo-1607860108855-64acf2078ed9?w=500&q=80'}
                       alt={product.displayName}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-500"
                       onError={(e) => {
                         (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1607860108855-64acf2078ed9?w=500&q=80';
                       }}
@@ -881,10 +505,12 @@ export default function ProductsPage() {
                         <span className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">
                           {product.specs?.Category || product.specs?.Material || product.specs?.GSM || 'Premium Utility'}
                         </span>
-                        <div className="flex items-center gap-0.5 text-amber-500">
-                          <Star size={12} fill="currentColor" />
-                          <span className="text-xs font-bold text-gray-700">{product.rating}</span>
-                        </div>
+                        {product.rating > 0 && (
+                          <div className="flex items-center gap-0.5 text-amber-500">
+                            <Star size={12} fill="currentColor" />
+                            <span className="text-xs font-bold text-gray-700">{product.rating}</span>
+                          </div>
+                        )}
                       </div>
                       <h3 className="font-bold text-gray-900 group-hover:text-[#2563EB] transition-colors leading-tight line-clamp-1">
                         {product.displayName}
@@ -899,7 +525,7 @@ export default function ProductsPage() {
                       <div>
                         <div className="flex items-baseline gap-1.5">
                           <span className="text-lg font-black text-gray-900">₹{product.price}</span>
-                          {product.mrp > product.price && (
+                          {Number(product.mrp) > Number(product.price) && (
                             <span className="text-xs text-gray-400 line-through">₹{product.mrp}</span>
                           )}
                         </div>
@@ -962,99 +588,41 @@ export default function ProductsPage() {
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-3">
               {orders.map((order) => {
                 let cartItems: any[] = [];
                 if (order.items_json) {
-                  try {
-                    cartItems = typeof order.items_json === 'string' ? JSON.parse(order.items_json) : order.items_json;
-                  } catch {
-                    cartItems = [];
-                  }
+                  try { cartItems = typeof order.items_json === 'string' ? JSON.parse(order.items_json) : order.items_json; } catch { cartItems = []; }
                 }
-
+                const lines = cartItems.length ? cartItems : [{ product_name: order.product_name, quantity: order.quantity, total_price: order.total_amount }];
+                const first = lines[0]?.product_name || order.product_name;
+                const img = products.find((p: any) => p.displayName === first || p.name === first || p.product_name === first)?.image || '/photos/shop.webp';
+                const st = order.payment_status === 'completed' && order.collected_at ? { t: 'Collected & paid', c: 'bg-slate-100 text-slate-700' }
+                  : order.payment_status === 'completed' ? { t: 'Ready to collect', c: 'bg-emerald-50 text-emerald-700' }
+                  : order.payment_status === 'pending' ? { t: 'Awaiting approval', c: 'bg-amber-50 text-amber-700' } : { t: 'Payment failed', c: 'bg-rose-50 text-rose-600' };
                 return (
-                  <div
-                    key={order.id}
-                    className="bg-white rounded-2xl border border-gray-100 p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm hover:border-gray-200 transition-all"
-                  >
-                    <div className="flex items-start gap-4">
-                      <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center border border-blue-100 shrink-0 shadow-sm">
-                        <ShoppingBag size={22} />
-                      </div>
-                      <div className="space-y-1.5 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="font-extrabold text-gray-900 text-sm">
-                            {cartItems.length > 1
-                              ? `Cart Order (${cartItems.length} items)`
-                              : cartItems.length === 1
-                              ? cartItems[0].product_name
-                              : order.product_name}
-                          </h4>
-                          <span
-                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                              order.payment_status === 'completed'
-                                ? 'bg-green-50 text-green-700 border border-green-200'
-                                : order.payment_status === 'pending'
-                                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                : 'bg-blue-50 text-blue-700 border border-blue-200'
-                            }`}
-                          >
-                            {order.payment_status === 'completed'
-                              ? 'Paid & Approved'
-                              : order.payment_status === 'pending'
-                              ? 'Pending Verification / Awaiting Approval'
-                              : 'Failed'}
-                          </span>
+                  <div key={order.id} className="bg-white rounded-2xl shadow-[0_4px_18px_rgba(15,23,42,0.06)] border border-slate-100 overflow-hidden">
+                    <div className="flex gap-3 p-3">
+                      <img src={img} alt="" className="w-16 h-16 rounded-xl object-contain bg-white shrink-0" loading="lazy" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-extrabold text-[14.5px] text-slate-900 leading-snug line-clamp-2">{lines.length > 1 ? `${first} + ${lines.length - 1} more` : first}</p>
+                          <span className="text-[15px] font-black text-slate-900 shrink-0">₹{Number(order.total_amount).toLocaleString('en-IN')}</span>
                         </div>
-
-                        {/* Cart Items List */}
-                        {cartItems.length > 0 ? (
-                          <div className="bg-gray-50/80 p-3 rounded-xl border border-gray-100 space-y-1.5 text-xs text-gray-700">
-                            {cartItems.map((item: any, idx: number) => (
-                              <div key={idx} className="flex items-center justify-between gap-2">
-                                <span className="font-semibold text-gray-800">• {item.product_name}</span>
-                                <div className="flex items-center gap-2 text-[11px]">
-                                  <span className="bg-gray-200/80 text-gray-700 font-bold px-1.5 py-0.5 rounded">x{item.quantity}</span>
-                                  <span className="font-bold text-gray-900">₹{item.total_price || (item.unit_price * item.quantity)}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-gray-500">
-                            Qty: <strong>{parseInt(order.quantity)}</strong> &bull; Total: <strong>₹{order.total_amount}</strong>
-                          </p>
-                        )}
-
-                        {order.shipping_address && (
-                          <p className="text-[11px] text-blue-600 font-semibold flex items-center gap-1 pt-0.5">
-                            <span>📍</span> {order.shipping_address}
-                          </p>
-                        )}
-
-                        <p className="text-[10px] text-gray-400">
-                          Ordered: {new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className={`px-2 py-0.5 rounded-full text-[10.5px] font-bold ${st.c}`}>{st.t}</span>
+                          <span className="text-[11px] text-slate-500">{lines.reduce((t: number, l: any) => t + (Number(l.quantity) || 1), 0)} item(s) · {new Date(order.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1 truncate">{order.payment_method === 'cash' ? 'Pay & collect at the studio' : `Paid by ${String(order.payment_method || '').toUpperCase()}`}</p>
                       </div>
                     </div>
-
-                    <div className="text-left md:text-right space-y-1 md:self-center shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-gray-100">
-                      <div className="text-lg font-black text-gray-900">₹{order.total_amount}</div>
-                      <p className="text-[11px] text-gray-500 font-medium">
-                        Payment: <span className="uppercase font-bold text-gray-700">{order.payment_method}</span>
-                      </p>
-                      {order.payment_method === 'razorpay' && order.razorpay_payment_id && (
-                        <p className="text-[10px] text-gray-400 font-mono">
-                          Ref: {order.razorpay_payment_id}
-                        </p>
-                      )}
-                      {order.payment_method === 'qr' && order.qr_transaction_id && (
-                        <p className="text-[10px] text-gray-400 font-mono">
-                          Ref: {order.qr_transaction_id}
-                        </p>
-                      )}
-                    </div>
+                    {lines.length > 1 && (
+                      <div className="px-3 pb-3 -mt-1 text-[11.5px] text-slate-600 space-y-0.5">
+                        {lines.map((l: any, i: number) => (
+                          <div key={i} className="flex justify-between"><span className="truncate">{l.product_name} × {l.quantity}</span><span className="font-semibold">₹{l.total_price || (l.unit_price * l.quantity)}</span></div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1065,8 +633,8 @@ export default function ProductsPage() {
 
       {/* Product Detail & Checkout Modal */}
       {selectedProduct && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl overflow-hidden w-full max-w-4xl shadow-2xl flex flex-col md:flex-row max-h-[90vh]">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl overflow-y-auto md:overflow-hidden w-full max-w-4xl shadow-2xl flex flex-col md:flex-row max-h-[92vh]">
             {/* Product Picture Section */}
             <div className="relative md:w-1/2 bg-gray-900 flex flex-col justify-between min-h-[300px]">
               <div className="flex-1 flex items-center justify-center p-2">
@@ -1090,7 +658,7 @@ export default function ProductsPage() {
                         selectedProduct.image === img ? 'border-blue-500 scale-105' : 'border-transparent opacity-70 hover:opacity-100'
                       }`}
                     >
-                      <img src={img} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
+                      <img src={img} alt={`Thumb ${idx + 1}`} className="w-full h-full object-contain bg-white" />
                     </button>
                   ))}
                 </div>
@@ -1111,13 +679,15 @@ export default function ProductsPage() {
                     <h3 className="text-xl font-black text-gray-900 leading-tight">
                       {selectedProduct.displayName}
                     </h3>
-                    <div className="flex items-center gap-2 mt-1">
-                      <div className="flex items-center text-amber-500 gap-0.5">
-                        <Star size={14} fill="currentColor" />
-                        <span className="text-xs font-bold text-gray-700">{selectedProduct.rating}</span>
+                    {selectedProduct.rating > 0 && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center text-amber-500 gap-0.5">
+                          <Star size={14} fill="currentColor" />
+                          <span className="text-xs font-bold text-gray-700">{selectedProduct.rating}</span>
+                        </div>
+                        <span className="text-xs text-gray-400">({selectedProduct.reviewsCount} Reviews)</span>
                       </div>
-                      <span className="text-xs text-gray-400">({selectedProduct.reviewsCount} Reviews)</span>
-                    </div>
+                    )}
                   </div>
                   <button
                     onClick={() => setSelectedProduct(null)}
@@ -1129,10 +699,12 @@ export default function ProductsPage() {
 
                 <div className="flex items-baseline gap-2.5">
                   <span className="text-2xl font-black text-gray-900">₹{selectedProduct.dbPrice}</span>
-                  <span className="text-sm text-gray-400 line-through">₹{selectedProduct.mrp}</span>
-                  <span className="bg-blue-50 text-blue-600 text-xs font-extrabold px-2 py-0.5 rounded-md">
-                    {selectedProduct.discount}
-                  </span>
+                  {Number(selectedProduct.mrp) > Number(selectedProduct.dbPrice) && <>
+                    <span className="text-sm text-gray-400 line-through">₹{selectedProduct.mrp}</span>
+                    <span className="bg-blue-50 text-blue-600 text-xs font-extrabold px-2 py-0.5 rounded-md">
+                      {selectedProduct.discount}
+                    </span>
+                  </>}
                 </div>
 
                 <p className="text-xs text-gray-600 leading-relaxed">
@@ -1184,27 +756,8 @@ export default function ProductsPage() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] uppercase font-black text-gray-400 tracking-wider">Payment Method</label>
-                    <div className="flex rounded-xl overflow-hidden border border-gray-200 h-10">
-                      <button
-                        onClick={() => setPaymentMode('razorpay')}
-                        className={`flex-1 flex items-center justify-center gap-1 text-xs font-bold transition-all ${
-                          paymentMode === 'razorpay' ? 'bg-[#111] text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                        }`}
-                      >
-                        <CreditCard size={14} />
-                        Online
-                      </button>
-                      <button
-                        onClick={() => setPaymentMode('qr')}
-                        className={`flex-1 flex items-center justify-center gap-1 text-xs font-bold transition-all ${
-                          paymentMode === 'qr' ? 'bg-[#111] text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                        }`}
-                      >
-                        <QrCode size={14} />
-                        Scan QR
-                      </button>
-                    </div>
+                    <label className="text-[10px] uppercase font-black text-gray-400 tracking-wider">Payment</label>
+                    <div className="h-10 px-3 rounded-xl border border-gray-200 bg-gray-50 flex items-center text-xs font-bold text-gray-700">Pay at studio</div>
                   </div>
                 </div>
               </div>
@@ -1219,7 +772,7 @@ export default function ProductsPage() {
                   onClick={handlePurchase}
                   className="px-6 py-3 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-sm font-bold rounded-xl transition-all shadow-md flex items-center gap-2"
                 >
-                  Confirm Purchase
+                  Place order
                   <ArrowRight size={16} />
                 </button>
               </div>
@@ -1230,7 +783,7 @@ export default function ProductsPage() {
 
       {/* QR Code Payment Upload Modal */}
       {qrModalOpen && selectedProduct && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[120] flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl overflow-hidden w-full max-w-md shadow-2xl p-6 space-y-6">
             <div className="flex justify-between items-start">
               <div>
@@ -1247,14 +800,7 @@ export default function ProductsPage() {
 
             {/* QR Code Image Display */}
             <div className="bg-gray-50 rounded-2xl p-4 flex flex-col items-center justify-center border border-gray-100 space-y-3">
-              <img
-                src="/qr.jpg"
-                alt="UPI QR Code"
-                className="w-48 h-48 rounded-xl object-cover shadow-md"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=yourname@upi%26pn=GK%20AutoHerb%26am=' + (selectedProduct.dbPrice * quantity);
-                }}
-              />
+              <StudioQr amount={selectedProduct ? selectedProduct.dbPrice * quantity : undefined} className="w-48 h-48 shadow-md" />
               <div className="text-center">
                 <span className="text-xs font-bold text-gray-700">Amount to Pay:</span>{' '}
                 <span className="text-sm font-black text-[#2563EB]">₹{selectedProduct.dbPrice * quantity}</span>
@@ -1307,16 +853,15 @@ export default function ProductsPage() {
 
       {/* Floating Products Cart Button */}
       {productsCart.length > 0 && (
-        <div className="fixed bottom-6 right-6 z-40 animate-bounce">
+        // sits just above the bottom menu bar
+        <div className="fixed left-4 right-4 sm:left-auto sm:right-6 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[95]">
           <button
             onClick={() => setProductsDrawerOpen(true)}
-            className="flex items-center gap-2.5 px-5 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-2xl hover:scale-105 transition-all cursor-pointer"
+            className="w-full sm:w-auto flex items-center gap-3 px-5 py-3.5 bg-[#2563EB] text-white font-bold text-sm rounded-2xl shadow-xl shadow-blue-600/30 active:scale-[0.98] transition-transform"
           >
-            <ShoppingBag size={18} />
-            <span>Products Cart</span>
-            <span className="w-5 h-5 rounded-full bg-white text-emerald-800 text-[11px] font-black flex items-center justify-center">
-              {productsCart.length}
-            </span>
+            <span className="relative"><ShoppingBag size={20} /><span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-white text-[#2563EB] text-[11px] font-black flex items-center justify-center">{productsCart.reduce((n: number, i: any) => n + (i.quantity || 1), 0)}</span></span>
+            <span className="flex-1 text-left">View cart</span>
+            <span className="font-black">₹{productsCart.reduce((t: number, i: any) => t + Number(i.selling_price || 0) * (i.quantity || 1), 0).toLocaleString('en-IN')}</span>
           </button>
         </div>
       )}
@@ -1325,7 +870,7 @@ export default function ProductsPage() {
       <ProductsCartDrawer
         isOpen={productsDrawerOpen}
         onClose={() => setProductsDrawerOpen(false)}
-        onOrderSuccess={() => loadData()}
+        onOrderSuccess={() => { setActiveTab('orders'); loadData(); }}
       />
     </div>
   );

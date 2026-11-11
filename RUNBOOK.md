@@ -72,31 +72,55 @@ pm2 reload ecosystem.config.js --env production
 cd /var/www/o3-car-spaa
 bash scripts/backup.sh
 ```
-*Backups are saved to `/var/www/o3-car-spaa/backups/o3_car_spaa_YYYYMMDD_HHMMSS.sql.gz` and automatically rotated (last 7 daily backups retained).*
+Backups run automatically at **02:00 and 14:00 IST** (`deploy/crontab.txt`) and before every deploy.
+They are saved in `/var/www/o3-car-spaa/backups/`:
+
+| Folder | What | Kept |
+|---|---|---|
+| `daily/` | every backup (database `.sql.gz` + photos/uploads `.tar.gz`) | 14 days |
+| `weekly/` | Sunday copy | 8 weeks |
+| `monthly/` | 1st-of-month copy | 12 months |
+
+**Off-server copy (strongly recommended).** If the VPS itself is lost, backups on it are lost too. One-time setup:
+```bash
+apt-get install -y rclone
+rclone config            # create a remote, e.g. "gdrive" (Google Drive) — follow the prompts
+# then add to server/.env:
+BACKUP_REMOTE=gdrive:o3-backups
+```
+From then on every backup is also copied there. `GET /api/health` shows `"backup": "ok"` while the last
+backup is under 26 hours old (`"stale"` otherwise) — point an uptime monitor (e.g. UptimeRobot keyword "backup\":\"ok") at it.
 
 ### Verifying Backup Integrity (Dry-Run Restore)
-To prove the backup is healthy without touching production:
+Runs every Sunday 03:00 automatically; to run now:
 ```bash
 cd /var/www/o3-car-spaa
 bash scripts/test-restore.sh
 ```
-*This restores the latest snapshot into a temporary database `o3_car_spa_restore_test`, verifies row counts across all 119 tables against primary DB, and tears down the temporary database.*
+*Restores the newest backup into a temporary database, checks every table came back, then drops the temporary database. Production is not touched.*
 
-### Restoring a Backup to Production (Disaster Recovery)
-If database recovery is required:
+### Undo an accidental deletion (one record / a few records)
+Most deletes in the app are **soft deletes** — open **Super Admin → Recycle Bin** and press Restore. No backup needed.
+
+### Get back a record that was really removed (without overwriting today's work)
 ```bash
-# 1. Stop application to prevent inbound writes
-pm2 stop o3-car-spaa-api
+cd /var/www/o3-car-spaa/backups/daily
+ls -lt | head                                    # pick the backup from before the mistake
+mysql -u root -p -e "CREATE DATABASE o3_recover"
+zcat o3_car_spaa_YYYYMMDD_HHMMSS.sql.gz | mysql -u root -p o3_recover
+# copy just the rows you need back, e.g. one customer:
+mysql -u root -p -e "INSERT INTO o3_car_spa.users SELECT * FROM o3_recover.users WHERE id = 123"
+mysql -u root -p -e "DROP DATABASE o3_recover"
+```
 
-# 2. Decompress target backup
-cd /var/www/o3-car-spaa/backups
-gunzip -k o3_car_spaa_TARGET_FILE.sql.gz
-
-# 3. Restore snapshot into MySQL
-mysql -u o3_prod_user -p o3_car_spa < o3_car_spaa_TARGET_FILE.sql
-
-# 4. Restart application
-pm2 start ecosystem.config.js --env production
+### Restoring the whole database (disaster recovery — loses changes made after that backup)
+```bash
+pm2 stop o3-car-spaa-api                         # 1. stop writes
+bash scripts/backup.sh                           # 2. backup of the current (bad) state, just in case
+cd backups/daily
+zcat o3_car_spaa_TARGET.sql.gz | mysql -u root -p o3_car_spa     # 3. restore
+tar -xzf o3_uploads_TARGET.tar.gz -C /var/www/o3-car-spaa/server  # 4. photos (optional)
+cd /var/www/o3-car-spaa && pm2 start ecosystem.config.js --env production
 ```
 
 ---

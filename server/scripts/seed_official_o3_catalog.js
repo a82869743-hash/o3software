@@ -117,7 +117,7 @@ async function seedO3Catalog() {
 
   for (const s of servicesData) {
     const p = calcPrices(s.suv);
-    const desc = `${s.name} at O3 Car Spa Detailing Studio. Premium detailing service with high-grade automotive care.`;
+    const desc = `${s.name} at O3 Car Spaa Detailing Studio. Premium detailing service with high-grade automotive care.`;
     const [res] = await conn.query(`
       INSERT INTO services (
         name, description, price_hatchback, price_medium_hatchback, price_sedan, price_premium_sedan, price_suv,

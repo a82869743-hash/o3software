@@ -37,13 +37,13 @@ export default function DataTable<T extends Record<string, any>>({
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg overflow-hidden shadow-sm">
+      <div className="bg-white rounded-2xl overflow-hidden border border-slate-200/70 shadow-[0_1px_3px_rgba(15,23,42,0.05)]">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-100 bg-gray-50/50">
+              <tr className="border-b border-slate-100 bg-slate-50/80">
                 {columns.map((col) => (
-                  <th key={col.key} className="text-left px-5 py-4 text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e]">
+                  <th key={col.key} className="text-left px-5 py-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     {col.header}
                   </th>
                 ))}
@@ -68,22 +68,22 @@ export default function DataTable<T extends Record<string, any>>({
 
   if (!data.length) {
     return (
-      <div className="bg-white rounded-lg p-12 text-center shadow-sm">
-        <p className="text-[#5f5e5e] font-medium">{emptyMessage}</p>
+      <div className="bg-white rounded-2xl p-12 text-center border border-slate-200/70">
+        <p className="text-[#64748B] font-medium">{emptyMessage}</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg overflow-hidden shadow-sm">
+    <div className="bg-white rounded-2xl overflow-hidden border border-slate-200/70 shadow-[0_1px_3px_rgba(15,23,42,0.05)]">
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="border-b-2 border-gray-100 bg-gray-50/50">
+            <tr className="border-b border-slate-200 bg-slate-50/80">
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  className={`text-left px-5 py-4 text-[10px] font-extrabold uppercase tracking-widest text-[#5f5e5e] whitespace-nowrap ${col.className || ''}`}
+                  className={`text-left px-5 py-3 text-[11px] font-bold uppercase tracking-wide text-slate-500 whitespace-nowrap ${col.className || ''}`}
                 >
                   {col.header}
                 </th>
@@ -94,7 +94,7 @@ export default function DataTable<T extends Record<string, any>>({
             {data.map((row, idx) => (
               <tr
                 key={keyExtractor ? keyExtractor(row) : idx}
-                className={`border-b border-gray-50 last:border-b-0 hover:bg-[#faf8f7] transition-all duration-150 group ${
+                className={`border-b border-gray-50 last:border-b-0 hover:bg-blue-50/40 transition-colors duration-150 group ${
                   onRowClick ? 'cursor-pointer' : ''
                 }`}
                 onClick={() => onRowClick?.(row)}
@@ -113,7 +113,7 @@ export default function DataTable<T extends Record<string, any>>({
       {/* Pagination */}
       {pagination && totalPages > 1 && (
         <div className="flex items-center justify-between px-5 py-3 border-t border-gray-100 bg-gray-50/50">
-          <p className="text-[11px] text-[#5f5e5e] font-medium">
+          <p className="text-[11px] text-[#64748B] font-medium">
             Showing {(pagination.page - 1) * pagination.limit + 1}–{Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
           </p>
           <div className="flex items-center gap-1">

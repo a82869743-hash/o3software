@@ -1,84 +1,75 @@
 const pool = require('../config/db');
+const { scopeOf } = require('../utils/franchiseScope');
 const ExcelJS = require('exceljs');
 const crypto = require('crypto');
 
 // Helper to compile balance sheet details
-const fetchBalanceSheetData = async (startDate, endDate) => {
+const fetchBalanceSheetData = async (startDate, endDate, S = { and: () => '' }) => {
   // 1. Income: Job Cart completions
   const [jobRevenue] = await pool.query(`
-    SELECT COALESCE(SUM(
-      (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) +
-      (SELECT COALESCE(SUM(jp.quantity * jp.unit_cost), 0) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id) -
-      CASE 
-        WHEN jc.discount_type = 'fixed' THEN COALESCE(jc.discount_value, 0)
-        WHEN jc.discount_type = 'percentage' THEN 
-          ( (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) +
-            (SELECT COALESCE(SUM(jp.quantity * jp.unit_cost), 0) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id)
-          ) * COALESCE(jc.discount_value, 0) / 100
-        ELSE 0
-      END
-    ), 0) AS total
+    SELECT COALESCE(SUM(COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0)))), 0) AS total
     FROM job_carts jc
-    WHERE jc.status = 'complete' AND DATE(jc.completed_at) BETWEEN ? AND ?
+    WHERE jc.status = 'complete' AND DATE(jc.completed_at) BETWEEN ? AND ?${S.and('jc.franchise_id')}
   `, [startDate, endDate]);
 
   // 2. Income: Package sales
   const [pkgRevenue] = await pool.query(`
     SELECT COALESCE(SUM(price_paid), 0) AS total FROM user_packages
-    WHERE payment_status = 'paid' AND DATE(created_at) BETWEEN ? AND ?
+    WHERE payment_status = 'paid' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 3. Income: Manual bills
   const [billRevenue] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM manual_bills
-    WHERE DATE(created_at) BETWEEN ? AND ?
+    WHERE DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 4. Income: Buy-Sell Sell transactions
   const [sellRevenue] = await pool.query(`
     SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
-    WHERE type IN ('sell_b2b', 'sell_b2c') AND status = 'completed' AND DATE(transaction_date) BETWEEN ? AND ?
+    WHERE type IN ('sell_b2b', 'sell_b2c') AND status = 'complete' AND DATE(transaction_date) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 5. Expense: expenses table (operational)
   const [expRevenue1] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total, COALESCE(SUM(gst_amount), 0) as gst_total
-    FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?
+    FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 6. Expense: v2_expenses table (operational)
   const [expRevenue2] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM v2_expenses
-    WHERE DATE(expense_date) BETWEEN ? AND ?
+    -- purchase bills are already counted from v2_purchases (step 8); skip their mirror rows here
+    WHERE DATE(expense_date) BETWEEN ? AND ? AND COALESCE(category, '') <> 'Inventory Purchase'${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 7. Expense: staff salary paid
   const [staffPay] = await pool.query(`
     SELECT COALESCE(SUM(final_salary), 0) AS total FROM staff_salary
-    WHERE status = 'paid' AND DATE(updated_at) BETWEEN ? AND ?
+    WHERE status = 'paid' AND DATE(updated_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 8. Expense: v2_purchases (inventory purchases)
   const [inventoryPurchases] = await pool.query(`
     SELECT COALESCE(SUM(total_amount), 0) AS total FROM v2_purchases
-    WHERE status = 'received' AND DATE(purchase_date) BETWEEN ? AND ?
+    WHERE status = 'received' AND DATE(purchase_date) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 9. Expense: refunds
   const [refunds] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM refunds
-    WHERE status IN ('approved','processed') AND DATE(created_at) BETWEEN ? AND ?
+    WHERE status IN ('approved','processed') AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // 10. Returns: Sales & Purchase Returns
   const [salesReturns] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills
-    WHERE return_type = 'sales_return' AND DATE(created_at) BETWEEN ? AND ?
+    WHERE return_type = 'sales_return' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   const [purchaseReturns] = await pool.query(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills
-    WHERE return_type = 'purchase_return' AND DATE(created_at) BETWEEN ? AND ?
+    WHERE return_type = 'purchase_return' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
   `, [startDate, endDate]);
 
   // Breakdown expense categories from both tables
@@ -86,11 +77,11 @@ const fetchBalanceSheetData = async (startDate, endDate) => {
     SELECT category, SUM(amount) as total FROM (
       SELECT ec.name as category, e.amount
       FROM expenses e JOIN expense_categories ec ON ec.id = e.category_id
-      WHERE DATE(e.expense_date) BETWEEN ? AND ?
+      WHERE DATE(e.expense_date) BETWEEN ? AND ?${S.and('e.franchise_id')}
       UNION ALL
       SELECT category, amount
       FROM v2_expenses
-      WHERE DATE(expense_date) BETWEEN ? AND ?
+      WHERE DATE(expense_date) BETWEEN ? AND ?${S.and('franchise_id')}
     ) combined
     GROUP BY category
     ORDER BY total DESC
@@ -113,62 +104,51 @@ const fetchBalanceSheetData = async (startDate, endDate) => {
     const endOfMonth = new Date(year, month, 0).toISOString().split('T')[0];
 
     const [mJob] = await pool.query(`
-      SELECT COALESCE(SUM(
-        (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) +
-        (SELECT COALESCE(SUM(jp.quantity * jp.unit_cost), 0) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id) -
-        CASE 
-          WHEN jc.discount_type = 'fixed' THEN COALESCE(jc.discount_value, 0)
-          WHEN jc.discount_type = 'percentage' THEN 
-            ( (SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) +
-              (SELECT COALESCE(SUM(jp.quantity * jp.unit_cost), 0) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id)
-            ) * COALESCE(jc.discount_value, 0) / 100
-          ELSE 0
-        END
-      ), 0) AS total FROM job_carts jc
-      WHERE jc.status = 'complete' AND DATE(jc.completed_at) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(COALESCE(NULLIF(jc.total_amount, 0), GREATEST(0, ((SELECT COALESCE(SUM(js.service_price + js.labor_charges), 0) FROM job_services js WHERE js.job_cart_id = jc.id) + COALESCE((SELECT SUM(jp.quantity * jp.unit_cost) FROM job_products jp JOIN job_services js2 ON jp.job_service_id = js2.id WHERE js2.job_cart_id = jc.id), 0)) - COALESCE(jc.discount_amount, 0)))), 0) AS total FROM job_carts jc
+      WHERE jc.status = 'complete' AND DATE(jc.completed_at) BETWEEN ? AND ?${S.and('jc.franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mPkg] = await pool.query(`
       SELECT COALESCE(SUM(price_paid), 0) AS total FROM user_packages
-      WHERE payment_status = 'paid' AND DATE(created_at) BETWEEN ? AND ?
+      WHERE payment_status = 'paid' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mBill] = await pool.query(`
       SELECT COALESCE(SUM(amount), 0) AS total FROM manual_bills
-      WHERE DATE(created_at) BETWEEN ? AND ?
+      WHERE DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mSell] = await pool.query(`
       SELECT COALESCE(SUM(total_amount), 0) AS total FROM buy_sell
-      WHERE type IN ('sell_b2b', 'sell_b2c') AND status = 'completed' AND DATE(transaction_date) BETWEEN ? AND ?
+      WHERE type IN ('sell_b2b', 'sell_b2c') AND status = 'complete' AND DATE(transaction_date) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mExp1] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE DATE(expense_date) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mExp2] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total FROM v2_expenses WHERE DATE(expense_date) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(amount), 0) AS total FROM v2_expenses WHERE DATE(expense_date) BETWEEN ? AND ? AND COALESCE(category, '') <> 'Inventory Purchase'${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mSalary] = await pool.query(`
-      SELECT COALESCE(SUM(final_salary), 0) AS total FROM staff_salary WHERE status = 'paid' AND DATE(updated_at) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(final_salary), 0) AS total FROM staff_salary WHERE status = 'paid' AND DATE(updated_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mPurch] = await pool.query(`
-      SELECT COALESCE(SUM(total_amount), 0) AS total FROM v2_purchases WHERE status = 'received' AND DATE(purchase_date) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(total_amount), 0) AS total FROM v2_purchases WHERE status = 'received' AND DATE(purchase_date) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mRef] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE status IN ('approved','processed') AND DATE(created_at) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(amount), 0) AS total FROM refunds WHERE status IN ('approved','processed') AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mSR] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills WHERE return_type = 'sales_return' AND DATE(created_at) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills WHERE return_type = 'sales_return' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const [mPR] = await pool.query(`
-      SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills WHERE return_type = 'purchase_return' AND DATE(created_at) BETWEEN ? AND ?
+      SELECT COALESCE(SUM(amount), 0) AS total FROM return_bills WHERE return_type = 'purchase_return' AND DATE(created_at) BETWEEN ? AND ?${S.and('franchise_id')}
     `, [startOfMonth, endOfMonth]);
 
     const mInc = parseFloat(mJob[0].total) + parseFloat(mPkg[0].total) + parseFloat(mBill[0].total) + parseFloat(mSell[0].total) - parseFloat(mSR[0].total);
@@ -212,9 +192,9 @@ exports.getBalanceSheet = async (req, res) => {
   try {
     const { from, to } = req.query;
     const startDate = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-    const endDate = to || new Date().toISOString().split('T')[0];
+    const endDate = to || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
-    const data = await fetchBalanceSheetData(startDate, endDate);
+    const data = await fetchBalanceSheetData(startDate, endDate, scopeOf(req));
     res.json({ success: true, data });
   } catch (err) {
     console.error('getBalanceSheet error:', err.message);
@@ -226,9 +206,9 @@ exports.exportBalanceSheet = async (req, res) => {
   try {
     const { from, to, format } = req.query;
     const startDate = from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-    const endDate = to || new Date().toISOString().split('T')[0];
+    const endDate = to || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
-    const data = await fetchBalanceSheetData(startDate, endDate);
+    const data = await fetchBalanceSheetData(startDate, endDate, scopeOf(req));
 
     if (format === 'xlsx') {
       const workbook = new ExcelJS.Workbook();
@@ -265,9 +245,9 @@ exports.exportBalanceSheet = async (req, res) => {
       summarySheet.addRow({ name: 'NET PROFIT / LOSS (A - B)', value: data.net_profit }).font = { bold: true, size: 12 };
       summarySheet.addRow({ name: 'Profit Margin', value: `${data.profit_margin}%` }).font = { italic: true };
 
-      const buffer = await workbook.xlsx.writeBuffer();
+      const buffer = await require('../utils/excelFormat').polishWorkbook(workbook).xlsx.writeBuffer();
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename=GKAutoHerb_BalanceSheet_${startDate}_to_${endDate}.xlsx`);
+      res.setHeader('Content-Disposition', `attachment; filename=O3CarSpaa_BalanceSheet_${startDate}_to_${endDate}.xlsx`);
       return res.send(Buffer.from(buffer));
     }
 
@@ -276,7 +256,7 @@ exports.exportBalanceSheet = async (req, res) => {
       <html>
       <head>
         <style>
-          body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px; color: #1c1b1b; }
+          body { font-family: 'Manrope', Arial, sans-serif; padding: 40px; color: #1c1b1b; }
           .header { text-align: center; border-bottom: 2px solid #D32F2F; padding-bottom: 20px; margin-bottom: 30px; }
           .title { font-size: 24px; font-weight: bold; color: #D32F2F; margin: 0; }
           .subtitle { font-size: 14px; color: #5f5e5e; margin-top: 5px; }
@@ -294,7 +274,7 @@ exports.exportBalanceSheet = async (req, res) => {
       </head>
       <body>
         <div class="header">
-          <div class="title">GK AUTO HERB STUDIO</div>
+          <div class="title">O3 CAR SPAA</div>
           <div class="subtitle">BALANCE SHEET STATEMENT</div>
           <div class="subtitle">Period: ${startDate} to ${endDate}</div>
         </div>
@@ -345,19 +325,10 @@ exports.exportBalanceSheet = async (req, res) => {
       </body>
       </html>`;
 
-      const puppeteer = require('puppeteer');
-      const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      });
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-      const pdf = await page.pdf({ format: 'A4', printBackground: true });
-      await browser.close();
+      const pdf = await require('../services/invoiceService').htmlToPdfBuffer(html, { margin: { top: '0', right: '0', bottom: '0', left: '0' } });
 
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=GKAutoHerb_BalanceSheet_${startDate}_to_${endDate}.pdf`);
+      res.setHeader('Content-Disposition', `attachment; filename=O3CarSpaa_BalanceSheet_${startDate}_to_${endDate}.pdf`);
       return res.send(pdf);
     }
 
@@ -372,7 +343,7 @@ exports.getExpenses = async (req, res) => {
   try {
     const { page = 1, limit = 20, category_id, from, to } = req.query;
     const offset = (page - 1) * limit;
-    let where = ['1=1']; const params = [];
+    let where = ['1=1' + scopeOf(req).and('e.franchise_id')]; const params = [];
     if (category_id) { where.push('e.category_id=?'); params.push(category_id); }
     if (from) { where.push('e.expense_date>=?'); params.push(from); }
     if (to) { where.push('e.expense_date<=?'); params.push(to); }
@@ -391,9 +362,11 @@ exports.createExpense = async (req, res) => {
   try {
     const { category_id, amount, description, expense_date, payment_method, gst_amount, gst_number } = req.body;
     if (!amount || !category_id) return res.status(400).json({ success: false, error: 'Amount and category required' });
+    if (!(Number(amount) > 0)) return res.status(400).json({ success: false, error: 'Amount must be more than 0' });
+    if (gst_amount !== undefined && gst_amount !== null && gst_amount !== '' && !(Number(gst_amount) >= 0)) return res.status(400).json({ success: false, error: 'GST amount cannot be negative' });
     const [result] = await pool.query(
-      `INSERT INTO expenses (category_id, amount, description, expense_date, payment_method, gst_amount, gst_number, created_by) VALUES (?,?,?,?,?,?,?,?)`,
-      [category_id, amount, description, expense_date || new Date().toISOString().split('T')[0], payment_method || 'cash', gst_amount || 0, gst_number, req.user.id]
+      `INSERT INTO expenses (category_id, amount, description, expense_date, payment_method, gst_amount, gst_number, created_by, franchise_id) VALUES (?,?,?,?,?,?,?,?, ?)`,
+      [category_id, amount, description, expense_date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), require('../services/moneyIn').methodFor('expenses', payment_method), gst_amount || 0, gst_number, req.user.id, (Number(req.franchiseId) || Number(req.user?.franchise_id) || 1)]
     );
     res.status(201).json({ success: true, data: { id: result.insertId }, message: 'Expense recorded' });
   } catch (err) { res.status(500).json({ success: false, error: 'Failed to create expense' }); }

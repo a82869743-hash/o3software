@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRenewPackage } from '../../api/hooks/useUserPackages';
 import api from '../../api/axiosInstance';
 import { useToastStore } from '../../store/toastStore';
+import Dropdown from '../ui/Dropdown';
 
 interface PackageRenewModalProps {
   isOpen: boolean;
@@ -152,7 +153,7 @@ export default function PackageRenewModal({ isOpen, onClose, userPackage }: Pack
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1.5 font-medium">Payment Mode</label>
-              <select
+              <Dropdown
                 value={paymentMode}
                 onChange={(e) => setPaymentMode(e.target.value)}
                 className="w-full px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white outline-none focus:ring-2 focus:ring-[#2563EB]/40 appearance-none"
@@ -161,7 +162,7 @@ export default function PackageRenewModal({ isOpen, onClose, userPackage }: Pack
                 <option value="upi">UPI</option>
                 <option value="card">Card</option>
                 <option value="bank_transfer">Bank Transfer</option>
-              </select>
+              </Dropdown>
             </div>
           </div>
 

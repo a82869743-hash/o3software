@@ -1,4 +1,6 @@
 const pool = require('../config/db');
+// a studio admin sees and changes only their own studio's vendors
+const ownVendors = (req) => (req.user.role === 'super_admin' ? '' : ` AND COALESCE(franchise_id, 1) = ${Number(req.franchiseId) || Number(req.user.franchise_id) || 1}`);
 
 // ─── LIST VENDORS ───────────────────────────
 exports.list = async (req, res) => {
@@ -72,7 +74,7 @@ exports.list = async (req, res) => {
 // ─── GET ONE VENDOR ─────────────────────────
 exports.getOne = async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM vendors WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query(`SELECT * FROM vendors WHERE id = ?${ownVendors(req)}`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Vendor not found' });
     const vendor = rows[0];
 
@@ -135,7 +137,7 @@ exports.create = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { name, phone, email, service_type, address, is_active } = req.body;
-    const [existing] = await pool.query('SELECT id FROM vendors WHERE id = ?', [req.params.id]);
+    const [existing] = await pool.query(`SELECT id FROM vendors WHERE id = ?${ownVendors(req)}`, [req.params.id]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Vendor not found' });
 
     const updates = []; const params = [];
@@ -160,7 +162,7 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const vendorId = req.params.id;
-    const [existing] = await pool.query('SELECT id, name FROM vendors WHERE id = ?', [vendorId]);
+    const [existing] = await pool.query(`SELECT id, name FROM vendors WHERE id = ?${ownVendors(req)}`, [vendorId]);
     if (!existing.length) return res.status(404).json({ success: false, error: 'Vendor not found' });
     const vendorName = existing[0].name;
 

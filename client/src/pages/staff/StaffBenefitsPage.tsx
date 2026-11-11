@@ -1,82 +1,93 @@
-import { IndianRupee, History, TrendingUp } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Wallet, Gift, Download } from 'lucide-react';
+import api from '../../api/axiosInstance';
 import AdminTopBar from '../../components/layout/AdminTopBar';
-import EmptyState from '../../components/shared/EmptyState';
-import ErrorState from '../../components/shared/ErrorState';
-import { SkeletonCard } from '../../components/ui/SkeletonLoader';
-import { useMyPayments } from '../../api/hooks/useStaff';
-import { formatDate } from '../../utils/formatters';
+import { useUIStore } from '../../store/uiStore';
+import { formatINR, formatDate } from '../../utils/formatters';
+import { useLiveReload } from '../../utils/liveUpdates';
+import ReferFriend from '../../components/shared/ReferFriend';
 
+/** Employee self-service: salary method, monthly slips, referral earnings (paid / unpaid). */
 export default function StaffBenefitsPage() {
-  const { data, isLoading, isError, refetch } = useMyPayments();
-  const benefits = data?.data || [];
+  const toast = useUIStore(s => s.toast);
+  const [data, setData] = useState<any>(null);
 
-  const pendingAmount = benefits.filter((b: any) => b.status === 'pending').reduce((sum: number, b: any) => sum + Number(b.amount), 0);
+  const [live, setLive] = useState(0);
+  useLiveReload(() => setLive(n => n + 1)); // reload when anything changes elsewhere
+  useEffect(() => {
+    api.get('/salary/my').then(r => setData(r.data.data)).catch((e: any) => toast('error', e.message));
+  }, [toast, live]);
+
+  const download = async (id: number, month: string) => {
+    try {
+      const res = await api.get(`/salary/my/${id}/slip`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a'); a.href = url; a.download = `Salary_${month}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast('error', 'Could not download the salary slip'); }
+  };
+
+  const m = data?.salary_method;
+  const refs: any[] = data?.referrals || [];
+  const unpaid = refs.filter(r => r.status === 'unpaid').reduce((s, r) => s + Number(r.amount), 0);
+  const paid = refs.filter(r => r.status === 'paid').reduce((s, r) => s + Number(r.amount), 0);
 
   return (
     <>
-      <AdminTopBar title="My Benefits & Incentives" subtitle="Track your bonuses and compensation" />
-
-      {isError ? (
-        <div className="pt-4">
-          <ErrorState
-            message="Failed to load benefits history. Please check your connection and try again."
-            onRetry={() => refetch()}
-          />
+      <AdminTopBar title="My Salary & Referrals" subtitle="Your salary slips and referral earnings" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-[11px] font-bold uppercase text-slate-500">Salary method</p>
+          <p className="text-lg font-extrabold capitalize mt-1">{m ? `${m.salary_type} · ${formatINR(m.salary_rate)}${m.salary_type === 'daily' ? '/day' : m.salary_type === 'hourly' ? '/hour' : '/month'}` : '—'}</p>
+          {m && <p className="text-xs text-slate-500">{m.paid_leaves_per_month} paid leave(s) per month</p>}
         </div>
-      ) : isLoading ? (
-        <div className="space-y-4">
-          <SkeletonCard />
-          <SkeletonCard />
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-[11px] font-bold uppercase text-slate-500">Referral earnings due</p>
+          <p className="text-lg font-extrabold text-amber-700 mt-1">{formatINR(unpaid)}</p>
         </div>
-      ) : (
-        <>
-          {/* Premium pending card */}
-          <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm mb-6 flex items-center gap-5 card-premium relative overflow-hidden">
-            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-green-500 via-green-400 to-green-500/20" />
-            <div className="w-14 h-14 bg-gradient-to-br from-green-100 to-green-50 text-green-600 rounded-2xl flex items-center justify-center shadow-sm">
-              <IndianRupee size={28} />
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-1 flex items-center gap-1">
-                <TrendingUp size={12} /> Pending Clearance
-              </p>
-              <h2 className="text-3xl font-black text-[#0F172A] tracking-tight">₹{pendingAmount.toLocaleString('en-IN')}</h2>
-            </div>
-          </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-[11px] font-bold uppercase text-slate-500">Referral earnings paid</p>
+          <p className="text-lg font-extrabold text-emerald-700 mt-1">{formatINR(paid)}</p>
+        </div>
+      </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-             <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-2">
-               <History size={18} className="text-[#2563EB]"/>
-               <h2 className="font-bold text-[#0F172A]">Payout History</h2>
-             </div>
-             
-             {!benefits.length ? (
-               <EmptyState icon={IndianRupee} title="No Payments Yet" description="No payments recorded yet. Your incentives will appear here." />
-             ) : (
-               <div className="divide-y divide-gray-50">
-                 {benefits.map((b: any, idx: number) => (
-                   <div
-                     key={b.id}
-                     className="p-4 flex items-center justify-between hover:bg-[#F8FAFC] transition-colors opacity-0 animate-fade-in-up"
-                     style={{ animationDelay: `${idx * 0.05}s`, animationFillMode: 'forwards' }}
-                   >
-                     <div>
-                       <h4 className="font-bold text-[#0F172A]">{b.purpose}</h4>
-                       <p className="text-xs text-gray-600 mt-1">{formatDate(b.payment_date || b.created_at)}</p>
-                     </div>
-                     <div className="text-right">
-                       <p className="font-black text-lg text-[#0F172A]">₹{Number(b.amount).toLocaleString('en-IN')}</p>
-                       <span className={`text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-lg border ${b.status === 'paid' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
-                         {b.status}
-                       </span>
-                     </div>
-                   </div>
-                 ))}
-               </div>
-             )}
-          </div>
-        </>
-      )}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <section className="bg-white rounded-xl border border-slate-200 p-5">
+          <h3 className="font-extrabold flex items-center gap-2 mb-3"><Wallet size={18} className="text-blue-600" /> Salary slips</h3>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-slate-500"><tr><th className="text-left py-1">Month</th><th className="text-right">Net</th><th className="text-left pl-3">Status</th><th></th></tr></thead>
+            <tbody>
+              {(data?.slips || []).map((s: any) => (
+                <tr key={s.id} className="border-t border-slate-100">
+                  <td className="py-2">{s.month_year}<div className="text-[11px] text-slate-400">{s.notes}</div></td>
+                  <td className="text-right font-bold">{formatINR(s.final_salary)}</td>
+                  <td className="pl-3 capitalize">{s.status}{s.include_referral ? ' (incl. referrals)' : ''}</td>
+                  <td className="text-right"><button className="text-blue-600" title="Download slip" onClick={() => download(s.id, s.month_year)}><Download size={15} /></button></td>
+                </tr>
+              ))}
+              {!(data?.slips || []).length && <tr><td colSpan={4} className="py-6 text-center text-slate-400">No salary generated yet</td></tr>}
+            </tbody>
+          </table>
+        </section>
+        <div className="border border-slate-200 rounded-2xl"><ReferFriend /></div>
+        <section className="bg-white rounded-xl border border-slate-200 p-5">
+          <h3 className="font-extrabold flex items-center gap-2 mb-3"><Gift size={18} className="text-blue-600" /> My referrals</h3>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-slate-500"><tr><th className="text-left py-1">Date</th><th className="text-left">Customer</th><th className="text-right">Earned</th><th className="text-left pl-3">Status</th></tr></thead>
+            <tbody>
+              {refs.map(r => (
+                <tr key={r.id} className="border-t border-slate-100">
+                  <td className="py-2">{formatDate(r.created_at)}</td>
+                  <td>{r.referred_customer_name || r.source_label}</td>
+                  <td className="text-right font-bold">{formatINR(r.amount)}</td>
+                  <td className="pl-3 capitalize">{r.status}{r.paid_via ? ` · ${r.paid_via}` : ''}</td>
+                </tr>
+              ))}
+              {!refs.length && <tr><td colSpan={4} className="py-6 text-center text-slate-400">No referrals yet</td></tr>}
+            </tbody>
+          </table>
+        </section>
+      </div>
     </>
   );
 }

@@ -32,6 +32,6 @@ router.patch('/:customerId',         protect, role(['admin']), loyaltyController
 // ─── Points operations ──────────────────────
 router.post('/earn',         protect, role(['admin']), loyaltyController.earnPoints);
 router.post('/redeem',       protect, role(['admin', 'customer']), loyaltyController.redeemPoints);
-router.post('/redeem-wash',  protect, role(['admin', 'customer']), loyaltyController.redeemPointsToWash);
+router.post('/redeem-wash',  protect, role(['customer']), loyaltyController.redeemPointsToWash); // a customer turns own points into a wash
 
 module.exports = router;

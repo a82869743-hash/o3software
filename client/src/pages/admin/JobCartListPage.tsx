@@ -60,7 +60,7 @@ export default function JobCartListPage() {
       render: (row) => (
         <div>
           <span className="font-bold text-[#0F172A] tracking-wide">{row.registration_no}</span>
-          <p className="text-[11px] text-[#5f5e5e] mt-0.5">{row.brand} {row.model}</p>
+          <p className="text-[11px] text-[#64748B] mt-0.5">{row.brand} {row.model}</p>
         </div>
       ),
     },
@@ -68,13 +68,13 @@ export default function JobCartListPage() {
     {
       key: 'visit_date',
       header: 'Date',
-      render: (row) => <span className="text-[#5f5e5e]">{formatDate(row.visit_date)}</span>,
+      render: (row) => <span className="text-[#64748B]">{formatDate(row.visit_date)}</span>,
     },
     {
       key: 'visit_number',
       header: 'Visit #',
       render: (row) => (
-        <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#f6f3f2] text-xs font-bold text-[#0F172A]">
+        <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-[#F1F5F9] text-xs font-bold text-[#0F172A]">
           {row.visit_number}
         </span>
       ),
@@ -82,7 +82,7 @@ export default function JobCartListPage() {
     {
       key: 'services_count',
       header: 'Services',
-      render: (row) => <span className="text-[#5f5e5e]">{row.services_count}</span>,
+      render: (row) => <span className="text-[#64748B]">{row.services_count}</span>,
     },
     {
       key: 'total_amount',

@@ -269,6 +269,34 @@ class MetaCloudAdapter extends IWhatsAppProvider {
   }
 
   /**
+   * Smart text send for business-initiated messages:
+   *  • inside the 24h customer-care window → plain text (free)
+   *  • outside it → the approved UTILITY template WHATSAPP_UTILITY_TEMPLATE (default "o3_service_update")
+   *    with body {{1}} = customer name, {{2}} = the message (Meta forbids new lines / tabs / 4+ spaces in params).
+   */
+  async sendSmart({ to, text, customerName, franchiseId = 1 }) {
+    let cleanPhone = String(to).replace(/\D/g, '');
+    if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
+    if (await this.isWindowActive(cleanPhone, franchiseId)) {
+      return this.sendFreeForm({ to: cleanPhone, text, franchiseId });
+    }
+    const templateName = process.env.WHATSAPP_UTILITY_TEMPLATE || 'o3_service_update';
+    const lang = process.env.WHATSAPP_TEMPLATE_LANG || 'en';
+    const param = String(text || '').replace(/\s*[\r\n\t]+\s*/g, ' - ').replace(/ {4,}/g, '   ').trim().slice(0, 1000);
+    return this.sendTemplate({
+      to: cleanPhone,
+      templateName,
+      languageCode: lang,
+      category: 'utility',
+      franchiseId,
+      components: [{ type: 'body', parameters: [
+        { type: 'text', text: (customerName || 'Customer').slice(0, 60) },
+        { type: 'text', text: param || 'Update from O3 Car Spaa' },
+      ] }],
+    });
+  }
+
+  /**
    * Check if 24-hour window is active for a customer
    */
   async isWindowActive(phone, franchiseId = 1) {
@@ -320,12 +348,27 @@ class MetaCloudAdapter extends IWhatsAppProvider {
     }
 
     // 2. Incoming Notification Events (POST)
-    const body = req.body;
+    // Verify Meta's signature when WHATSAPP_APP_SECRET is set (Meta App → Settings → Basic → App secret)
+    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    if (appSecret) {
+      const crypto = require('crypto');
+      const sig = String(req.headers['x-hub-signature-256'] || '');
+      const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(req.rawBody || Buffer.from(JSON.stringify(req.body || {}))).digest('hex');
+      const ok = sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+      if (!ok) return res.status(401).send('Invalid signature');
+    } else if (process.env.NODE_ENV === 'production') {
+      console.warn('[MetaCloudAdapter] WHATSAPP_APP_SECRET not set — webhook signatures are not verified');
+    }
+
+    const body = req.body || {};
     if (body.object === 'whatsapp_business_account') {
+      // Acknowledge immediately so Meta does not retry while the AI agent is thinking
+      res.status(200).json({ status: 'EVENT_RECEIVED' });
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
           const value = change.value;
           if (!value) continue;
+          const franchiseId = await this.franchiseForPhoneNumberId(value.metadata?.phone_number_id);
 
           // Delivery / Read Status Updates
           if (value.statuses) {
@@ -337,12 +380,12 @@ class MetaCloudAdapter extends IWhatsAppProvider {
           // Inbound Customer Messages
           if (value.messages) {
             for (const msg of value.messages) {
-              await this.handleInboundMessage(msg, value.metadata);
+              await this.handleInboundMessage(msg, value.metadata, franchiseId, value.contacts);
             }
           }
         }
       }
-      return res.status(200).json({ status: 'EVENT_RECEIVED' });
+      return;
     }
 
     return res.status(404).json({ error: 'Not a whatsapp_business_account event' });
@@ -362,17 +405,32 @@ class MetaCloudAdapter extends IWhatsAppProvider {
     } catch (_) {}
   }
 
-  async handleInboundMessage(msg, metadata) {
+  /** Map the receiving WhatsApp number to its franchise (falls back to the first franchise) */
+  async franchiseForPhoneNumberId(phoneNumberId) {
+    try {
+      if (phoneNumberId) {
+        const [rows] = await pool.query('SELECT franchise_id FROM franchise_whatsapp_settings WHERE phone_number_id = ? LIMIT 1', [String(phoneNumberId)]);
+        if (rows.length) return rows[0].franchise_id;
+      }
+      const [f] = await pool.query('SELECT id FROM franchises ORDER BY id LIMIT 1');
+      return f.length ? f[0].id : 1;
+    } catch (_) { return 1; }
+  }
+
+  async handleInboundMessage(msg, metadata, franchiseId = 1, contacts = []) {
     try {
       const from = msg.from; // Customer phone (e.g. 919876543210)
-      const text = msg.text?.body?.trim() || '';
+      // Text, quick-reply buttons and list replies all become plain text for the agent
+      const text = (msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '').trim();
       if (!text) return;
+      const name = (contacts || []).find(c => c.wa_id === from)?.profile?.name;
 
       const leadsAgentService = require('../ai/LeadsAgentService');
       await leadsAgentService.processInboundMessage({
         phone: from,
         text,
-        franchiseId: 1
+        senderName: name || undefined,
+        franchiseId
       });
     } catch (err) {
       console.error('[MetaCloudAdapter] Inbound message handling error:', err.message);

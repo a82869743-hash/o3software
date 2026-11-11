@@ -61,13 +61,13 @@ export default function LoyaltyAwardPage() {
                 <button
                   key={c.id}
                   onClick={() => { setSelectedCustomer(c); setSearchQ(''); }}
-                  className="w-full px-4 py-3 text-left hover:bg-[#f6f3f2] transition-colors flex items-center justify-between"
+                  className="w-full px-4 py-3 text-left hover:bg-[#F1F5F9] transition-colors flex items-center justify-between"
                 >
                   <div>
                     <p className="text-sm font-bold text-[#0F172A]">{c.name}</p>
-                    <p className="text-xs text-[#5f5e5e]">{c.mobile}</p>
+                    <p className="text-xs text-[#64748B]">{c.mobile}</p>
                   </div>
-                  <div className="text-right text-[10px] text-[#5f5e5e]">
+                  <div className="text-right text-[10px] text-[#64748B]">
                     <p>₹{c.credits} · {c.free_washes}W · {c.wax_count}X</p>
                   </div>
                 </button>
@@ -81,29 +81,29 @@ export default function LoyaltyAwardPage() {
           <div className="bg-white rounded-lg p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[#f6f3f2] flex items-center justify-center">
-                  <User size={18} className="text-[#5f5e5e]" />
+                <div className="w-10 h-10 rounded-full bg-[#F1F5F9] flex items-center justify-center">
+                  <User size={18} className="text-[#64748B]" />
                 </div>
                 <div>
                   <p className="font-bold text-[#0F172A]">{selectedCustomer.name}</p>
-                  <p className="text-xs text-[#5f5e5e]">{selectedCustomer.mobile}</p>
+                  <p className="text-xs text-[#64748B]">{selectedCustomer.mobile}</p>
                 </div>
               </div>
               <button onClick={() => setSelectedCustomer(null)} className="text-xs font-bold text-[#2563EB] hover:underline">Change</button>
             </div>
 
             {/* Current Balances */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5 p-3 bg-[#f6f3f2] rounded-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5 p-3 bg-[#F1F5F9] rounded-lg">
               <div className="text-center">
-                <p className="text-[9px] font-bold uppercase tracking-widest text-[#5f5e5e]">Credits</p>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-[#64748B]">Credits</p>
                 <p className="text-sm font-extrabold text-[#0F172A]">{formatINR(selectedCustomer.credits)}</p>
               </div>
               <div className="text-center">
-                <p className="text-[9px] font-bold uppercase tracking-widest text-[#5f5e5e]">Washes</p>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-[#64748B]">Washes</p>
                 <p className="text-sm font-extrabold text-[#0F172A]">{selectedCustomer.free_washes}</p>
               </div>
               <div className="text-center">
-                <p className="text-[9px] font-bold uppercase tracking-widest text-[#5f5e5e]">Wax</p>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-[#64748B]">Wax</p>
                 <p className="text-sm font-extrabold text-[#0F172A]">{selectedCustomer.wax_count}</p>
               </div>
             </div>

@@ -103,6 +103,11 @@ class NotificationQueue {
     franchise_id = 1,
     max_retries = 3
   }) {
+    if (channel === 'sms') channel = 'whatsapp';
+    // Email is paused until EMAIL_ENABLED=true is set in server/.env — nothing is queued or sent
+    if (channel === 'email' && process.env.EMAIL_ENABLED !== 'true') {
+      return { success: true, skipped: true, paused: true, message: 'Email is paused' };
+    }
     try {
       // 1. Strict Idempotency Verification
       if (idempotency_key) {
@@ -252,7 +257,8 @@ class NotificationQueue {
       } else if (item.channel === 'email') {
         dispatchResult = await this.dispatchEmail(item, credentials);
       } else if (item.channel === 'sms') {
-        dispatchResult = await this.dispatchSMS(item, credentials);
+        // SMS is reserved for OTPs — any legacy 'sms' notification is delivered on WhatsApp instead
+        dispatchResult = await this.dispatchWhatsApp(item, credentials);
       } else {
         throw new Error(`Unsupported channel: ${item.channel}`);
       }
@@ -316,7 +322,7 @@ class NotificationQueue {
   emitFailureAlert(alertPayload) {
     if (this.io) {
       try {
-        this.io.emit('notification_failed', alertPayload);
+        this.io.to('internal').emit('notification_failed', alertPayload);
         console.log(`[NotificationQueue] Broadcasted 'notification_failed' alert for #${alertPayload.notificationId}`);
       } catch (err) {
         console.warn('[NotificationQueue] Socket.io broadcast failed:', err.message);
@@ -330,49 +336,43 @@ class NotificationQueue {
   async dispatchWhatsApp(item, credentials) {
     let phone = (item.mobile || '').replace(/\D/g, '');
     if (!phone) throw new Error('Recipient mobile number is missing');
+    if (process.env.NOTIFICATION_SANDBOX === 'true') {
+      console.log(`[NotificationQueue] (test mode) WhatsApp to ${phone}: ${String(item.message_body || '').slice(0, 120)}`);
+      return { success: true, mocked: true, provider: 'test-mode' };
+    }
     if (phone.length === 10) phone = '91' + phone;
 
     const whatsappManager = require('./whatsapp/WhatsAppManager');
     const franchiseId = item.franchise_id || 1;
 
-    // 1. If document/media attachment exists
+    let customerName = null;
+    if (item.customer_id) {
+      try { const [[c]] = await pool.query('SELECT name FROM users WHERE id = ?', [item.customer_id]); customerName = c?.name || null; } catch { /* ignore */ }
+    }
+    const baseUrl = process.env.APP_BASE_URL || 'http://localhost:5000';
+
+    // 1. Document (invoice / warranty PDF)
     if (item.attachment_path || item.attachment_url) {
-      const baseUrl = process.env.APP_BASE_URL || 'http://localhost:5000';
       const attachmentUrl = item.attachment_url
         ? (item.attachment_url.startsWith('http') ? item.attachment_url : `${baseUrl}${item.attachment_url}`)
         : null;
       const filename = item.attachment_path
         ? require('path').basename(item.attachment_path)
         : (attachmentUrl ? attachmentUrl.split('/').pop() : 'Document.pdf');
-
-      return await whatsappManager.sendMedia({
-        to: phone,
-        mediaUrl: attachmentUrl,
-        mediaPath: item.attachment_path,
-        filename,
-        caption: item.message_body,
-        type: 'document',
-        franchiseId
-      });
+      try {
+        return await whatsappManager.sendMedia({
+          to: phone, mediaUrl: attachmentUrl, mediaPath: item.attachment_path, filename,
+          caption: item.message_body, type: 'document', franchiseId,
+        });
+      } catch (err) {
+        // Outside the 24h window Meta rejects free media → send the text (via template) with a download link
+        if (!attachmentUrl) throw err;
+        return await whatsappManager.sendText({ to: phone, text: `${item.message_body || ''} Download: ${attachmentUrl}`, customerName, franchiseId });
+      }
     }
 
-    // 2. If pre-approved template
-    if (item.template_name && item.template_name !== 'CUSTOM_NOTIFICATION' && item.template_name !== 'MANUAL_TEXT') {
-      return await whatsappManager.sendTemplate({
-        to: phone,
-        templateName: item.template_name,
-        components: [item.message_body],
-        category: 'utility',
-        franchiseId
-      });
-    }
-
-    // 3. Free-form text
-    return await whatsappManager.sendFreeForm({
-      to: phone,
-      text: item.message_body,
-      franchiseId
-    });
+    // 2. Text — provider decides: free text inside the 24h window, approved utility template outside it
+    return await whatsappManager.sendText({ to: phone, text: item.message_body, customerName, franchiseId });
   }
 
   /**
@@ -385,7 +385,12 @@ class NotificationQueue {
       throw new Error(`Invalid or missing email recipient: ${recipientEmail}`);
     }
 
-    const subject = `[O3 Car Spaa] ${item.template_name.replace(/_/g, ' ')}`;
+    const SUBJECTS = {
+      quotation: 'Your quotation', job_card: 'Your car service update', job_cart: 'Your car service update', quick_wash: 'Your car wash update',
+      invoice: 'Your invoice', booking: 'Your booking', buy_sell: 'Your bill', warranty_certificate: 'Your warranty certificate',
+    };
+    const nice = String(item.template_name || '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    const subject = `O3 Car Spaa — ${SUBJECTS[item.reference_type] || (/custom|generic|manual/i.test(nice) ? 'Message from O3 Car Spaa' : nice)}`;
     const attachments = [];
     if (item.attachment_path) {
       const fs = require('fs');
@@ -412,7 +417,7 @@ class NotificationQueue {
     }
 
     // Live SMTP Call
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: credentials.smtp.host,
       port: credentials.smtp.port,
       secure: credentials.smtp.port === 465,
@@ -426,11 +431,11 @@ class NotificationQueue {
       from: credentials.smtp.from,
       to: recipientEmail,
       subject,
-      text: item.message_body,
+      text: String(item.message_body || '').replace(/\*/g, ''),
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <div style="font-family: 'Manrope', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
           <h2 style="color: #0f172a; border-bottom: 2px solid #d97706; padding-bottom: 8px;">${credentials.studioName}</h2>
-          <p style="white-space: pre-line; line-height: 1.6; color: #334155;">${item.message_body}</p>
+          <p style="white-space: pre-line; line-height: 1.6; color: #334155;">${String(item.message_body || '').replace(/\*/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
           ${item.attachment_url ? `<p><a href="${item.attachment_url}" style="display: inline-block; padding: 10px 18px; background: #2563eb; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold;">Download Attachment</a></p>` : ''}
           <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
           <p style="font-size: 12px; color: #94a3b8;">This is an automated notification from ${credentials.studioName}. Please do not reply directly to this email.</p>
@@ -450,10 +455,8 @@ class NotificationQueue {
   /**
    * SMS Dispatcher fallback
    */
-  async dispatchSMS(item) {
-    const messagingService = require('./messagingService');
-    const res = await messagingService.sendSMS(item.mobile, 'TXN_SMS', null, { content: item.message_body });
-    return res;
+  async dispatchSMS(item, credentials) {
+    return this.dispatchWhatsApp(item, credentials);
   }
 
   /**
