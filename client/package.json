@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:app": "tsc && vite build --mode app --outDir dist-app --emptyOutDir"
   },
   "dependencies": {
     "@capacitor-community/file-opener": "^8.0.1",

@@ -20,6 +20,7 @@ import io from 'socket.io-client';
 import { useAuthStore } from '../../store/authStore';
 import { socketUrl } from '../../utils/endpoints';
 import Dropdown from '../../components/ui/Dropdown';
+import { API_BASE } from '../../utils/endpoints';
 
 const TABS = [
   // a booking stays visible as it moves on: awaiting payment counts as pending, work started counts as confirmed
@@ -512,7 +513,7 @@ export default function CustomerBookingsPage() {
                     <button
                       onClick={() => {
                         const token = useAuthStore.getState().token;
-                        window.open(`/api/payments/${b.advance_payment_id}/invoice?token=${token}`, '_blank');
+                        window.open(`${API_BASE}/payments/${b.advance_payment_id}/invoice?token=${token}`, '_blank');
                       }}
                       className="text-blue-600 hover:text-blue-800 font-bold text-xs inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors"
                       title="Download Payment Receipt"
@@ -544,7 +545,7 @@ export default function CustomerBookingsPage() {
                 {['confirmed', 'in_progress', 'completed', 'delivered'].includes(b.status) && <button
                   onClick={() => {
                     const token = useAuthStore.getState().token;
-                    window.open(`/api/bookings/${b.id}/invoice?token=${token}`, '_blank');
+                    window.open(`${API_BASE}/bookings/${b.id}/invoice?token=${token}`, '_blank');
                   }}
                   className="ml-auto text-blue-600 hover:text-blue-800 font-bold text-xs inline-flex items-center gap-1.5 bg-blue-50 border border-blue-200 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"
                   title="Download Booking Invoice"

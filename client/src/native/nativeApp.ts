@@ -7,6 +7,10 @@
 //  - links to WhatsApp, Maps, phone and UPI open those apps;
 //  - the phone's Back button goes back a page, and leaves the app from a home screen.
 import { Capacitor } from '@capacitor/core';
+import { SERVER_ORIGIN } from '../utils/endpoints';
+
+// The app's screens are stored in the app (origin https://localhost); data and files come from the live server.
+const SERVER = SERVER_ORIGIN;
 
 export const isNativeApp = (): boolean => Capacitor.isNativePlatform();
 
@@ -111,6 +115,24 @@ export function installNativeApp(): void {
   if (!isNativeApp()) return;
   document.documentElement.classList.add('native-app');
 
+  // 0. Safety net: a picture or link written as "/uploads/..." or "/api/..." must load from the live server,
+  //    not from the app's own files.
+  if (SERVER) {
+    const fix = (v: string) => (/^\/(uploads|api)\//.test(v) ? SERVER + v : v);
+    const origSetAttr = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (this: Element, name: string, value: string) {
+      if ((name === 'src' || name === 'href') && typeof value === 'string') value = fix(value);
+      return origSetAttr.call(this, name, value);
+    };
+    const imgSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    if (imgSrc?.set) {
+      Object.defineProperty(HTMLImageElement.prototype, 'src', {
+        ...imgSrc,
+        set(this: HTMLImageElement, v: string) { imgSrc.set!.call(this, typeof v === 'string' ? fix(v) : v); },
+      });
+    }
+  }
+
   // 1. Remember every Blob the site turns into a link, so a download can be saved even after the link is revoked.
   const blobs = new Map<string, Blob>();
   const origCreate = URL.createObjectURL.bind(URL);
@@ -135,11 +157,16 @@ export function installNativeApp(): void {
     }
     let url: URL;
     try { url = new URL(raw, window.location.href); } catch { return false; }
+    const isServerFile = (u: URL) => u.pathname.startsWith('/api/') || u.pathname.startsWith('/uploads/');
+    // our live server (data, invoices, uploaded photos)
+    if (SERVER && url.origin === SERVER) {
+      if (isServerFile(url)) { void openServerFile(url); return true; }
+      // a page of the website (e.g. /privacy): show the same page inside the app
+      window.location.href = url.pathname + url.search + url.hash;
+      return true;
+    }
     if (url.origin === window.location.origin) {
-      if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) {
-        void openServerFile(url);
-        return true;
-      }
+      if (isServerFile(url)) { void openServerFile(new URL(url.pathname + url.search, SERVER || window.location.origin)); return true; }
       return false; // a page of the app itself: normal in-app navigation
     }
     // another site or app (WhatsApp, Maps, phone, UPI): the app hands it to Android, which opens the right app

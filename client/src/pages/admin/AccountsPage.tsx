@@ -19,6 +19,8 @@ import { useInventory } from '../../api/hooks/useInventory';
 import StatusBadge from '../../components/shared/StatusBadge';
 import { formatINR, formatDate, ymd } from '../../utils/formatters';
 import Dropdown from '../../components/ui/Dropdown';
+import { API_BASE } from '../../utils/endpoints';
+import { useAuthStore } from '../../store/authStore';
 
 export default function AccountsPage() {
   const toast = useUIStore(s => s.toast);
@@ -259,7 +261,7 @@ export default function AccountsPage() {
   };
 
   const downloadGstCsv = () => {
-    const url = `${api.defaults.baseURL || ''}/api/gst-reports?month=${gstMonth}&year=${gstYear}&format=csv`;
+    const url = `${API_BASE}/gst-reports?month=${gstMonth}&year=${gstYear}&format=csv&token=${useAuthStore.getState().token}`;
     window.open(url, '_blank');
   };
 

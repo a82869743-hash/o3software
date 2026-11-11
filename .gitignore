@@ -42,3 +42,6 @@ Developer Guide.docx
 O3_Launch_Plan.pdf
 *.local.txt
 server/test_phase*.js
+
+# phone-app web build (copied into the Android app)
+client/dist-app/

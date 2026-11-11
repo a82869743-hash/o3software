@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "client"],
       "port": 5173
+    },
+    {
+      "name": "app-build",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "client", "vite", "preview", "--outDir", "client/dist-app", "--port", "4174", "--strictPort", "--config", "client/vite.config.ts"],
+      "port": 4174
     }
   ]
 }

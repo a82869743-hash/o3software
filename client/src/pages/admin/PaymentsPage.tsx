@@ -12,6 +12,7 @@ import api from '../../api/axiosInstance';
 import Dropdown from '../../components/ui/Dropdown';
 
 import { askText } from '../../utils/ask';
+import { API_BASE } from '../../utils/endpoints';
 const STATUS_BADGES: Record<string, string> = {
   completed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   captured: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -153,7 +154,7 @@ export default function PaymentsPage() {
 
   const handleDownloadInvoice = (paymentId: number) => {
     const token = useAuthStore.getState().token;
-    window.open(`/api/payments/${paymentId}/invoice?token=${token}`, '_blank');
+    window.open(`${API_BASE}/payments/${paymentId}/invoice?token=${token}`, '_blank');
   };
 
   const filteredPayments = (paymentsData?.data || []).filter((p: any) => 

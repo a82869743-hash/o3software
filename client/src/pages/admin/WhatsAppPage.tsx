@@ -60,7 +60,7 @@ import PremiumPageHeader from '../../components/shared/PremiumPageHeader';
 import PremiumStatCard from '../../components/shared/PremiumStatCard';
 import { PageTransition, AnimatedCard, RippleButton, AnimatedModal } from '../../components/ui/Animations';
 import { toast } from 'react-hot-toast';
-import { socketUrl } from '../../utils/endpoints';
+import { socketUrl, API_BASE } from '../../utils/endpoints';
 import Dropdown from '../../components/ui/Dropdown';
 import { copyText } from '../../utils/copyText';
 
@@ -1529,7 +1529,7 @@ export default function WhatsAppPage() {
                     Official Webhook Endpoint (For Meta / BSP)
                   </h4>
                   <div className="bg-white border border-slate-200 rounded-xl p-3 font-mono text-xs text-slate-700 break-all select-all mb-3">
-                    {window.location.origin}/api/whatsapp/webhook
+                    {API_BASE.startsWith("http") ? API_BASE : window.location.origin + API_BASE}/whatsapp/webhook
                   </div>
                   <p className="text-xs text-slate-500 leading-relaxed mb-3">
                     Subscribe this endpoint to the <code className="bg-slate-200 px-1 py-0.5 rounded text-[11px]">messages</code> field in your Meta Developer Console.

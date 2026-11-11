@@ -13,6 +13,7 @@ import IntegrationsPanel from '../../components/admin/IntegrationsPanel';
 import Dropdown from '../../components/ui/Dropdown';
 
 import { askForm } from '../../utils/ask';
+import { API_BASE } from '../../utils/endpoints';
 export default function SettingsPage() {
   const toast = useUIStore((s) => s.toast);
   const { token, user, updateUser } = useAuthStore();
@@ -105,7 +106,7 @@ export default function SettingsPage() {
       const formData = new FormData();
       formData.append('qr_image', selectedFile);
 
-      const res = await fetch('/api/settings/qr-upload', {
+      const res = await fetch(`${API_BASE}/settings/qr-upload`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`

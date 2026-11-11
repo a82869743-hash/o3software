@@ -5,6 +5,7 @@ import ConfirmModal from '../../components/ui/ConfirmModal';
 import AdminHero from '../../components/admin/AdminHero';
 import { useAuthStore } from '../../store/authStore';
 import { useLiveReload } from '../../utils/liveUpdates';
+import { API_BASE } from '../../utils/endpoints';
 
 export default function PackageApprovalsPage() {
   const [requests, setRequests] = useState<any[]>([]);
@@ -277,7 +278,7 @@ export default function PackageApprovalsPage() {
                         {req.status === 'approved' && <button
                           onClick={() => {
                             const token = useAuthStore.getState().token;
-                            window.open(`/api/packages/requests/${req.id}/invoice?token=${token}`, '_blank');
+                            window.open(`${API_BASE}/packages/requests/${req.id}/invoice?token=${token}`, '_blank');
                           }}
                           className="text-blue-600 hover:text-blue-800 font-bold text-xs inline-flex items-center gap-1 bg-blue-50 border border-blue-200 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 transition-colors"
                         >

@@ -2,8 +2,17 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
-export default defineConfig({
+// "npm run build:app" builds the phone app: screens are stored in the app, data comes from the live server.
+const LIVE = 'https://o3carspa.cloud';
+const appEnv = {
+  'import.meta.env.VITE_SERVER_ORIGIN': JSON.stringify(LIVE),
+  'import.meta.env.VITE_API_URL': JSON.stringify(LIVE + '/api'),
+  'import.meta.env.VITE_PUBLIC_URL': JSON.stringify(LIVE),
+};
+
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  define: mode === 'app' ? appEnv : {},
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
@@ -48,4 +57,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

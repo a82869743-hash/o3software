@@ -1,19 +1,20 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 // O3 Car Spaa phone app (Android).
-// The app opens the live site, so the app and the website always show the same, current version.
-// native-shell/ holds only the offline screen that is shown when there is no internet.
+// All screens are stored inside the app (built by "npm run build:app" into dist-app/).
+// Data — logins, bookings, bills, attendance — comes from the live server https://o3carspa.cloud,
+// the same server and database as the website, so the app and the website are always in sync.
 const config: CapacitorConfig = {
   appId: 'cloud.o3carspa.app',
   appName: 'O3 Car Spaa',
-  webDir: 'native-shell',
-  // lets the website know it is running inside the app (used by src/native/nativeApp.ts and for logs)
+  webDir: 'dist-app',
+  // lets the server logs tell app traffic from website traffic
   appendUserAgent: 'O3CarSpaApp/1',
   backgroundColor: '#008DD2',
   server: {
-    url: 'https://o3carspa.cloud',
+    // the app's own address is https://localhost (allowed by the server's CORS list)
     androidScheme: 'https',
-    errorPath: 'offline.html',
+    hostname: 'localhost',
   },
   android: {
     allowMixedContent: false,

@@ -65,6 +65,8 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
   origin: isAllowedOrigin,
   credentials: true,
+  // lets the phone app read the file name of a downloaded invoice / report
+  exposedHeaders: ['Content-Disposition'],
 }));
 // keep the raw body so the WhatsApp webhook can verify Meta's X-Hub-Signature-256
 app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { if (req.originalUrl && req.originalUrl.includes('/webhook')) req.rawBody = buf; } }));

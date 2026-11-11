@@ -9,7 +9,7 @@ import App from './App';
 import './index.css';
 import { installStrictFields } from './utils/strictFields';
 import { startLiveUpdates } from './utils/liveUpdates';
-import { installNativeApp } from './native/nativeApp';
+import { installNativeApp, isNativeApp } from './native/nativeApp';
 
 installStrictFields();
 startLiveUpdates();
@@ -47,7 +47,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 );
 
 // Register progressive web app service worker in production
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+// (not in the phone app: its screens are already stored on the phone)
+if ('serviceWorker' in navigator && import.meta.env.PROD && !isNativeApp()) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch((err) => {
       console.warn('ServiceWorker registration error:', err);
