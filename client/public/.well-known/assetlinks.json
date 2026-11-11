@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "cloud.o3carspa.app",
+      "sha256_cert_fingerprints": [
+        "9B:9F:76:E2:08:35:27:96:ED:F8:E2:BD:91:66:0B:F7:CB:97:0B:C8:41:9E:AB:5D:5B:7D:D0:F6:DB:35:9B:3E"
+      ]
+    }
+  }
+]

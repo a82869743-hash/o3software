@@ -19,6 +19,30 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- App Links: o3carspa.cloud links open straight in the app when it is installed
+                 (verified by https://o3carspa.cloud/.well-known/assetlinks.json); otherwise the website opens.
+                 Only app screens are listed, so /api, /uploads and other files still open normally. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="o3carspa.cloud" />
+                <data android:path="/" />
+                <data android:pathPrefix="/job/" />
+                <data android:pathPrefix="/feedback/" />
+                <data android:pathPrefix="/customer" />
+                <data android:pathPrefix="/admin" />
+                <data android:pathPrefix="/staff" />
+                <data android:pathPrefix="/login" />
+                <data android:pathPrefix="/register" />
+                <data android:pathPrefix="/forgot-password" />
+                <data android:pathPrefix="/packages" />
+                <data android:pathPrefix="/invoices/" />
+                <data android:pathPrefix="/privacy" />
+                <data android:pathPrefix="/delete-account" />
+            </intent-filter>
         </activity>
 
         <provider

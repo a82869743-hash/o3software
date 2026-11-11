@@ -224,6 +224,34 @@ export function installNativeApp(): void {
       }
       window.history.back();
     });
+    // 5. A tapped o3carspa.cloud link (WhatsApp, SMS, browser) opens that screen here, with the person's own sign-in
+    const linkPath = (raw: string): string | null => {
+      try {
+        const u = new URL(raw);
+        if (!/^(www\.)?o3carspa\.cloud$/i.test(u.hostname)) return null;
+        return (u.pathname || '/') + u.search + u.hash;
+      } catch { return null; }
+    };
+    const openLink = (raw: string, coldStart: boolean) => {
+      const path = linkPath(raw);
+      if (!path) return;
+      const here = window.location.pathname + window.location.search + window.location.hash;
+      if (path === here) return;
+      if (coldStart) { window.location.replace(path); return; } // app just opened: load straight on that screen
+      window.history.pushState({}, '', path);
+      window.dispatchEvent(new PopStateEvent('popstate')); // tells the app's router to show the new screen
+    };
+    App.addListener('appUrlOpen', ({ url }) => openLink(url, false));
+    try {
+      const launch = await App.getLaunchUrl();
+      const key = 'o3-handled-launch-url';
+      // handle the link that opened the app only once (a reload must not jump back to it)
+      if (launch?.url && sessionStorage.getItem(key) !== launch.url) {
+        sessionStorage.setItem(key, launch.url);
+        openLink(launch.url, true);
+      }
+    } catch { /* no launch link */ }
+
     void SplashScreen.hide();
   })();
 }
