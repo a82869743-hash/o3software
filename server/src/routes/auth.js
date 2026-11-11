@@ -16,9 +16,10 @@ router.post('/login', authLimiter, authController.login);
 router.post('/forgot-password', authLimiter, forgotPasswordController.forgotPassword);
 router.post('/verify-otp', authLimiter, forgotPasswordController.verifyOtp);
 router.post('/reset-password', authLimiter, forgotPasswordController.resetPassword);
-router.post('/otp/send', authLimiter, forgotPasswordController.sendLoginOtp);
-router.post('/otp/login', authLimiter, forgotPasswordController.loginWithOtp);
-router.post('/otp/register', authLimiter, forgotPasswordController.sendRegisterOtp);
+// Codes are used ONLY for Forgot Password (studio's choice): no sign-in by code, no code at sign-up.
+// To bring back sign-in by code, restore:
+//   router.post('/otp/send', authLimiter, forgotPasswordController.sendLoginOtp);
+//   router.post('/otp/login', authLimiter, forgotPasswordController.loginWithOtp);
 
 // Protected routes
 router.get('/me', authMiddleware, authController.getMe);

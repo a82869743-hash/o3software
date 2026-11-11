@@ -16,7 +16,7 @@ const loginSchema = z.object({
 
 type LoginForm = z.infer<typeof loginSchema>;
 
-const OTP_LOGIN: boolean = true;
+const OTP_LOGIN: boolean = false;
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -138,11 +138,16 @@ export default function LoginPage() {
               Sign In to O3
             </h2>
             <p className="text-sm text-slate-500 mt-1.5 font-medium">
-              Sign in with your password or a one-time code sent to your WhatsApp
+              Sign in with your mobile number and password
             </p>
           </div>
 
-          {/* Sign in by password or by a WhatsApp code. Set OTP_LOGIN to false to hide the code option. */}
+          {/* Codes are only for Forgot Password (studio's choice). Set OTP_LOGIN to true to bring back "Login with OTP". */}
+          {!OTP_LOGIN && (
+            <div className="p-1 bg-slate-100 rounded-xl mb-5">
+              <div className="py-2 rounded-lg bg-white text-[#0284C7] shadow-sm text-xs font-extrabold uppercase tracking-wider text-center">Login</div>
+            </div>
+          )}
           {OTP_LOGIN && <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl mb-5">
             {(['password', 'otp'] as const).map(m => (
               <button key={m} type="button" onClick={() => { setMode(m); setOtpSent(false); setOtp(''); }}
