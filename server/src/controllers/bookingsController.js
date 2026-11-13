@@ -810,6 +810,22 @@ exports.create = async (req, res) => {
       if (io) {
         io.to('internal').emit('new_booking', { bookingId, status: targetStatus });
       }
+
+      // phone alert for the studio's admins / managers (and Super Admin)
+      (async () => {
+        const [[b]] = await pool.query(
+          `SELECT b.franchise_id, b.vehicle_brand, b.vehicle_model, b.vehicle_reg_no, u.name,
+                  DATE_FORMAT(s.slot_date, '%e %b') AS d, DATE_FORMAT(s.start_time, '%l:%i %p') AS t
+           FROM bookings b JOIN users u ON u.id = b.customer_id LEFT JOIN slots s ON s.id = b.slot_id WHERE b.id = ?`, [bookingId]);
+        if (!b) return;
+        const car = [b.vehicle_brand, b.vehicle_model].filter(Boolean).join(' ') + (b.vehicle_reg_no ? ` (${b.vehicle_reg_no})` : '');
+        await require('../services/pushService').sendToStudioTeam(b.franchise_id, {
+          title: targetStatus === 'pending_approval' ? 'New booking request' : 'New booking',
+          body: `${b.name}${car.trim() ? ' · ' + car.trim() : ''}${b.d ? ` · ${b.d}, ${String(b.t || '').trim()}` : ''}`,
+          url: '/admin/customer-bookings',
+          tag: `booking-${bookingId}`,
+        });
+      })().catch((e) => console.error('[push] booking alert failed:', e.message));
     }
 
     console.log(`[BOOKING] #${bookingId} created — status=${targetStatus}, customer=${customerId}, slot=${slot_id}, type=${bookingType}`);

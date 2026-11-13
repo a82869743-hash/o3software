@@ -575,6 +575,7 @@ exports.deleteAccount = async (req, res) => {
     // free the number plates, so the car can be registered again (e.g. by its next owner); bills keep their own copy
     await conn.query('UPDATE vehicles SET registration_no = NULL WHERE customer_id = ?', [u.id]);
     await conn.commit();
+    await require('../services/pushService').removeUser(u.id); // no more phone alerts
     res.json({ success: true, message: 'Your account has been deleted.' });
   } catch (err) {
     try { await conn.rollback(); } catch { /* not in a transaction */ }
@@ -592,6 +593,11 @@ exports.deleteAccount = async (req, res) => {
 exports.logout = async (req, res) => {
   try {
     if (req.user && req.user.id) {
+      // phone app: stop this person's alerts on the phone they signed out of
+      const pt = req.body && req.body.push_token;
+      if (typeof pt === 'string' && pt.length >= 20 && pt.length <= 255 && !req.user.is_impersonating) {
+        await require('../services/pushService').unregister(pt, req.user.id).catch(() => {});
+      }
       await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id]);
     }
     res.json({ success: true, message: 'Logged out successfully. Session invalidated.' });

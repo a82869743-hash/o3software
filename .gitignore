@@ -45,3 +45,7 @@ server/test_phase*.js
 
 # phone-app web build (copied into the Android app)
 client/dist-app/
+
+# Firebase service-account key for push notifications (secret)
+*firebase*adminsdk*.json
+firebase-service-account.json

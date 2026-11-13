@@ -452,6 +452,17 @@ exports.createRequest = async (req, res) => {
     );
 
     res.status(201).json({ success: true, requestId: result.insertId, price, car_type: type, message: 'Package request submitted to admin for approval' });
+
+    // phone alert for the studio's admins / managers (and Super Admin)
+    (async () => {
+      const [[c]] = await pool.query('SELECT name, COALESCE(franchise_id, 1) AS fid FROM users WHERE id = ?', [customerId]);
+      await require('../services/pushService').sendToStudioTeam(c?.fid || 1, {
+        title: 'Package request waiting',
+        body: `${c?.name || 'A customer'} · ${pkg.name || 'Package'} · ${veh.brand || ''} ${veh.model || ''} · ₹${Number(price).toLocaleString('en-IN')}`.replace(/\s+·\s+·/g, ' ·'),
+        url: '/admin/package-approvals',
+        tag: `pkgreq-${result.insertId}`,
+      });
+    })().catch((e) => console.error('[push] package alert failed:', e.message));
   } catch (err) {
     console.error('Package request create error:', err);
     res.status(500).json({ success: false, error: 'Server error' });

@@ -22,8 +22,15 @@ export const useAuthStore = create<AuthStore>()(
       logout: () => {
         const token = get().token;
         if (token) {
-          // Invalidate the session server-side as well (fire and forget)
-          fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+          // Invalidate the session server-side as well (fire and forget); in the phone app this also
+          // stops this person's alerts on this phone
+          const pushToken = (window as any).__o3PushToken as string | undefined;
+          fetch(`${API_BASE}/auth/logout`, {
+            method: 'POST',
+            keepalive: true,
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(pushToken ? { push_token: pushToken } : {}),
+          }).catch(() => {});
         }
         set({ token: null, user: null, isAuthenticated: false });
         try { localStorage.removeItem('o3-auth-v1'); sessionStorage.removeItem('o3-auth-v1'); } catch {}

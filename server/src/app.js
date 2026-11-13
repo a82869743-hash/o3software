@@ -223,6 +223,7 @@ app.use('/api/shared-files',  require('./routes/sharedFiles'));
 app.get('/api/shared/:token', require('./controllers/fileSharingController').getSharedFile);
 app.use('/api/purchase-bills', require('./routes/purchaseBills'));
 app.use('/api/gst-reports',    require('./routes/gstReports'));
+app.use('/api/push',          require('./routes/push')); // phone push notifications (services/pushService.js)
 const rewardsRoutes = require('./routes/customerRewards');
 app.use('/api/customer-rewards', rewardsRoutes);
 app.use('/api/rewards', rewardsRoutes); // Route alias

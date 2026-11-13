@@ -139,6 +139,10 @@ class NotificationService {
         results.push({ channel, ...res });
       }
 
+      // 4. The same news as a phone alert, for people who have the app (never blocks or fails the message)
+      this.pushCopy({ eventTrigger, customerId, mobile: recipientMobile, body: standardMessageBody, referenceType, idempotencyKey })
+        .catch(() => {});
+
       return {
         success: true,
         dispatches: results
@@ -525,6 +529,31 @@ class NotificationService {
   /**
    * 4. Optional status-change notification hook for the pipeline (used in Phase 6)
    */
+  /**
+   * Phone alert copy of a WhatsApp message.
+   * Customers: event messages (bookings, job progress, bills, packages, reminders) — not marketing campaigns and
+   * not free-text chats. Team members: every message sent to them (e.g. "pick-up assigned to you").
+   */
+  async pushCopy({ eventTrigger, customerId, mobile, body, referenceType, idempotencyKey }) {
+    if (/^CAMPAIGN_/i.test(eventTrigger || '') || !body) return;
+    let user = null;
+    if (customerId) {
+      [[user]] = await pool.query('SELECT id, role FROM users WHERE id = ? AND is_deleted = 0', [customerId]);
+    } else if (mobile) {
+      const ten = String(mobile).replace(/\D/g, '').slice(-10);
+      if (ten.length === 10) [[user]] = await pool.query('SELECT id, role FROM users WHERE mobile = ? AND is_deleted = 0 LIMIT 1', [ten]);
+    }
+    if (!user) return;
+    if (user.role === 'customer' && !eventTrigger && !referenceType) return; // a chat message, not news
+    const push = require('./pushService');
+    await push.sendToUsers([user.id], {
+      title: user.role === 'customer' ? 'O3 Car Spaa' : 'O3 Car Spaa · Team',
+      body: String(body).replace(/\*/g, ''), // WhatsApp bold marks
+      url: push.screenFor(user.role, referenceType || eventTrigger),
+      tag: idempotencyKey || undefined, // a repeat of the same message replaces, never stacks
+    });
+  }
+
   async notifyPipelineStageChange({
     entityType = 'job_card',
     entityId,

@@ -253,5 +253,79 @@ export function installNativeApp(): void {
     } catch { /* no launch link */ }
 
     void SplashScreen.hide();
+    void setupPush();
   })();
+}
+
+/** In-app move to a screen (after a tapped alert); waits a moment on a fresh start so the app's own first redirect is done. */
+function goTo(path: string) {
+  if (!path || !path.startsWith('/')) return;
+  setTimeout(() => {
+    const here = window.location.pathname + window.location.search;
+    if (path === here) return;
+    window.history.pushState({}, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, 400);
+}
+
+/**
+ * Phone push notifications (Firebase). After sign-in the app asks once for permission (Android 13+),
+ * then tells the server this phone's token so alerts for this person reach it. Tapping an alert opens its screen.
+ * Sign-out removes the phone from that person (see authStore.logout).
+ */
+async function setupPush(): Promise<void> {
+  try {
+    const [{ PushNotifications }, { useAuthStore }, { API_BASE }] = await Promise.all([
+      import('@capacitor/push-notifications'),
+      import('../store/authStore'),
+      import('../utils/endpoints'),
+    ]);
+
+    await PushNotifications.createChannel({
+      id: 'o3_updates',
+      name: 'Bookings and updates',
+      description: 'New bookings, job progress, approvals and assignments',
+      importance: 4, // high: shows a heads-up banner
+      visibility: 1,
+      vibration: true,
+      lights: true,
+    }).catch(() => {});
+
+    await PushNotifications.addListener('registration', async ({ value }) => {
+      (window as any).__o3PushToken = value;
+      const auth = useAuthStore.getState().token;
+      if (!auth) return;
+      await fetch(`${API_BASE}/push/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` },
+        body: JSON.stringify({ token: value, platform: 'android' }),
+      }).catch(() => {});
+    });
+    await PushNotifications.addListener('registrationError', (e) => console.warn('[push] registration failed', e?.error));
+
+    // app open: Android does not show the banner, so show it inside the app
+    await PushNotifications.addListener('pushNotificationReceived', async (n) => {
+      const { default: toast } = await import('react-hot-toast');
+      toast(`${n.title ? n.title + ': ' : ''}${n.body || ''}`, { duration: 6000, icon: '🔔' });
+    });
+
+    // alert tapped (app closed or in the background): open its screen
+    await PushNotifications.addListener('pushNotificationActionPerformed', (a) => {
+      const url = (a.notification?.data as any)?.url;
+      if (url) goTo(String(url));
+    });
+
+    const turnOn = async () => {
+      if (!useAuthStore.getState().token) return; // only signed-in people get alerts
+      let p = await PushNotifications.checkPermissions();
+      if (p.receive === 'prompt' || p.receive === 'prompt-with-rationale') p = await PushNotifications.requestPermissions();
+      if (p.receive !== 'granted') return;
+      await PushNotifications.register(); // fires 'registration' with this phone's token
+    };
+    await turnOn();
+    // someone signs in later (or a different person signs in on this phone)
+    useAuthStore.subscribe((s, prev) => { if (s.token && s.token !== prev.token) void turnOn(); });
+  } catch (e) {
+    console.warn('[push] not available', e);
+  }
 }

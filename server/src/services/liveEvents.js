@@ -10,7 +10,7 @@ const pool = require('../config/db');
 
 const POLL_MS = 500;
 // requests that change nothing other people see (sign-in, codes, checks) — sign-ups and profile edits do go out
-const SKIP = /^(auth\/(login|logout|refresh|verify-otp|forgot-password|reset-password|change-password|otp\/send|otp\/login|dev-login)|bookings\/offer-check|health|v1\/health|analytics|client-errors|deliveries\/[^/]+\/location)/;
+const SKIP = /^(auth\/(login|logout|refresh|verify-otp|forgot-password|reset-password|change-password|otp\/send|otp\/login|dev-login)|bookings\/offer-check|health|v1\/health|analytics|client-errors|deliveries\/[^/]+\/location|push\/)/;
 
 let lastId = 0;
 let started = false;

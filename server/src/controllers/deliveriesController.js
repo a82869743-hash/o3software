@@ -130,6 +130,22 @@ async function isStudioDriver(userId, franchiseId) {
   return !!u;
 }
 
+/** Phone alert to the driver a delivery was just given to. */
+function alertDriver(deliveryId, staffId) {
+  (async () => {
+    const [[d]] = await pool.query(
+      `SELECT v.registration_no, v.brand, v.model, d.address_to FROM deliveries d
+       JOIN job_carts jc ON jc.id = d.job_cart_id JOIN vehicles v ON v.id = jc.vehicle_id WHERE d.id = ?`, [deliveryId]);
+    const car = d ? [d.brand, d.model].filter(Boolean).join(' ') + (d.registration_no ? ` (${d.registration_no})` : '') : 'A car';
+    await require('../services/pushService').sendToUsers([staffId], {
+      title: 'Delivery assigned to you',
+      body: `${car}${d && d.address_to ? ' → ' + d.address_to : ''}. Tap Start when you leave the studio.`,
+      url: '/admin/my/deliveries',
+      tag: `delivery-${deliveryId}`,
+    });
+  })().catch((e) => console.error('[push] delivery alert failed:', e.message));
+}
+
 exports.startDelivery = async (req, res) => {
   try {
     const { job_cart_id } = req.body;
@@ -154,7 +170,7 @@ exports.startDelivery = async (req, res) => {
       if (ex.status === 'delivered') return res.status(400).json({ success: false, error: 'This car is already delivered' });
       if (ex.status === 'in_transit') return res.status(400).json({ success: false, error: 'Delivery already in progress for this job cart' });
       await pool.query('UPDATE deliveries SET staff_id = ? WHERE id = ?', [driverId, ex.id]);
-      if (driverId !== req.user.id) return res.json({ success: true, data: { id: ex.id }, message: 'Driver assigned' });
+      if (driverId !== req.user.id) { alertDriver(ex.id, driverId); return res.json({ success: true, data: { id: ex.id }, message: 'Driver assigned' }); }
       return exports._beginTrip(req, res, ex.id);
     }
 
@@ -180,7 +196,7 @@ exports.startDelivery = async (req, res) => {
 
     const deliveryId = result.insertId;
     // admin picked a driver -> it waits in that driver's list until they tap Start
-    if (driverId !== req.user.id) return res.json({ success: true, data: { id: deliveryId }, message: 'Driver assigned' });
+    if (driverId !== req.user.id) { alertDriver(deliveryId, driverId); return res.json({ success: true, data: { id: deliveryId }, message: 'Driver assigned' }); }
     return exports._beginTrip(req, res, deliveryId);
   } catch (err) {
     console.error('Delivery start error:', err);
@@ -283,6 +299,7 @@ exports.assignDriver = async (req, res) => {
   if (!(await isStudioDriver(staffId, dl.franchise_id))) return res.status(400).json({ success: false, error: 'The driver must be an active team member of this studio' });
   const [r] = await pool.query('UPDATE deliveries SET staff_id = ? WHERE id = ?', [staffId, req.params.id]);
   if (!r.affectedRows) return res.status(404).json({ success: false, error: 'Delivery not found' });
+  if (staffId !== req.user.id) alertDriver(Number(req.params.id), staffId);
   res.json({ success: true, message: 'Driver assigned' });
 };
 
